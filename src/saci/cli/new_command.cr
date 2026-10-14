@@ -7,17 +7,18 @@ module Saci
       SACI_ROOT = File.expand_path("../../../", __DIR__)
 
       def self.run(args : Array(String)) : Int32
-        name = args.find { |a| !a.starts_with?("-") } || raise Error.new("Usage: saci new APP_NAME [--saci-path PATH] [--skip-shards] [--skip-git]")
+        name = args.find { |a| !a.starts_with?("-") } || raise Error.new("Usage: saci new APP_NAME [--db=sqlite|postgres|mysql] [--saci-path PATH] [--skip-shards] [--skip-git]")
         Util.check_app_name!(name)
         opts = parse_opts(args)
-        create(name, saci_path: opts[:saci_path], skip_shards: opts[:skip_shards], skip_git: opts[:skip_git])
+        create(name, saci_path: opts[:saci_path], skip_shards: opts[:skip_shards], skip_git: opts[:skip_git], db: opts[:db])
         0
       end
 
-      def self.parse_opts(args : Array(String)) : NamedTuple(saci_path: String?, skip_shards: Bool, skip_git: Bool)
+      def self.parse_opts(args : Array(String)) : NamedTuple(saci_path: String?, skip_shards: Bool, skip_git: Bool, db: String)
         saci_path = nil
         skip_shards = false
         skip_git = false
+        db = "sqlite"
         i = 0
         while i < args.size
           a = args[i]
@@ -29,22 +30,38 @@ module Saci
           when "--saci-path"
             saci_path = args[i + 1]? || raise Error.new("Missing value for --saci-path")
             i += 1
+          when .starts_with?("--db=")
+            db = normalize_db(a.split("=", 2)[1])
+          when "--db"
+            db = normalize_db(args[i + 1]? || raise Error.new("Missing value for --db (expected sqlite|postgres|mysql)"))
+            i += 1
           end
           i += 1
         end
-        {saci_path: saci_path, skip_shards: skip_shards, skip_git: skip_git}
+        {saci_path: saci_path, skip_shards: skip_shards, skip_git: skip_git, db: db}
       end
 
-      def self.create(name : String, dir : String = name, saci_path : String? = nil, skip_shards : Bool = false, skip_git : Bool = false) : Nil
+      # Normalizes `--db` values (accepts common aliases, fails fast).
+      def self.normalize_db(db : String) : String
+        case db.downcase
+        when "sqlite", "sqlite3"       then "sqlite"
+        when "postgres", "postgresql"  then "postgres"
+        when "mysql"                   then "mysql"
+        else                                raise Error.new("Unknown --db '#{db}'. Expected sqlite|postgres|mysql.")
+        end
+      end
+
+      def self.create(name : String, dir : String = name, saci_path : String? = nil, skip_shards : Bool = false, skip_git : Bool = false, db : String = "sqlite") : Nil
         Util.check_app_name!(name)
+        db = normalize_db(db)
         raise Error.new("Directory #{dir} already exists and is not empty.") if Dir.exists?(dir) && !Dir.empty?(dir)
         Dir.mkdir_p(dir)
 
         dep = saci_path || SACI_ROOT
-        write(File.join(dir, "shard.yml"), shard_yml(name, dep))
+        write(File.join(dir, "shard.yml"), shard_yml(name, dep, db))
         write(File.join(dir, ".gitignore"), gitignore)
         write(File.join(dir, "README.md"), readme(name))
-        write(File.join(dir, "src", "#{name}.cr"), entrypoint(name))
+        write(File.join(dir, "src", "#{name}.cr"), entrypoint(name, db))
         write(File.join(dir, "src", "controllers", "application_controller.cr"), application_controller)
         write(File.join(dir, "src", "controllers", "home_controller.cr"), home_controller)
         write(File.join(dir, "src", "channels", ".gitkeep"), "")
@@ -54,7 +71,7 @@ module Saci
         write(File.join(dir, "src", "views", "home", "index.ecr"), home_view)
         write(File.join(dir, "src", "models", "application_record.cr"), application_record)
         write(File.join(dir, "db", "migrations.cr"), Generate.manifest_source([] of String, [] of String))
-        write(File.join(dir, "db", "migrate.cr"), migrate_runner(name))
+        write(File.join(dir, "db", "migrate.cr"), migrate_runner(name, db))
         Dir.mkdir_p(File.join(dir, "config"))
         Dir.cd(dir) do
           File.write("config/master.key", Saci::Credentials.generate_key + "\n")
@@ -68,7 +85,7 @@ module Saci
         write(File.join(dir, "config", "environments", "production.cr"), env_production)
         write(File.join(dir, "config", "locales", "en.yml"), locales_en)
         write(File.join(dir, "config", "locales", "es.yml"), locales_es)
-        write(File.join(dir, "spec", "spec_helper.cr"), spec_helper(name))
+        write(File.join(dir, "spec", "spec_helper.cr"), spec_helper(name, db))
         write(File.join(dir, "spec", "app_spec.cr"), app_spec(name))
 
         unless skip_shards
@@ -97,7 +114,15 @@ module Saci
         puts "  create #{path}"
       end
 
-      def self.shard_yml(name : String, saci_path : String) : String
+      def self.shard_yml(name : String, saci_path : String, db : String = "sqlite") : String
+        deps = case normalize_db(db)
+               when "postgres"
+                 "          pg:\n            github: will/crystal-pg\n            version: \"~> 0.30.0\""
+               when "mysql"
+                 "          mysql:\n            github: crystal-lang/crystal-mysql\n            version: \"~> 0.17.0\""
+               else
+                 "          # PostgreSQL / MySQL need an app-level driver (the framework stays\n          # driver-free so SQLite apps link anywhere):\n          # pg:\n          #   github: will/crystal-pg\n          #   version: \"~> 0.30.0\"\n          # mysql:\n          #   github: crystal-lang/crystal-mysql\n          #   version: \"~> 0.17.0\""
+               end
         <<-YAML
         name: #{name}
         version: 0.1.0
@@ -112,14 +137,7 @@ module Saci
         dependencies:
           saci:
             path: #{saci_path}
-          # PostgreSQL / MySQL need an app-level driver (the framework stays
-          # driver-free so SQLite apps link anywhere):
-          # pg:
-          #   github: will/crystal-pg
-          #   version: "~> 0.30.0"
-          # mysql:
-          #   github: crystal-lang/crystal-mysql
-          #   version: "~> 0.17.0"
+        #{deps}
 
         license: MIT
         YAML
@@ -145,9 +163,31 @@ module Saci
         MD
       end
 
-      def self.entrypoint(name : String) : String
+      # Default DATABASE_URL per `--db` picker (template-level only; no live
+      # servers needed). SQLite uses a file per APP_ENV; Postgres/MySQL use
+      # `localhost` with the app + env in the DB name.
+      def self.db_url_default(name : String, db : String, env_suffix : String) : String
+        case normalize_db(db)
+        when "postgres" then "postgres://localhost/#{name}_#{env_suffix}"
+        when "mysql"    then "mysql://root@localhost/#{name}_#{env_suffix}"
+        else                 "sqlite3://./db/#{name}_#{env_suffix}.db"
+        end
+      end
+
+      def self.db_driver_require(db : String) : String
+        case normalize_db(db)
+        when "postgres" then "require \"pg\"\n"
+        when "mysql"    then "require \"mysql\"\n"
+        else                 ""
+        end
+      end
+
+      def self.entrypoint(name : String, db : String = "sqlite") : String
+        ndb = normalize_db(db)
+        url_default = db_url_default(name, ndb, "\#{env_name}")
+        driver = db_driver_require(ndb)
         <<-CRYSTAL
-        require "saci"
+        #{driver}require "saci"
         require "file_utils"
         require "../config/environments/development"
         require "../config/environments/test"
@@ -160,7 +200,7 @@ module Saci
 
         env_name = ENV.fetch("APP_ENV", "development")
         FileUtils.mkdir_p("db")
-        db_url = ENV.fetch("DATABASE_URL", "sqlite3://./db/#{name}_\#{env_name}.db")
+        db_url = ENV.fetch("DATABASE_URL", "#{url_default}")
         Saci::Record.connect(db_url)
         Saci::I18n.reload!
         Saci.enable_multithreading! if ENV["SACI_MT"]? == "1"
@@ -257,40 +297,57 @@ module Saci
       # Standalone runner: loads models + migrations WITHOUT booting the
       # web server (the app entrypoint calls `listen`, so it must NOT be
       # required here).
-      def self.migrate_runner(name : String) : String
+      def self.migrate_runner(name : String, db : String = "sqlite") : String
+        ndb = normalize_db(db)
+        url_default = db_url_default(name, ndb, "\#{env_name}")
+        driver = db_driver_require(ndb)
         <<-CRYSTAL
-        # Run with: saci db:migrate | saci db:rollback [STEPS]
+        # Run with: saci db:migrate [--all] | saci db:rollback [STEPS] [--all]
+        # (`--all` migrates primary + all named DBs; without it only primary.)
         # (Do not edit by hand — `saci generate migration` keeps db/migrations.cr in sync.)
-        require "saci"
+        #{driver}require "saci"
         require "file_utils"
         require "../src/models/*"
         require "./migrations"
 
         FileUtils.mkdir_p("db")
         env_name = ENV.fetch("APP_ENV", "development")
-        db_url = ENV.fetch("DATABASE_URL", "sqlite3://./db/#{name}_\#{env_name}.db")
+        db_url = ENV.fetch("DATABASE_URL", "#{url_default}")
         Saci::Record.connect(db_url)
+        # Named databases (multidb): register yours here, e.g.
+        # Saci::Record.establish_connection("analytics", ENV.fetch("DATABASE_URL_ANALYTICS", "#{db_url_default(name, ndb, "analytics_\#{env_name}")}"))
 
         action = ARGV[0]? || "up"
-        steps = (ARGV[1]? || "1").to_i
-        db = Saci::Record.connection.as(DB::Database)
+        rest = (ARGV[1..]? || [] of String)
+        migrate_all = rest.includes?("--all") || ARGV.includes?("--all")
+        steps = (rest.reject { |a| a == "--all" }.first? || "1").to_i
+        targets = migrate_all ? Saci::Record.configuration_names : ["primary"]
         case action
         when "up"
-          ran = Saci::Record::Migrator.migrate(db, SACI_MIGRATIONS)
-          puts "Migrated: \#{ran.inspect}"
+          targets.each do |db_name|
+            db = Saci::Record.database(db_name)
+            ran = Saci::Record::Migrator.migrate(db, SACI_MIGRATIONS)
+            puts "Migrated \#{db_name}: \#{ran.inspect}"
+          end
         when "down"
-          undone = Saci::Record::Migrator.rollback(db, SACI_MIGRATIONS, steps)
-          puts "Rolled back: \#{undone.inspect}"
+          targets.reverse.each do |db_name|
+            db = Saci::Record.database(db_name)
+            undone = Saci::Record::Migrator.rollback(db, SACI_MIGRATIONS, steps)
+            puts "Rolled back \#{db_name}: \#{undone.inspect}"
+          end
         else
           abort "Unknown action \#{action} (expected up|down)"
         end
         CRYSTAL
       end
 
-      def self.spec_helper(name : String) : String
+      def self.spec_helper(name : String, db : String = "sqlite") : String
+        ndb = normalize_db(db)
+        url_default = db_url_default(name, ndb, "test")
+        driver = db_driver_require(ndb)
         <<-CRYSTAL
         require "spec"
-        require "saci"
+        #{driver}require "saci"
         require "file_utils"
         require "../src/models/*"
         require "../src/controllers/*"
@@ -300,9 +357,11 @@ module Saci
         require "../db/migrations"
 
         # Isolated test database (never touch development data).
+        # Multidb apps: establish named DBs here too and use
+        # `Saci::Record.clean_all!` in specs to truncate all connections.
         FileUtils.mkdir_p("db")
         ENV["APP_ENV"] = "test"
-        db_url = ENV.fetch("DATABASE_URL", "sqlite3://./db/#{name}_test.db")
+        db_url = ENV.fetch("DATABASE_URL", "#{url_default}")
         Saci::Record.connect(db_url)
         Saci::I18n.reload!
         Saci::Record::Migrator.migrate(Saci::Record.connection.as(DB::Database), SACI_MIGRATIONS)

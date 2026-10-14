@@ -106,30 +106,42 @@ module Saci
     end
 
     # `saci db:migrate` / `saci db:rollback [STEPS]`.
-    # Extra args before `--` are forwarded to the migrate script (e.g. STEPS);
-    # everything after `--` is forwarded to `crystal` as compiler flags.
+    # Extra args before `--` are forwarded to the migrate script (e.g. STEPS,
+    # `--all` to migrate primary + all named DBs); everything after `--` is
+    # forwarded to `crystal` as compiler flags.
     module Db
-      def self.run(args : Array(String), action : String) : Int32
-        Util.shard_name(Dir.current)
-        raise Error.new("db/migrate.cr not found. Is this a Saci app?") unless File.exists?("db/migrate.cr")
-        Generate.regenerate_manifest!
-
+      def self.parse(args : Array(String)) : NamedTuple(all: Bool, script_args: Array(String), crystal_flags: Array(String))
         script_args = [] of String
         crystal_flags = [] of String
         forward = false
+        all = false
         args.each do |a|
           if forward
             crystal_flags << a
           elsif a == "--"
             forward = true
+          elsif a == "--all"
+            all = true
+            script_args << a
           else
             script_args << a
           end
         end
+        {all: all, script_args: script_args, crystal_flags: crystal_flags}
+      end
+
+      def self.run(args : Array(String), action : String) : Int32
+        Util.shard_name(Dir.current)
+        raise Error.new("db/migrate.cr not found. Is this a Saci app?") unless File.exists?("db/migrate.cr")
+        Generate.regenerate_manifest!
+
+        parsed = parse(args)
+        script_args = parsed[:script_args]
+        crystal_flags = parsed[:crystal_flags]
 
         crystal = Util.crystal_bin!
         crystal_args = ["run"] + crystal_flags + ["db/migrate.cr", "--", action] + script_args
-        puts "Running: #{crystal} #{crystal_args.join(" ")}"
+        puts "Running: #{crystal} #{crystal_args.join(" ")}#{" (all databases)" if parsed[:all]}"
         status = Process.run(crystal, args: crystal_args, output: STDOUT, error: STDERR)
         status.success? ? 0 : 1
       end

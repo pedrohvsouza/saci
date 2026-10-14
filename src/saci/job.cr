@@ -112,8 +112,24 @@ module Saci
     end
 
     # Runs one job with its retry/discard rules. `attempt` starts at 1;
-    # each rule decides against its own `attempts` limit.
+    # each rule decides against its own `attempts` limit. Jobs declaring
+    # `limits_concurrency` hold a per-key slot while running — a run that
+    # arrives while the slot is full is skipped (not queued, not an error).
     def self.execute(job_class : Base.class, payload_json : String, attempt : Int32 = 1) : Nil
+      if limit = job_class.__saci_concurrency_limit
+        key = job_class.__saci_concurrency_key
+        return unless concurrency_try_acquire(key, limit)
+        begin
+          execute_guarded(job_class, payload_json, attempt)
+        ensure
+          concurrency_release(key)
+        end
+      else
+        execute_guarded(job_class, payload_json, attempt)
+      end
+    end
+
+    private def self.execute_guarded(job_class : Base.class, payload_json : String, attempt : Int32) : Nil
       payload = JSON.parse(payload_json)
       instance = job_class.new
       begin
@@ -121,7 +137,7 @@ module Saci
       rescue ex
         case job_class.__saci_handle_error(ex, attempt)
         when :retry
-          execute(job_class, payload_json, attempt + 1)
+          execute_guarded(job_class, payload_json, attempt + 1)
         when :discard
           report_error(job_class.name, ex)
         else
@@ -129,6 +145,41 @@ module Saci
           raise ex
         end
       end
+    end
+
+    # In-process concurrency slots, keyed by each job's `limits_concurrency`
+    # key. The `:db` adapter honors limits through this same path (it runs
+    # claimed rows via `execute`), so a duplicate claimed while its key is
+    # held is skipped and its row resolves as usual.
+    @@concurrency_running = {} of String => Int32
+    @@concurrency_mutex = Mutex.new
+
+    # Claims a slot for `key`, holding it until `concurrency_release`.
+    # Returns false when `limit` runners already hold it (skip-if-running).
+    def self.concurrency_try_acquire(key : String, limit : Int32) : Bool
+      @@concurrency_mutex.synchronize do
+        running = @@concurrency_running[key]? || 0
+        return false if running >= limit
+        @@concurrency_running[key] = running + 1
+        true
+      end
+    end
+
+    def self.concurrency_release(key : String) : Nil
+      @@concurrency_mutex.synchronize do
+        if running = @@concurrency_running[key]?
+          if running <= 1
+            @@concurrency_running.delete(key)
+          else
+            @@concurrency_running[key] = running - 1
+          end
+        end
+      end
+    end
+
+    # Drops all held slots (spec isolation; normal runs release via ensure).
+    def self.reset_concurrency! : Nil
+      @@concurrency_mutex.synchronize { @@concurrency_running.clear }
     end
 
     # `MyJob.set(wait: 5.minutes).perform_later(args)` / `.perform_now(args)`.
@@ -174,6 +225,42 @@ module Saci
 
       def self.queue_name : String
         "default"
+      end
+
+      # No concurrency cap unless declared (nil = unlimited).
+      def self.__saci_concurrency_limit : Int32?
+        nil
+      end
+
+      def self.__saci_concurrency_key : String
+        ""
+      end
+
+      # Caps concurrent executions (`to:`) under a shared `key:` — runs that
+      # arrive while the slot is full are skipped (at-least-once everywhere,
+      # so prefer this for recurring jobs like page-cache refreshes):
+      #
+      # ```
+      # class CachePageJob < Saci::Job::Base
+      #   limits_concurrency to: 1, key: "cache-page"
+      # end
+      # ```
+      #
+      # Without `key:` the class name is used. Explicit `perform_now` always
+      # runs (the guard covers `perform_later` paths: `:inline`, `:async`
+      # and `:db`).
+      macro limits_concurrency(to = 1, key = nil)
+        def self.__saci_concurrency_limit : Int32?
+          ({{to}}).to_i32
+        end
+
+        def self.__saci_concurrency_key : String
+          {% if key.is_a?(NilLiteral) %}
+            self.name
+          {% else %}
+            ({{key}}).to_s
+          {% end %}
+        end
       end
 
       # Retries `error` up to `attempts` total tries, waiting `wait`

@@ -6,6 +6,7 @@ require "./record/errors"
 require "./record/query"
 require "./record/base"
 require "./record/migration"
+require "./record/fts"
 
 module Saci
   # ActiveRecord-equivalent ORM (crystal-db: SQLite, PostgreSQL, MySQL).
@@ -76,6 +77,11 @@ module Saci
     end
 
     class RecordNotSaved < Exception
+    end
+
+    # Raised by `dependent: :restrict_with_exception` when a record still
+    # has dependent children at destroy time (Rails-compatible).
+    class DeleteRestrictionError < Exception
     end
 
     class UnknownAttributeError < Exception
@@ -573,6 +579,56 @@ module Saci
       sets = columns.map { |c| "#{quote(c, ad)} = ?" }.join(", ")
       vals = columns.map { now } + [to_db(id, ad)] of Value
       exec_compat(db, "UPDATE #{quote(table, ad)} SET #{sets} WHERE #{quote(pk, ad)} = ?", vals)
+    end
+
+    # -- polymorphic registry ---------------------------------------------
+    # `belongs_to ... polymorphic: true` stores `<name>_type` (class name)
+    # + `<name>_id` and resolves through these batch fetchers. Every model
+    # auto-registers itself via `Base.inherited` (full name + demodulized
+    # short name), so `has_many ... as: :notifiable` targets resolve
+    # without extra wiring. Custom type strings can be registered manually:
+    #
+    # ```
+    # Saci::Record.register_polymorphic("Comment") { |ids| Comment.where(...).to_a.map(&.as(Base)) }
+    # ```
+    @@poly_fetchers = {} of String => Proc(Array(Value), Array(Base))
+    @@poly_mutex = Mutex.new
+
+    def self.register_polymorphic(name : String, &fetcher : Array(Value) -> Array(Base)) : Nil
+      @@poly_mutex.synchronize do
+        @@poly_fetchers[name] = fetcher
+        short = name.split("::").last
+        @@poly_fetchers[short] = fetcher unless @@poly_fetchers.has_key?(short)
+      end
+    end
+
+    def self.polymorphic_fetcher(type : String) : Proc(Array(Value), Array(Base))?
+      @@poly_mutex.synchronize { @@poly_fetchers[type]? || @@poly_fetchers[type.split("::").last]? }
+    end
+
+    # Single-record polymorphic load (nil id/type → nil; unknown type or
+    # missing row raises `RecordNotFound`, like a dangling `belongs_to`).
+    def self.resolve_polymorphic(type : String | Value, id : Value) : Base?
+      return nil if type.nil? || id.nil?
+      t = type.to_s
+      fetcher = polymorphic_fetcher(t) || raise RecordNotFound.new("Unknown polymorphic type '#{t}'")
+      found = fetcher.call([id] of Value)
+      found.first? || raise RecordNotFound.new("Couldn't find polymorphic #{t} with id=#{id}")
+    end
+
+    # Batch polymorphic load (`WHERE id IN (...)`, one query per type).
+    # Returns `{id_value => record}` for cache assignment.
+    def self.resolve_polymorphic_many(type : String, ids : Array(Value)) : Hash(Value, Base)
+      h = {} of Value => Base
+      return h if ids.empty?
+      fetcher = polymorphic_fetcher(type) || raise ArgumentError.new("Unknown polymorphic type '#{type}' for includes")
+      uniq_ids = ids.uniq
+      return h if uniq_ids.empty?
+      fetcher.call(uniq_ids).each do |rec|
+        pk = rec.class.__saci_primary_key
+        h[rec.__saci_get_attr(pk)] = rec
+      end
+      h
     end
 
     # Reads one result column of unknown type (raw `select` expressions,

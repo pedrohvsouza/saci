@@ -39,7 +39,11 @@ module Saci
   #
   # Segment notes:
   # * `:name` matches one path segment (`[^/]+`); it may sit inside a
-  #   larger segment (`/~:username`, `/avatars/:size.png`).
+  #   larger segment with static prefix/suffix literals anywhere in the
+  #   segment (`/~:username`, `/@:username`, `/avatars/:username_size.png`
+  #   where `.png` is a literal suffix, `/:name.json`, `:a_:b` multi-param).
+  #   The parser splits each segment on `:` keeping prefix/suffix literals
+  #   (escaped) around each `(?<name>[^/]+)` capture.
   # * `*name` matches the rest of the path (wildcard).
   # * `(...)` groups are optional: each route expands to every combination
   #   (most specific first), so `/top(/:length(/page/:page))` serves `/top`,
@@ -737,6 +741,11 @@ module Saci
     end
 
     private def self.compile_segment(seg : String, names : Array(String), constraints : Hash(String, Regex)?) : String
+      # Generalized: static prefix/suffix literals may appear anywhere
+      # around/between params in one segment. Split on ':' keeping
+      # literals (e.g. "~:username" -> "~" + param, ":a.png" -> param +
+      # ".png", ":a_:b.png" -> param + "_" + param + ".png").
+      return Regex.escape(seg) unless seg.includes?(':') || seg.includes?('*')
       return Regex.escape(seg) unless seg.includes?(':') || seg.includes?('*')
       io = IO::Memory.new
       i = 0
@@ -770,6 +779,18 @@ module Saci
         end
       end
       io.to_s
+    end
+  end
+
+  # Multidb test helper (defined here so `saci`-requiring apps get it
+  # without touching `record/` in this task): truncates every table on
+  # every connected database (primary + named). Call in `before_each`
+  # for multidb apps; single-DB apps keep using `clean_database!`.
+  module Record
+    def self.clean_all! : Nil
+      configuration_names.each do |name|
+        connected_to(name) { clean_database! }
+      end
     end
   end
 end

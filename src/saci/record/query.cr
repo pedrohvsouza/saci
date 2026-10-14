@@ -9,7 +9,7 @@ module Saci
     class Query(T)
       include Enumerable(T)
 
-      def initialize(@klass : T.class, @conditions : Array(String) = [] of String, @params : Array(Value) = [] of Value, @order : Array(String) = [] of String, @limit : Int32? = nil, @offset : Int32? = nil, @select_cols : Array(String)? = nil, @distinct_flag : Bool = false, @joins : Array(String) = [] of String, @group_cols : Array(String) = [] of String, @includes : Array(String) = [] of String, @records : Array(T)? = nil)
+      def initialize(@klass : T.class, @conditions : Array(String) = [] of String, @params : Array(Value) = [] of Value, @order : Array(String) = [] of String, @limit : Int32? = nil, @offset : Int32? = nil, @select_cols : Array(String)? = nil, @distinct_flag : Bool = false, @joins : Array(String) = [] of String, @group_cols : Array(String) = [] of String, @includes : Array(String) = [] of String, @nested_includes : Hash(String, Array(String)) = {} of String => Array(String), @records : Array(T)? = nil)
       end
 
       # Adapter of the model's database (resolved per call so
@@ -27,8 +27,8 @@ module Saci
       # Clone with overrides — every chain method funnels through here so
       # `select`/`distinct`/`joins`/`group`/`includes` survive chaining.
       # Any scope change drops preloaded `@records` (fresh SQL scope).
-      private def spawn(conditions : Array(String) = @conditions.dup, params : Array(Value) = @params.dup, order : Array(String) = @order.dup, limit : Int32? = @limit, offset : Int32? = @offset, select_cols : Array(String)? = @select_cols.try(&.dup), distinct_flag : Bool = @distinct_flag, joins : Array(String) = @joins.dup, group_cols : Array(String) = @group_cols.dup, includes : Array(String) = @includes.dup, records : Array(T)? = nil) : Query(T)
-        Query(T).new(@klass, conditions, params, order, limit, offset, select_cols, distinct_flag, joins, group_cols, includes, records)
+      private def spawn(conditions : Array(String) = @conditions.dup, params : Array(Value) = @params.dup, order : Array(String) = @order.dup, limit : Int32? = @limit, offset : Int32? = @offset, select_cols : Array(String)? = @select_cols.try(&.dup), distinct_flag : Bool = @distinct_flag, joins : Array(String) = @joins.dup, group_cols : Array(String) = @group_cols.dup, includes : Array(String) = @includes.dup, nested_includes : Hash(String, Array(String)) = @nested_includes.dup, records : Array(T)? = nil) : Query(T)
+        Query(T).new(@klass, conditions, params, order, limit, offset, select_cols, distinct_flag, joins, group_cols, includes, nested_includes, records)
       end
 
       # `where(title: "x", published: true)` — nil becomes `IS NULL`, a
@@ -151,9 +151,27 @@ module Saci
         spawn(@conditions.dup, @params.dup, @order.dup, @limit, @offset, @select_cols.try(&.dup), @distinct_flag, @joins.dup + [sql])
       end
 
+      # `joins(:story)` — symbol form resolving the association's foreign
+      # key (`belongs_to` → `target.pk = base.fk`, `has_many`/`has_one` →
+      # `target.fk = base.pk`, polymorphic `as:` adds the type condition).
+      # Unknown or unjoinable associations raise `ArgumentError`.
+      def joins(*names : Symbol) : Query(T)
+        frags = names.to_a.map do |n|
+          frag = @klass.__saci_join_sql(n.to_s)
+          if frag.nil?
+            raise ArgumentError.new("Unknown association '#{n}' for joins on #{@klass.name}")
+          end
+          frag
+        end
+        spawn(@conditions.dup, @params.dup, @order.dup, @limit, @offset, @select_cols.try(&.dup), @distinct_flag, @joins.dup + frags)
+      end
+
       # `includes(:user, :posts)` — preloads `belongs_to` / `has_many` /
       # `has_one` in one extra query each (kills N+1). Unknown association
       # names raise immediately; `has_many :through` raises at execution.
+      # Nested form `includes(story: :user)` preloads two levels:
+      # top-level assocs first, then the nested assoc on each preloaded
+      # record (grouped by concrete class, so polymorphic parents work).
       def includes : Query(T)
         self
       end
@@ -165,6 +183,26 @@ module Saci
           end
         end
         spawn(@conditions.dup, @params.dup, @order.dup, @limit, @offset, @select_cols.try(&.dup), @distinct_flag, @joins.dup, @group_cols.dup, @includes.dup + names.to_a.map(&.to_s))
+      end
+
+      def includes(**nested) : Query(T)
+        merged = @nested_includes.dup
+        nested.each do |parent, children|
+          pkey = parent.to_s
+          unless @klass.__saci_assoc_kinds.has_key?(pkey)
+            raise ArgumentError.new("Unknown association '#{pkey}' for includes on #{@klass.name}")
+          end
+          list = case children
+                 when Symbol then [children.to_s]
+                 when String then [children.to_s]
+                 when Array  then children.to_a.map(&.to_s)
+                 when Tuple  then children.to_a.map(&.to_s)
+                 else
+                   raise ArgumentError.new("includes(#{pkey}: ...) expects a Symbol or Array of Symbols (got #{children.inspect})")
+                 end
+          merged[pkey] = (merged[pkey]? || [] of String) + list
+        end
+        spawn(@conditions.dup, @params.dup, @order.dup, @limit, @offset, @select_cols.try(&.dup), @distinct_flag, @joins.dup, @group_cols.dup, @includes.dup, merged)
       end
 
       def order(field : Symbol | String, dir : Symbol = :asc) : Query(T)
@@ -179,7 +217,7 @@ module Saci
         opts.each do |field, dir|
           direction = dir.to_s.upcase == "DESC" ? "DESC" : "ASC"
           tbl = Record.quote(q.@klass.table_name, ad)
-          q = Query(T).new(q.@klass, q.@conditions.dup, q.@params.dup, q.@order.dup + ["#{tbl}.#{Record.quote(field, ad)} #{direction}"], q.@limit, q.@offset, q.@select_cols.try(&.dup), q.@distinct_flag, q.@joins.dup, q.@group_cols.dup, q.@includes.dup)
+          q = Query(T).new(q.@klass, q.@conditions.dup, q.@params.dup, q.@order.dup + ["#{tbl}.#{Record.quote(field, ad)} #{direction}"], q.@limit, q.@offset, q.@select_cols.try(&.dup), q.@distinct_flag, q.@joins.dup, q.@group_cols.dup, q.@includes.dup, q.@nested_includes.dup)
         end
         q
       end
@@ -211,10 +249,39 @@ module Saci
             results << load_indexed_row(rs, ad, col_types)
           end
         end
-        unless @includes.empty? || results.empty?
+        unless (@includes.empty? && @nested_includes.empty?) || results.empty?
           preloaded = [] of Saci::Record::Base
           results.each { |r| preloaded << r }
           @includes.each { |name| @klass.__saci_preload_assoc(preloaded, name) }
+          # Top-level parents for nested preloads (dedupe flat + nested).
+          @nested_includes.each_key do |parent|
+            unless @includes.includes?(parent)
+              @klass.__saci_preload_assoc(preloaded, parent)
+            end
+          end
+          # Second level: collect preloaded children grouped by class.
+          @nested_includes.each do |parent, children|
+            kids = [] of Saci::Record::Base
+            preloaded.each do |rec|
+              cached = rec.__saci_assoc_cache[parent]?
+              case cached
+              when Array(Saci::Record::Base)
+                cached.each { |k| kids << k }
+              when Saci::Record::Base
+                kids << cached
+              end
+            end
+            next if kids.empty?
+            grouped = kids.group_by(&.class)
+            grouped.each do |kclass, group|
+              children.each do |child|
+                unless kclass.__saci_assoc_kinds.has_key?(child)
+                  raise ArgumentError.new("Unknown association '#{child}' for includes on #{kclass.name}")
+                end
+                kclass.__saci_preload_assoc(group, child)
+              end
+            end
+          end
         end
         results
       end
@@ -326,6 +393,36 @@ module Saci
 
       def delete_all : Int64
         res = Record.exec_compat(@klass.connection, delete_sql(adapter), @params)
+        res.rows_affected
+      end
+
+      # `touch_all` / `touch_all(:viewed_at)` — bumps `updated_at` (plus any
+      # given timestamp columns) on every row in scope, skipping validations
+      # and callbacks. `time:` overrides the timestamp (default `Time.utc`).
+      # Returns the number of rows touched.
+      def touch_all(*names, time : Time? = nil) : Int64
+        ad = adapter
+        cols = [] of String
+        names.each { |x| cols << x.to_s }
+        cols.each do |c|
+          unless @klass.__saci_column_names.any? { |(n, _)| n == c }
+            raise UnknownAttributeError.new("unknown attribute '#{c}' for #{@klass.name}")
+          end
+        end
+        stamp = time || Time.utc
+        sets = [] of String
+        vals = [] of Value
+        if @klass.__saci_timestamps?
+          sets << "#{Record.quote("updated_at", ad)} = ?"
+          vals << Record.to_db(stamp, ad)
+        end
+        cols.each do |c|
+          next if c == "updated_at" && @klass.__saci_timestamps?
+          sets << "#{Record.quote(c, ad)} = ?"
+          vals << Record.to_db(stamp, ad)
+        end
+        return 0_i64 if sets.empty?
+        res = Record.exec_compat(@klass.connection, "#{update_sql(ad, sets.join(", "))}", vals + @params)
         res.rows_affected
       end
 

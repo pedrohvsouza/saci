@@ -129,8 +129,178 @@ describe "saci generate" do
 
         req = File.read("spec/requests/posts_controller_spec.cr")
         req.should contain("TestSession.serve")
-        req.should contain("/posts/index")
+        req.should contain("r.get \"/posts\", PostsController, :index")
+        req.should contain("r.get \"/posts/:id\", PostsController, :show")
+        req.should contain("app.get(\"/posts\")")
+        req.should contain("app.get(\"/posts/1\")")
       end
+    end
+  end
+
+  it "generates request specs with real verbs (create->POST, update->PATCH, destroy->DELETE)" do
+    with_tmp_app do |dir|
+      Dir.cd(dir) do
+        Saci::CLI::Generate.run(["controller", "Posts", "index", "show", "create", "update", "destroy"])
+        req = File.read("spec/requests/posts_controller_spec.cr")
+        req.should contain("r.get \"/posts\", PostsController, :index")
+        req.should contain("r.get \"/posts/:id\", PostsController, :show")
+        req.should contain("r.post \"/posts\", PostsController, :create")
+        req.should contain("r.patch \"/posts/:id\", PostsController, :update")
+        req.should contain("r.delete \"/posts/:id\", PostsController, :destroy")
+        req.should contain("app.get(\"/posts\")")
+        req.should contain("app.get(\"/posts/1\")")
+        req.should contain("app.post(\"/posts\")")
+        req.should contain("app.patch(\"/posts/1\")")
+        req.should contain("app.delete(\"/posts/1\")")
+      end
+    end
+  end
+
+  it "generates AddIndex migrations with add_index (not add_column)" do
+    with_tmp_app do |dir|
+      Dir.cd(dir) do
+        Saci::CLI::Generate.run(["migration", "AddIndexToFollows", "follower_id:integer", "--unique"])
+        migrations = Dir.glob("db/migrate/*_add_index_to_follows.cr")
+        migrations.size.should eq(1)
+        mig = File.read(migrations.first)
+        mig.should contain("add_index :follows, :follower_id, unique: true")
+        mig.should_not contain("add_column")
+        File.read("db/migrations.cr").should contain("AddIndexToFollows")
+      end
+    end
+  end
+
+  it "generates non-unique AddIndex migrations from the name pattern alone" do
+    with_tmp_app do |dir|
+      Dir.cd(dir) do
+        Saci::CLI::Generate.run(["migration", "AddIndexToFollows", "follower_id"])
+        mig = File.read(Dir.glob("db/migrate/*_add_index_to_follows.cr").first)
+        mig.should contain("add_index :follows, :follower_id")
+        mig.should_not contain("unique: true")
+        mig.should_not contain("add_column")
+      end
+    end
+  end
+
+  it "generates composite unique indexes" do
+    with_tmp_app do |dir|
+      Dir.cd(dir) do
+        Saci::CLI::Generate.run(["migration", "AddIndexToFollows", "follower_id:integer", "followed_id:integer", "--unique"])
+        mig = File.read(Dir.glob("db/migrate/*_add_index_to_follows.cr").first)
+        mig.should contain("add_index :follows, [:follower_id, :followed_id], unique: true")
+      end
+    end
+  end
+
+  it "emits add_index for --unique even with a generic AddXToY name" do
+    with_tmp_app do |dir|
+      Dir.cd(dir) do
+        Saci::CLI::Generate.run(["migration", "AddFollowedToFollows", "followed_id:integer", "--unique"])
+        mig = File.read(Dir.glob("db/migrate/*_add_followed_to_follows.cr").first)
+        mig.should contain("add_index :follows")
+        mig.should_not contain("add_column")
+      end
+    end
+  end
+
+  it "parses db:migrate --all without running crystal" do
+    parsed = Saci::CLI::Db.parse(["--all"])
+    parsed[:all].should be_true
+    parsed[:script_args].should eq(["--all"])
+
+    parsed = Saci::CLI::Db.parse([] of String)
+    parsed[:all].should be_false
+
+    parsed = Saci::CLI::Db.parse(["2", "--all"])
+    parsed[:all].should be_true
+    parsed[:script_args].should contain("2")
+    parsed[:script_args].should contain("--all")
+
+    parsed = Saci::CLI::Db.parse(["--", "--link-flags=-Lx"])
+    parsed[:crystal_flags].should eq(["--link-flags=-Lx"])
+  end
+
+  it "migrate runner template migrates all databases with --all" do
+    runner = Saci::CLI::New.migrate_runner("blog")
+    runner.should contain("--all")
+    runner.should contain("configuration_names")
+    runner.should contain("Migrated")
+  end
+
+  it "clean_all! truncates every connected database" do
+    primary_path = "/tmp/opencode/saci_clean_all_primary_#{Random.rand(1_000_000)}.db"
+    extra_path = "/tmp/opencode/saci_clean_all_extra_#{Random.rand(1_000_000)}.db"
+    begin
+      Saci::Record.connect("sqlite3://#{primary_path}")
+      # Reuse the conventional "analytics" name so later multidb specs
+      # (which assert exact configuration_names) are not polluted.
+      Saci::Record.establish_connection("analytics", "sqlite3://#{extra_path}")
+      Saci::Record.database("primary").exec("CREATE TABLE \"things\" (\"id\" INTEGER PRIMARY KEY AUTOINCREMENT, \"name\" TEXT)")
+      Saci::Record.database("analytics").exec("CREATE TABLE \"things\" (\"id\" INTEGER PRIMARY KEY AUTOINCREMENT, \"name\" TEXT)")
+      Saci::Record.database("primary").exec("INSERT INTO \"things\" (\"name\") VALUES (?)", "a")
+      Saci::Record.database("analytics").exec("INSERT INTO \"things\" (\"name\") VALUES (?)", "b")
+      Saci::Record.clean_all!
+      Saci::Record.database("primary").scalar("SELECT COUNT(*) FROM \"things\"").should eq(0)
+      Saci::Record.database("analytics").scalar("SELECT COUNT(*) FROM \"things\"").should eq(0)
+    ensure
+      begin
+        Saci::Record.database("primary").close
+      rescue
+      end
+      begin
+        Saci::Record.database("analytics").close
+      rescue
+      end
+      File.delete(primary_path) if File.exists?(primary_path)
+      File.delete(extra_path) if File.exists?(extra_path)
+      File.delete("#{primary_path}-wal") if File.exists?("#{primary_path}-wal")
+      File.delete("#{primary_path}-shm") if File.exists?("#{primary_path}-shm")
+      File.delete("#{extra_path}-wal") if File.exists?("#{extra_path}-wal")
+      File.delete("#{extra_path}-shm") if File.exists?("#{extra_path}-shm")
+    end
+  end
+
+  it "picks postgres/mysql/sqlite drivers, requires and URLs (template-level)" do
+    Saci::CLI::New.normalize_db("postgres").should eq("postgres")
+    Saci::CLI::New.normalize_db("postgresql").should eq("postgres")
+    Saci::CLI::New.normalize_db("mysql").should eq("mysql")
+    Saci::CLI::New.normalize_db("sqlite").should eq("sqlite")
+    expect_raises(Saci::CLI::Error) { Saci::CLI::New.normalize_db("oracle") }
+
+    opts = Saci::CLI::New.parse_opts(["blog", "--db=postgres"])
+    opts[:db].should eq("postgres")
+    opts = Saci::CLI::New.parse_opts(["blog", "--db", "mysql"])
+    opts[:db].should eq("mysql")
+    opts = Saci::CLI::New.parse_opts(["blog"])
+    opts[:db].should eq("sqlite")
+
+    Saci::CLI::New.shard_yml("blog", "/tmp/saci", "postgres").should contain("will/crystal-pg")
+    Saci::CLI::New.shard_yml("blog", "/tmp/saci", "mysql").should contain("crystal-mysql")
+    Saci::CLI::New.shard_yml("blog", "/tmp/saci", "sqlite").should contain("# pg:")
+
+    Saci::CLI::New.entrypoint("blog", "postgres").should contain("require \"pg\"")
+    Saci::CLI::New.entrypoint("blog", "postgres").should contain("postgres://localhost/blog_")
+    Saci::CLI::New.entrypoint("blog", "mysql").should contain("require \"mysql\"")
+    Saci::CLI::New.entrypoint("blog", "mysql").should contain("mysql://root@localhost/blog_")
+    Saci::CLI::New.entrypoint("blog", "sqlite").should contain("sqlite3://./db/blog_")
+    Saci::CLI::New.entrypoint("blog", "sqlite").should_not contain("require \"pg\"")
+
+    Saci::CLI::New.migrate_runner("blog", "postgres").should contain("require \"pg\"")
+    Saci::CLI::New.migrate_runner("blog", "postgres").should contain("postgres://localhost/blog_")
+    Saci::CLI::New.spec_helper("blog", "mysql").should contain("require \"mysql\"")
+    Saci::CLI::New.spec_helper("blog", "mysql").should contain("mysql://root@localhost/blog_test")
+  end
+
+  it "creates apps with the picked database" do
+    dir = File.join("/tmp/opencode", "saci-cli-db-pick-#{Random.rand(1_000_000)}")
+    begin
+      Saci::CLI::New.create("dbpickapp", dir: dir, skip_shards: true, skip_git: true, db: "postgres")
+      File.read(File.join(dir, "shard.yml")).should contain("will/crystal-pg")
+      File.read(File.join(dir, "src", "dbpickapp.cr")).should contain("require \"pg\"")
+      File.read(File.join(dir, "db", "migrate.cr")).should contain("--all")
+      File.read(File.join(dir, "spec", "spec_helper.cr")).should contain("postgres://localhost/dbpickapp_test")
+    ensure
+      FileUtils.rm_rf(dir)
     end
   end
 

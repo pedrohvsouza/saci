@@ -157,6 +157,84 @@ class CreateOrmDepots < Saci::Record::Migration
   end
 end
 
+class CreateOrmPolyPosts < Saci::Record::Migration
+  def change
+    create_table :orm_poly_posts do |t|
+      t.string :title
+      t.timestamps
+    end
+  end
+end
+
+class CreateOrmPolyComments < Saci::Record::Migration
+  def change
+    create_table :orm_poly_comments do |t|
+      t.string :body
+      t.timestamps
+    end
+  end
+end
+
+class CreateOrmPolyNotes < Saci::Record::Migration
+  def change
+    create_table :orm_poly_notes do |t|
+      t.string :notifiable_type
+      t.integer :notifiable_id
+      t.string :msg
+      t.timestamps
+    end
+  end
+end
+
+class CreateOrmGuilds < Saci::Record::Migration
+  def change
+    create_table :orm_guilds do |t|
+      t.string :label
+      t.timestamps
+    end
+  end
+end
+
+class CreateOrmGuildMembers < Saci::Record::Migration
+  def change
+    create_table :orm_guild_members do |t|
+      t.string :name
+      t.integer :orm_guild_id
+      t.timestamps
+    end
+  end
+end
+
+class CreateOrmStudios < Saci::Record::Migration
+  def change
+    create_table :orm_studios do |t|
+      t.string :name
+      t.timestamps
+    end
+  end
+end
+
+class CreateOrmBadges < Saci::Record::Migration
+  def change
+    create_table :orm_badges do |t|
+      t.string :label
+      t.integer :orm_studio_id
+      t.timestamps
+    end
+  end
+end
+
+class CreateOrmCoupons < Saci::Record::Migration
+  def change
+    create_table :orm_coupons do |t|
+      t.string :code
+      t.string :kind
+      t.string :handle
+      t.timestamps
+    end
+  end
+end
+
 class DropTempTable < Saci::Record::Migration
   def change
     drop_table :temp_t
@@ -378,6 +456,103 @@ class OrmPost < Saci::Record::Base
   has_many :orm_tags, through: :orm_taggings, dependent: :delete_all
 end
 
+class OrmPolyPost < Saci::Record::Base
+  column id : Int64, primary: true
+  column title : String
+  timestamps
+
+  has_many :orm_poly_notes, as: :notifiable
+end
+
+class OrmPolyComment < Saci::Record::Base
+  column id : Int64, primary: true
+  column body : String
+  timestamps
+
+  has_many :orm_poly_notes, as: :notifiable
+end
+
+class OrmPolyNote < Saci::Record::Base
+  column id : Int64, primary: true
+  column notifiable_type : String
+  column notifiable_id : Int64
+  column msg : String
+  timestamps
+
+  belongs_to :notifiable, polymorphic: true
+end
+
+class OrmGuild < Saci::Record::Base
+  column id : Int64, primary: true
+  column label : String
+  timestamps
+
+  has_many :orm_guild_members, dependent: :restrict_with_exception
+end
+
+class OrmGuildMember < Saci::Record::Base
+  column id : Int64, primary: true
+  column name : String
+  column orm_guild_id : Int64
+  timestamps
+
+  belongs_to :orm_guild
+end
+
+class OrmStudio < Saci::Record::Base
+  column id : Int64, primary: true
+  column name : String
+  timestamps
+
+  has_one :badge, class_name: "OrmBadge", foreign_key: "orm_studio_id", dependent: :restrict_with_exception
+end
+
+class OrmBadge < Saci::Record::Base
+  column id : Int64, primary: true
+  column label : String
+  column orm_studio_id : Int64
+  timestamps
+
+  belongs_to :orm_studio
+end
+
+class OrmCoupon < Saci::Record::Base
+  column id : Int64, primary: true
+  column code : String
+  column kind : String
+  column handle : String
+  timestamps
+
+  validates :code, presence: true, if: :needs_code
+  validates :handle, presence: true, unless: :skip_handle
+  validates :kind, presence: true, if: ->(r : OrmCoupon) { r.code == "special" }
+  validates :code, format: /@/, if: ->(r : OrmCoupon) { r.kind == "email" }
+  validate :code_must_be_fancy, if: :is_fancy
+  validate :handle_must_be_short, unless: ->(r : OrmCoupon) { r.kind == "skip" }
+
+  def needs_code : Bool
+    kind == "promo"
+  end
+
+  def skip_handle : Bool
+    kind == "free"
+  end
+
+  def is_fancy : Bool
+    kind == "fancy"
+  end
+
+  def code_must_be_fancy
+    errors.add(:code, "must be fancy") unless code == "fancy"
+  end
+
+  def handle_must_be_short
+    if h = handle
+      errors.add(:handle, "is too long") if h.size > 3
+    end
+  end
+end
+
 class OrmLog < Saci::Record::Base
   table "app_logs"
 
@@ -435,6 +610,14 @@ describe "Saci::Record" do
       CreateOrmBooks,
       CreateOrmCrates,
       CreateOrmDepots,
+      CreateOrmPolyPosts,
+      CreateOrmPolyComments,
+      CreateOrmPolyNotes,
+      CreateOrmGuilds,
+      CreateOrmGuildMembers,
+      CreateOrmStudios,
+      CreateOrmBadges,
+      CreateOrmCoupons,
     ] of Saci::Record::Migration.class)
   end
 
@@ -1036,5 +1219,166 @@ describe "Saci::Record" do
     OrmUser.create!(name: "Again", email: "again@x.io")
     OrmUser.delete_all.should eq(1)
     OrmUser.count.should eq(0)
+  end
+
+  it "supports polymorphic belongs_to and has_many as:" do
+    post = OrmPolyPost.create!(title: "pp1")
+    comment = OrmPolyComment.create!(body: "pc1")
+    n1 = OrmPolyNote.create!(msg: "pm1", notifiable_type: "OrmPolyPost", notifiable_id: post.id)
+    n2 = OrmPolyNote.create!(msg: "pm2", notifiable_type: "OrmPolyComment", notifiable_id: comment.id)
+
+    n1.notifiable.not_nil!.as(OrmPolyPost).title.should eq("pp1")
+    n2.notifiable.not_nil!.as(OrmPolyComment).body.should eq("pc1")
+    post.orm_poly_notes.map(&.msg).compact.sort.should eq(["pm1"])
+    comment.orm_poly_notes.map(&.msg).compact.sort.should eq(["pm2"])
+
+    # Association setter stores type + id.
+    n3 = OrmPolyNote.new(msg: "pm3")
+    (n3.notifiable = comment).should_not be_nil
+    n3.save.should be_true
+    n3.notifiable_type.should eq("OrmPolyComment")
+    n3.notifiable_id.should eq(comment.id)
+    n3.notifiable.not_nil!.as(OrmPolyComment).body.should eq("pc1")
+
+    # Nil type/id → nil; dangling rows raise like belongs_to.
+    OrmPolyNote.new(msg: "nil-note").notifiable.should be_nil
+    dangling = OrmPolyNote.new(msg: "dang", notifiable_type: "OrmPolyPost", notifiable_id: 999999)
+    expect_raises(Saci::Record::RecordNotFound) { dangling.notifiable }
+
+    # Preloading kills N+1 (one query per type, cache populated).
+    notes = OrmPolyNote.where("msg LIKE 'pm%'").includes(:notifiable).order(:msg).to_a
+    notes.size.should eq(3)
+    notes.each { |n| n.__saci_assoc_cache.has_key?("notifiable").should be_true }
+    notes.map { |n| n.notifiable.not_nil!.class.name }.sort.should eq(["OrmPolyComment", "OrmPolyComment", "OrmPolyPost"])
+
+    posts = OrmPolyPost.where(title: "pp1").includes(:orm_poly_notes).to_a
+    posts.first.__saci_assoc_cache.has_key?("orm_poly_notes").should be_true
+    posts.first.orm_poly_notes.map(&.msg).compact.should contain("pm1")
+
+    expect_raises(ArgumentError) { OrmPolyNote.joins(:notifiable).to_a }
+  end
+
+  it "preloads nested includes to two levels" do
+    u = OrmUser.create!(name: "NestUser", email: "nest2@x.io")
+    p = OrmPost.create!(title: "nest-p2", views: 1, published: true, orm_user_id: u.id)
+    OrmTagging.create!(orm_post_id: p.id, orm_tag_id: OrmTag.create!(tag: "nest-tag2").id)
+
+    # belongs_to chain: tagging -> post -> user.
+    rows = OrmTagging.where(orm_post_id: p.id).includes(orm_post: :orm_user).to_a
+    rows.size.should eq(1)
+    rows.first.__saci_assoc_cache.has_key?("orm_post").should be_true
+    rows.first.orm_post.not_nil!.__saci_assoc_cache.has_key?("orm_user").should be_true
+    rows.first.orm_post.not_nil!.orm_user.not_nil!.name.should eq("NestUser")
+
+    # has_many chain: user -> posts -> user.
+    owners = OrmUser.where(email: "nest2@x.io").includes(orm_posts: :orm_user).to_a
+    owners.first.__saci_assoc_cache.has_key?("orm_posts").should be_true
+    first_post = owners.first.orm_posts.to_a.first
+    first_post.__saci_assoc_cache.has_key?("orm_user").should be_true
+    first_post.orm_user.not_nil!.name.should eq("NestUser")
+
+    expect_raises(ArgumentError) { OrmTagging.includes(orm_post: :bogus).to_a }
+    expect_raises(ArgumentError) { OrmTagging.includes(:bogus).to_a }
+  end
+
+  it "restricts destroy with dependent: :restrict_with_exception" do
+    g = OrmGuild.create!(label: "restrict-g")
+    m = OrmGuildMember.create!(name: "gm1", orm_guild_id: g.id)
+    expect_raises(Saci::Record::DeleteRestrictionError) { g.destroy }
+    OrmGuild.exists?(id: g.id).should be_true
+    m.destroy.should be_true
+    g.destroy.should be_true
+    OrmGuild.exists?(id: g.id).should be_false
+
+    s = OrmStudio.create!(name: "restrict-s")
+    b = OrmBadge.create!(label: "rb1", orm_studio_id: s.id)
+    expect_raises(Saci::Record::DeleteRestrictionError) { s.destroy }
+    OrmStudio.exists?(id: s.id).should be_true
+    b.destroy.should be_true
+    s.destroy.should be_true
+  end
+
+  it "supports if:/unless: conditions on validates and validate" do
+    # Symbol if: skips when false, runs when true.
+    OrmCoupon.new(code: nil, kind: "other", handle: "ok").valid?.should be_true
+    bad = OrmCoupon.new(code: nil, kind: "promo", handle: "ok")
+    bad.valid?.should be_false
+    bad.errors["code"].should contain("can't be blank")
+
+    # Symbol unless: runs when false, skips when true.
+    OrmCoupon.new(code: "c", kind: "free", handle: nil).valid?.should be_true
+    bad2 = OrmCoupon.new(code: "c", kind: "other", handle: nil)
+    bad2.valid?.should be_false
+    bad2.errors["handle"].should contain("can't be blank")
+
+    # Proc if: with record arg.
+    OrmCoupon.new(code: "other", kind: nil, handle: "ok").valid?.should be_true
+    bad3 = OrmCoupon.new(code: "special", kind: nil, handle: "ok")
+    bad3.valid?.should be_false
+    bad3.errors["kind"].should contain("can't be blank")
+
+    # Proc if: on format (only email kind validates format).
+    OrmCoupon.new(code: "plain", kind: "other", handle: "ok").valid?.should be_true
+    bad4 = OrmCoupon.new(code: "plain", kind: "email", handle: "ok")
+    bad4.valid?.should be_false
+    bad4.errors["code"].should contain("is invalid")
+    OrmCoupon.new(code: "a@b", kind: "email", handle: "ok").valid?.should be_true
+
+    # Symbol if: on custom validate.
+    OrmCoupon.new(code: "fancy", kind: "fancy", handle: "ok").valid?.should be_true
+    bad5 = OrmCoupon.new(code: "wrong", kind: "fancy", handle: "ok")
+    bad5.valid?.should be_false
+    bad5.errors["code"].should contain("must be fancy")
+    OrmCoupon.new(code: "wrong", kind: "other", handle: "ok").valid?.should be_true
+
+    # Proc unless: on custom validate block.
+    OrmCoupon.new(code: "c", kind: "skip", handle: "way-too-long").valid?.should be_true
+    bad6 = OrmCoupon.new(code: "c", kind: "other", handle: "way-too-long")
+    bad6.valid?.should be_false
+    bad6.errors["handle"].should contain("is too long")
+  end
+
+  it "supports symbol-form joins alongside string joins" do
+    u = OrmUser.create!(name: "SymJoin", email: "symjoin@x.io")
+    OrmPost.create!(title: "sym-j1", views: 1, published: true, orm_user_id: u.id)
+
+    OrmPost.joins(:orm_user).where("orm_users.email = ?", "symjoin@x.io").map(&.title).should eq(["sym-j1"])
+    OrmUser.joins(:orm_posts).where("orm_posts.title = ?", "sym-j1").map(&.name).compact.should eq(["SymJoin"])
+    OrmTagging.joins(:orm_post).where("orm_posts.title = ?", "sym-j1").to_a.size.should be >= 0
+
+    # String joins still work and chain with symbol joins.
+    OrmPost.joins(:orm_user).joins("INNER JOIN orm_users u2 ON u2.id = orm_posts.orm_user_id").where("orm_users.email = ?", "symjoin@x.io").map(&.title).should eq(["sym-j1"])
+
+    expect_raises(ArgumentError) { OrmPost.joins(:bogus).to_a }
+  end
+
+  it "supports reset_counters, update_counter and touch_all" do
+    shelf = OrmShelf.create!(label: "polish")
+    b1 = OrmBook.create!(title: "pb1", orm_shelf_id: shelf.id)
+    b2 = OrmBook.create!(title: "pb2", orm_shelf_id: shelf.id)
+    shelf.reload.orm_books_count.should eq(2)
+
+    # update_counter (class + instance + plural).
+    OrmShelf.update_counter(shelf.id, :orm_books_count, -1).should be_true
+    shelf.reload.orm_books_count.should eq(1)
+    shelf.update_counter(:orm_books_count, 2).should be_true
+    shelf.reload.orm_books_count.should eq(3)
+    OrmShelf.update_counters(shelf.id, {orm_books_count: -1}).should be_true
+    shelf.reload.orm_books_count.should eq(2)
+
+    # reset_counters recounts from the association.
+    shelf.update_columns({orm_books_count: 99})
+    shelf.reload.orm_books_count.should eq(99)
+    OrmShelf.reset_counters(shelf.id, :orm_books).should be_true
+    shelf.reload.orm_books_count.should eq(2)
+    expect_raises(Saci::Record::UnknownAttributeError) { OrmShelf.reset_counters(shelf.id, :bogus) }
+    expect_raises(Saci::Record::UnknownAttributeError) { OrmShelf.update_counter(shelf.id, :bogus, 1) }
+
+    # touch_all bumps updated_at without callbacks/validations.
+    shelf.update_columns({updated_at: Time.utc(2020, 1, 1)})
+    OrmShelf.where(id: shelf.id).touch_all.should eq(1)
+    shelf.reload.updated_at.not_nil!.year.should eq(Time.utc.year)
+    OrmBook.where(orm_shelf_id: shelf.id).touch_all.should eq(2)
+    expect_raises(Saci::Record::UnknownAttributeError) { OrmShelf.where(id: shelf.id).touch_all(:bogus_col) }
   end
 end

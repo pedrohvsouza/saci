@@ -139,12 +139,38 @@ module Saci
 
         puts "Add routes to your router, e.g.:"
         actions.each do |a|
-          case a
-          when "create"  then puts "  r.post \"/#{Util.file_name(base)}\", #{class_name}, :create"
-          when "update"  then puts "  r.put \"/#{Util.file_name(base)}/:id\", #{class_name}, :update"
-          when "destroy" then puts "  r.delete \"/#{Util.file_name(base)}/:id\", #{class_name}, :destroy"
-          else                puts "  r.get \"/#{Util.file_name(base)}/#{a}\", #{class_name}, :#{a}"
-          end
+          puts "  #{controller_route_for(Util.file_name(base), class_name, a)}"
+        end
+      end
+
+      # RESTful route line per action (single source of truth for hints
+      # and generated request specs): index/show/new/edit are GET,
+      # create is POST, update is PATCH, destroy is DELETE.
+      def self.controller_route_for(base_path : String, class_name : String, action : String) : String
+        case action
+        when "index"   then "r.get \"/#{base_path}\", #{class_name}, :index"
+        when "show"    then "r.get \"/#{base_path}/:id\", #{class_name}, :show"
+        when "new"     then "r.get \"/#{base_path}/new\", #{class_name}, :new"
+        when "edit"    then "r.get \"/#{base_path}/:id/edit\", #{class_name}, :edit"
+        when "create"  then "r.post \"/#{base_path}\", #{class_name}, :create"
+        when "update"  then "r.patch \"/#{base_path}/:id\", #{class_name}, :update"
+        when "destroy" then "r.delete \"/#{base_path}/:id\", #{class_name}, :destroy"
+        else                "r.get \"/#{base_path}/#{action}\", #{class_name}, :#{action}"
+        end
+      end
+
+      # Real HTTP verb + path per action for generated request specs
+      # (create->POST, update->PATCH, destroy->DELETE; rest GET).
+      def self.controller_request_for(base_path : String, action : String) : Tuple(String, String)
+        case action
+        when "index"   then {"get", "/#{base_path}"}
+        when "show"    then {"get", "/#{base_path}/1"}
+        when "new"     then {"get", "/#{base_path}/new"}
+        when "edit"    then {"get", "/#{base_path}/1/edit"}
+        when "create"  then {"post", "/#{base_path}"}
+        when "update"  then {"patch", "/#{base_path}/1"}
+        when "destroy" then {"delete", "/#{base_path}/1"}
+        else                {"get", "/#{base_path}/#{action}"}
         end
       end
 
@@ -160,12 +186,14 @@ module Saci
       end
 
       def self.controller_spec_source(base : String, class_name : String, actions : Array(String)) : String
-        routes = actions.map { |a| "      r.get \"/#{Util.file_name(base)}/#{a}\", #{class_name}, :#{a}" }.join("\n")
+        base_path = Util.file_name(base)
+        routes = actions.map { |a| "      #{controller_route_for(base_path, class_name, a)}" }.join("\n")
         tests = actions.map do |a|
+          verb, path = controller_request_for(base_path, a)
           <<-TEST
             it "serves #{a}" do
               Saci::TestSession.serve(router) do |app|
-                resp = app.get("/#{Util.file_name(base)}/#{a}")
+                resp = app.#{verb}("#{path}")
                 resp.status_code.should eq(200)
               end
             end
@@ -191,20 +219,89 @@ module Saci
       # -- migration ---------------------------------------------------------------
 
       def self.migration(args : Array(String)) : Nil
-        raw_name = args.shift? || raise Error.new("Usage: saci generate migration Name [field:type ...]")
+        raw_name = args.shift? || raise Error.new("Usage: saci generate migration Name [field:type ...] [--unique]")
         class_name = Util.class_name(Util.file_name(raw_name))
         raise Error.new("Bad migration name '#{raw_name}'. Use CamelCase (e.g. AddBioToUsers).") unless /\A[A-Z][A-Za-z0-9]*\z/.matches?(class_name)
-        fields = parse_fields(args)
+        unique, remaining = extract_unique_flag(args)
         ensure_app_layout!
 
-        if m = /\AAdd(.+)To(.+)\z/.match(class_name)
+        # `AddIndex...` name pattern (or --unique) emits add_index, not
+        # add_column: `saci g migration AddIndexToFollows follower_id --unique`
+        if m = /\AAddIndexTo(.+)\z/.match(class_name)
+          table = Record::Inflector.underscore(m[1])
+          cols = parse_index_columns(remaining)
+          raise Error.new("AddIndex migration '#{class_name}' needs at least one column (e.g. saci g migration #{class_name} follower_id).") if cols.empty?
+          create_migration_file(class_name, add_index_source(class_name, table, cols, unique))
+        elsif m = /\AAddIndex(.+)To(.+)\z/.match(class_name)
+          table = Record::Inflector.underscore(m[2])
+          cols = parse_index_columns(remaining)
+          cols = [Record::Inflector.underscore(m[1])] if cols.empty?
+          create_migration_file(class_name, add_index_source(class_name, table, cols, unique))
+        elsif unique
+          if m2 = /\AAdd(.+)To(.+)\z/.match(class_name)
+            table = Record::Inflector.underscore(m2[2])
+            cols = parse_index_columns(remaining)
+            raise Error.new("Index migration '#{class_name}' with --unique needs at least one column.") if cols.empty?
+            create_migration_file(class_name, add_index_source(class_name, table, cols, unique))
+          else
+            raise Error.new("--unique needs an Add...To... migration name (e.g. AddIndexToFollows follower_id --unique).")
+          end
+        elsif m = /\AAdd(.+)To(.+)\z/.match(class_name)
           # m[2] is already plural ("Users") — underscore only, no re-pluralize.
           table = Record::Inflector.underscore(m[2])
+          fields = parse_fields(remaining)
           create_migration_file(class_name, add_columns_source(class_name, table, fields))
         else
+          # Non-Add names still validate field syntax when given.
+          parse_fields(remaining) unless remaining.empty?
           create_migration_file(class_name, empty_migration_source(class_name))
           puts "note: empty change — fill in up/down or reversible operations."
         end
+      end
+
+      # Splits `--unique` / `--unique=true|false` out of migration fields.
+      def self.extract_unique_flag(args : Array(String)) : Tuple(Bool, Array(String))
+        unique = false
+        remaining = [] of String
+        args.each do |a|
+          if a == "--unique"
+            unique = true
+          elsif a.starts_with?("--unique=")
+            v = a.split("=", 2)[1].downcase
+            unique = (v == "true" || v == "1")
+          else
+            remaining << a
+          end
+        end
+        {unique, remaining}
+      end
+
+      # Index columns accept bare names (`follower_id`) or `name:type`
+      # (type is validated but ignored — indexes need only the column).
+      def self.parse_index_columns(raw : Array(String)) : Array(String)
+        raw.map do |f|
+          if m = FIELD_RE.match(f)
+            type = m[2]
+            raise Error.new("Unknown type '#{type}' in field '#{f}'. Valid: #{CRYSTAL_TYPES.keys.join(", ")}.") unless CRYSTAL_TYPES.has_key?(type)
+            m[1]
+          elsif /\A[a-z][a-z0-9_]*\z/.matches?(f)
+            f
+          else
+            raise Error.new("Bad column '#{f}'. Expected name or name:type (types: #{CRYSTAL_TYPES.keys.join(", ")}).")
+          end
+        end
+      end
+
+      def self.add_index_source(class_name : String, table : String, columns : Array(String), unique : Bool) : String
+        cols_src = columns.size == 1 ? ":#{columns.first}" : "[#{columns.map { |c| ":#{c}" }.join(", ")}]"
+        opts = unique ? ", unique: true" : ""
+        <<-CRYSTAL
+        class #{class_name} < Saci::Record::Migration
+          def change
+            add_index :#{table}, #{cols_src}#{opts}
+          end
+        end
+        CRYSTAL
       end
 
       def self.create_table_source(class_name : String, table : String, fields : Array(Field)) : String

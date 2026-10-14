@@ -136,8 +136,28 @@ module Saci
           super
         end
 
+        def self.__saci_join_sql(assoc_name : String) : String?
+          super
+        end
+
+        def self.__saci_reset_counter(id : Saci::Record::Value, assoc_name : String) : Bool
+          super
+        end
+
         def __saci_apply_defaults : Nil
           super
+        end
+
+        # Auto-register every model for polymorphic resolution (full name +
+        # short name). Batch fetcher runs one `WHERE pk IN (...)` query.
+        Saci::Record.register_polymorphic({{@type.name.stringify}}) do |ids|
+          if ids.empty?
+            [] of Saci::Record::Base
+          else
+            ad = Saci::Record.adapter_of({{@type}}.connection)
+            ph = Array(String).new(ids.size, "?").join(", ")
+            {{@type}}.where(Saci::Record.quote({{@type}}.primary_key_name, ad) + " IN (" + ph + ")", ids).to_a.map { |r| r.as(Saci::Record::Base) }
+          end
         end
       end
 
@@ -342,6 +362,18 @@ module Saci
       # delegates the rest via `previous_def`.
       def self.__saci_preload_assoc(records : Array(Saci::Record::Base), assoc_name : String) : Nil
         raise ArgumentError.new("includes() cannot preload '#{assoc_name}' on #{self.name} (only belongs_to/has_many/has_one; has_many :through is not supported)")
+      end
+
+      # Symbol-form `joins(:assoc)` fragment for one association, or nil when
+      # unknown (each association macro prepends its branch via previous_def).
+      def self.__saci_join_sql(assoc_name : String) : String?
+        nil
+      end
+
+      # Resets a `counter_cache` column for one `has_many` association.
+      # Returns true when handled, false to delegate via `previous_def`.
+      def self.__saci_reset_counter(id : Value, assoc_name : String) : Bool
+        false
       end
 
       def __saci_apply_defaults : Nil
@@ -816,8 +848,16 @@ module Saci
         all.joins(sql)
       end
 
+      def self.joins(*names : Symbol) : Query(self)
+        all.joins(*names)
+      end
+
       def self.includes(*names : Symbol) : Query(self)
         all.includes(*names)
+      end
+
+      def self.includes(**nested) : Query(self)
+        all.includes(**nested)
       end
 
       def self.sum(col : String | Symbol) : Float64
@@ -900,9 +940,75 @@ module Saci
         true
       end
 
+      # -- counters & touching ------------------------------------------------
+      # `update_counter(id, :views, 1)` / `update_counters(id, {views: 1})` —
+      # atomic `COALESCE(col,0) + delta` writes, skipping validations and
+      # callbacks (like Rails). `update_counter` also exists on instances.
+      def self.update_counter(id : Value, column : String | Symbol, delta : Int64 = 1_i64) : Bool
+        col = column.to_s
+        unless __saci_column_names.any? { |(n, _)| n == col }
+          raise UnknownAttributeError.new("unknown attribute '#{col}' for #{self}")
+        end
+        Record.update_counter(connection, table_name, __saci_primary_key, id, col, delta)
+        true
+      end
+
+      def self.update_counters(id : Value, counters : Hash(String | Symbol, Int)) : Bool
+        counters.each do |col, delta|
+          update_counter(id, col.to_s, delta.to_i64)
+        end
+        true
+      end
+
+      def self.update_counters(id : Value, counters : NamedTuple) : Bool
+        counters.each do |col, delta|
+          update_counter(id, col.to_s, delta.to_i64)
+        end
+        true
+      end
+
+      def self.update_counters(id : Value, **counters : Int) : Bool
+        counters.each do |col, delta|
+          update_counter(id, col.to_s, delta.to_i64)
+        end
+        true
+      end
+
+      def update_counter(column : String | Symbol, delta : Int64 = 1_i64) : Bool
+        pk = __saci_get_attr(self.class.__saci_primary_key)
+        raise RecordNotSaved.new("Cannot update_counter on a new #{self.class} record") if pk.nil?
+        self.class.update_counter(pk, column, delta)
+      end
+
+      # `reset_counters(id, :orm_books)` — recounts each `has_many`
+      # association and writes the `<child_table>_count` (or
+      # `<assoc>_count` fallback) column. Raises `UnknownAttributeError`
+      # when the association or counter column is unknown.
+      def self.reset_counters(id : Value, *counters : String | Symbol) : Bool
+        raise ArgumentError.new("reset_counters requires at least one association") if counters.empty?
+        counters.each do |assoc|
+          name = assoc.to_s
+          unless __saci_assoc_kinds.has_key?(name)
+            raise UnknownAttributeError.new("unknown association '#{name}' for #{self}")
+          end
+          handled = __saci_reset_counter(id, name)
+          unless handled
+            raise UnknownAttributeError.new("reset_counters: association '#{name}' on #{self} does not support counter reset (only has_many)")
+          end
+        end
+        true
+      end
+
+      # `touch_all` — bumps `updated_at` (plus optional extra timestamp
+      # columns) on every row, skipping validations and callbacks. Returns
+      # the number of rows touched.
+      def self.touch_all(*names, time : Time? = nil) : Int64
+        all.touch_all(*names, time: time)
+      end
+
       # -- validations ------------------------------------------------------
 
-      macro validates(col, presence = nil, min_length = nil, max_length = nil, length = nil, format = nil, uniqueness = nil, inclusion = nil, numericality = nil, allow_nil = nil, allow_blank = nil, on = nil)
+      macro validates(col, presence = nil, min_length = nil, max_length = nil, length = nil, format = nil, uniqueness = nil, inclusion = nil, numericality = nil, allow_nil = nil, allow_blank = nil, on = nil, **_saci_cond)
         # -- macro-time normalization ------------------------------------
         {% if on %}
           {% on_s = on.id.stringify %}
@@ -1024,6 +1130,34 @@ module Saci
             if __saci_validation_context != {{on}}
               return
             end
+          {% end %}
+          {% _saci_if = _saci_cond[:if] %}
+          {% _saci_unless = _saci_cond[:unless] %}
+          {% unless _saci_if.is_a?(NilLiteral) %}
+            {% if _saci_if.is_a?(SymbolLiteral) %}
+              return unless self.{{_saci_if.id}}
+            {% elsif _saci_if.is_a?(ProcLiteral) %}
+              {% if _saci_if.args.size == 0 %}
+                return unless ({{_saci_if}}).call
+              {% else %}
+                return unless ({{_saci_if}}).call(self)
+              {% end %}
+            {% else %}
+              {% raise "validates #{col}: if: must be a Symbol or Proc (got #{_saci_if})" %}
+            {% end %}
+          {% end %}
+          {% unless _saci_unless.is_a?(NilLiteral) %}
+            {% if _saci_unless.is_a?(SymbolLiteral) %}
+              return if self.{{_saci_unless.id}}
+            {% elsif _saci_unless.is_a?(ProcLiteral) %}
+              {% if _saci_unless.args.size == 0 %}
+                return if ({{_saci_unless}}).call
+              {% else %}
+                return if ({{_saci_unless}}).call(self)
+              {% end %}
+            {% else %}
+              {% raise "validates #{col}: unless: must be a Symbol or Proc (got #{_saci_unless})" %}
+            {% end %}
           {% end %}
           {% if presence %}
             %present{{col.id}} = self.{{col.id}}
@@ -1172,7 +1306,9 @@ module Saci
       # Custom validation method(s) (`validate :check_something`, multiple
       # names, optional `on:`) or a block (`validate { errors.add(...) }`,
       # `|record|` optional). Methods report via `errors.add`.
-      macro validate(*names, on = nil, &block)
+      # `if:`/`unless:` take a method name Symbol or a Proc (`->(r) { ... }`
+      # with one arg receives the record, zero-arg is called bare).
+      macro validate(*names, on = nil, **_saci_cond, &block)
         {% if on %}
           {% on_s = on.id.stringify %}
           {% unless on_s == "create" || on_s == "update" %}
@@ -1181,6 +1317,34 @@ module Saci
         {% end %}
         def __saci_run_validations(errors : Saci::Record::Errors) : Nil
           previous_def
+          {% _saci_if = _saci_cond[:if] %}
+          {% _saci_unless = _saci_cond[:unless] %}
+          {% unless _saci_if.is_a?(NilLiteral) %}
+            {% if _saci_if.is_a?(SymbolLiteral) %}
+              return unless self.{{_saci_if.id}}
+            {% elsif _saci_if.is_a?(ProcLiteral) %}
+              {% if _saci_if.args.size == 0 %}
+                return unless ({{_saci_if}}).call
+              {% else %}
+                return unless ({{_saci_if}}).call(self)
+              {% end %}
+            {% else %}
+              {% raise "validate: if: must be a Symbol or Proc" %}
+            {% end %}
+          {% end %}
+          {% unless _saci_unless.is_a?(NilLiteral) %}
+            {% if _saci_unless.is_a?(SymbolLiteral) %}
+              return if self.{{_saci_unless.id}}
+            {% elsif _saci_unless.is_a?(ProcLiteral) %}
+              {% if _saci_unless.args.size == 0 %}
+                return if ({{_saci_unless}}).call
+              {% else %}
+                return if ({{_saci_unless}}).call(self)
+              {% end %}
+            {% else %}
+              {% raise "validate: unless: must be a Symbol or Proc" %}
+            {% end %}
+          {% end %}
           {% if on %}
             if __saci_validation_context == {{on}}
               {% for n in names %}
@@ -1467,7 +1631,95 @@ module Saci
       # (a Symbol/String names the column explicitly); `touch: true` bumps
       # the parent's `updated_at` on save and destroy (`touch: :col` bumps
       # that column too).
-      macro belongs_to(name, class_name = nil, foreign_key = nil, counter_cache = nil, touch = nil)
+      macro belongs_to(name, class_name = nil, foreign_key = nil, counter_cache = nil, touch = nil, polymorphic = nil)
+        {% if polymorphic %}
+          {% type_col = "#{name.id}_type" %}
+          {% id_col = "#{name.id}_id" %}
+          # Polymorphic `belongs_to :notifiable, polymorphic: true` — reads
+          # `<name>_type` (class name) + `<name>_id` and resolves through the
+          # `Saci::Record` polymorphic registry (every model auto-registers).
+          # Nil type/id → nil; dangling rows raise `RecordNotFound`.
+          def {{name.id}} : Saci::Record::Base?
+            if __saci_assoc_cache.has_key?({{name.id.stringify}})
+              return __saci_assoc_cache[{{name.id.stringify}}].as(Saci::Record::Base?)
+            end
+            t = __saci_get_attr({{type_col}})
+            i = __saci_get_attr({{id_col}})
+            if t.nil? || i.nil?
+              nil
+            else
+              Saci::Record.resolve_polymorphic(t.to_s, i)
+            end
+          end
+
+          def {{name.id}}=(obj : Saci::Record::Base?) : Saci::Record::Base?
+            if obj.nil?
+              __saci_set_attr({{type_col}}, nil)
+              __saci_set_attr({{id_col}}, nil)
+            else
+              __saci_set_attr({{type_col}}, obj.class.name)
+              pk = obj.__saci_get_attr(obj.class.__saci_primary_key)
+              __saci_set_attr({{id_col}}, pk)
+            end
+            obj
+          end
+
+          def self.__saci_preload_{{name.id}}(records : Array(Saci::Record::Base)) : Nil
+            by_type = {} of String => Array(Saci::Record::Base)
+            ids_by_type = {} of String => Array(Saci::Record::Value)
+            records.each do |rec|
+              t = rec.__saci_get_attr({{type_col}})
+              i = rec.__saci_get_attr({{id_col}})
+              next if t.nil? || i.nil?
+              ts = t.to_s
+              (by_type[ts] ||= [] of Saci::Record::Base) << rec
+              (ids_by_type[ts] ||= [] of Saci::Record::Value) << i
+            end
+            ids_by_type.each do |ts, ids|
+              found = Saci::Record.resolve_polymorphic_many(ts, ids)
+              owners = by_type[ts]
+              owners.each do |rec|
+                iid = rec.__saci_get_attr({{id_col}})
+                if iid.nil?
+                  rec.__saci_set_assoc({{name.id.stringify}}, nil)
+                elsif hit = found[iid]?
+                  rec.__saci_set_assoc({{name.id.stringify}}, hit)
+                end
+              end
+            end
+            records.each do |rec|
+              unless rec.__saci_assoc_cache.has_key?({{name.id.stringify}})
+                t = rec.__saci_get_attr({{type_col}})
+                i = rec.__saci_get_attr({{id_col}})
+                if t.nil? || i.nil?
+                  rec.__saci_set_assoc({{name.id.stringify}}, nil)
+                end
+              end
+            end
+          end
+
+          def self.__saci_preload_assoc(records : Array(Saci::Record::Base), assoc_name : String) : Nil
+            if assoc_name == {{name.id.stringify}}
+              __saci_preload_{{name.id}}(records)
+            else
+              previous_def
+            end
+          end
+
+          def self.__saci_assoc_kinds : Hash(String, Symbol)
+            %kinds = previous_def.dup
+            %kinds[{{name.id.stringify}}] = :belongs_to
+            %kinds
+          end
+
+          def self.__saci_join_sql(assoc_name : String) : String?
+            if assoc_name == {{name.id.stringify}}
+              raise ArgumentError.new("joins(:{{name.id}}) is not supported on polymorphic belongs_to (no single target table)")
+            else
+              previous_def
+            end
+          end
+        {% else %}
         {% k = (class_name ? class_name.id.stringify : name.id.stringify.camelcase).id %}
         {% fk = (foreign_key ? foreign_key.id.stringify : "#{name.id}_id").id %}
         {% fk_str = (foreign_key ? foreign_key.id.stringify : "#{name.id}_id") %}
@@ -1573,6 +1825,20 @@ module Saci
           %kinds[{{name.id.stringify}}] = :belongs_to
           %kinds
         end
+
+        def self.__saci_join_sql(assoc_name : String) : String?
+          if assoc_name == {{name.id.stringify}}
+            ad = Saci::Record.adapter_of(self.connection)
+            base = Saci::Record.quote(self.table_name, ad)
+            target = Saci::Record.quote({{k}}.table_name, ad)
+            target_pk = Saci::Record.quote({{k}}.primary_key_name, ad)
+            base_fk = Saci::Record.quote({{fk_str}}, ad)
+            "INNER JOIN " + target + " ON " + target + "." + target_pk + " = " + base + "." + base_fk
+          else
+            previous_def
+          end
+        end
+        {% end %}
       end
 
       # `has_many :posts` returns a chainable `Query`, Rails-relation-like:
@@ -1591,11 +1857,107 @@ module Saci
       # the value (`WHERE (""user_id"" = ?)`). String `+` keeps it runtime.
       # Likewise, bind macro strings with single `.stringify`, never
       # `.stringify.stringify` (the latter bakes quote chars into the value).
-      macro has_many(name, class_name = nil, foreign_key = nil, through = nil, source = nil, dependent = nil)
+      macro has_many(name, class_name = nil, foreign_key = nil, through = nil, source = nil, dependent = nil, **_saci_opts)
         {% n = name.id.stringify %}
         {% sing = n.ends_with?("ies") ? n[0...-3] + "y" : (n.ends_with?("s") ? n[0...-1] : n) %}
         {% k = (class_name ? class_name.id.stringify : sing.camelcase).id %}
-        {% if through %}
+        {% as_opt = _saci_opts[:as] %}
+        {% if as_opt %}
+          {% iface = as_opt.id.stringify %}
+          {% poly_fk = iface + "_id" %}
+          {% poly_type = iface + "_type" %}
+          def {{name.id}} : Saci::Record::Query({{k}})
+            if __saci_assoc_cache.has_key?({{n}})
+              cached = __saci_assoc_cache[{{n}}].as(Array(Saci::Record::Base)).map { |el| el.as({{k}}) }
+              had = Saci::Record.adapter_of(self.class.connection)
+              tval = self.class.name
+              return {{k}}.where(Saci::Record.quote({{poly_fk}}, had) + " = ? AND " + Saci::Record.quote({{poly_type}}, had) + " = ?", __saci_get_attr(self.class.__saci_primary_key), tval).__saci_with_records(cached)
+            end
+            pkval = __saci_get_attr(self.class.__saci_primary_key)
+            if pkval.nil?
+              {{k}}.where("1 = 0")
+            else
+              had = Saci::Record.adapter_of(self.class.connection)
+              tval = self.class.name
+              {{k}}.where(Saci::Record.quote({{poly_fk}}, had) + " = ? AND " + Saci::Record.quote({{poly_type}}, had) + " = ?", pkval, tval)
+            end
+          end
+
+          def self.__saci_preload_{{name.id}}(records : Array(Saci::Record::Base)) : Nil
+            grouped = {} of Saci::Record::Value => Array(Saci::Record::Base)
+            owner_pks = [] of Saci::Record::Value
+            records.each do |rec|
+              opk = rec.__saci_get_attr(__saci_primary_key)
+              owner_pks << opk unless opk.nil?
+            end
+            unless owner_pks.empty?
+              puniq = owner_pks.uniq
+              pph = Array(String).new(puniq.size, "?").join(", ")
+              phad = Saci::Record.adapter_of({{k}}.connection)
+              tname = self.name
+              binds = puniq.dup
+              binds << tname
+              {{k}}.where(Saci::Record.quote({{poly_fk}}, phad) + " IN (" + pph + ") AND " + Saci::Record.quote({{poly_type}}, phad) + " = ?", binds).to_a.each do |t|
+                tfk = t.__saci_get_attr({{poly_fk}})
+                unless tfk.nil?
+                  (grouped[tfk] ||= [] of Saci::Record::Base) << t
+                end
+              end
+            end
+            records.each do |rec|
+              opk = rec.__saci_get_attr(__saci_primary_key)
+              list = opk.nil? ? [] of Saci::Record::Base : (grouped[opk]? || [] of Saci::Record::Base)
+              rec.__saci_set_assoc({{n}}, list)
+            end
+          end
+
+          def self.__saci_preload_assoc(records : Array(Saci::Record::Base), assoc_name : String) : Nil
+            if assoc_name == {{n}}
+              __saci_preload_{{name.id}}(records)
+            else
+              previous_def
+            end
+          end
+
+          def self.__saci_assoc_kinds : Hash(String, Symbol)
+            %kinds = previous_def.dup
+            %kinds[{{n}}] = :has_many
+            %kinds
+          end
+
+          def self.__saci_join_sql(assoc_name : String) : String?
+            if assoc_name == {{n}}
+              ad = Saci::Record.adapter_of(self.connection)
+              base = Saci::Record.quote(self.table_name, ad)
+              base_pk = Saci::Record.quote(self.__saci_primary_key, ad)
+              target = Saci::Record.quote({{k}}.table_name, ad)
+              fkq = Saci::Record.quote({{poly_fk}}, ad)
+              typeq = Saci::Record.quote({{poly_type}}, ad)
+              "INNER JOIN " + target + " ON " + target + "." + fkq + " = " + base + "." + base_pk + " AND " + target + "." + typeq + " = '" + self.name.gsub("'", "''") + "'"
+            else
+              previous_def
+            end
+          end
+
+          def self.__saci_reset_counter(id : Saci::Record::Value, assoc_name : String) : Bool
+            if assoc_name == {{n}}
+              had = Saci::Record.adapter_of(self.connection)
+              tname = self.name
+              cnt = {{k}}.where(Saci::Record.quote({{poly_fk}}, had) + " = ? AND " + Saci::Record.quote({{poly_type}}, had) + " = ?", id, tname).count
+              counter_col = {{k}}.table_name + "_count"
+              unless __saci_column_names.any? { |(cname, _)| cname == counter_col }
+                counter_col = {{n}} + "_count"
+              end
+              unless __saci_column_names.any? { |(cname, _)| cname == counter_col }
+                raise Saci::Record::UnknownAttributeError.new("reset_counters: no counter column '#{counter_col}' on #{self.name}")
+              end
+              Saci::Record.exec_compat(connection, "UPDATE " + Saci::Record.quote(table_name, had) + " SET " + Saci::Record.quote(counter_col, had) + " = ? WHERE " + Saci::Record.quote(__saci_primary_key, had) + " = ?", [cnt] of Saci::Record::Value + [Saci::Record.to_db(id, had)] of Saci::Record::Value)
+              true
+            else
+              previous_def
+            end
+          end
+        {% elsif through %}
           {% through_call = through.id %}
           {% src = (source ? source.id.stringify : sing) %}
           {% src_fk = src + "_id" %}
@@ -1619,6 +1981,14 @@ module Saci
             %kinds = previous_def.dup
             %kinds[{{n}}] = :through
             %kinds
+          end
+
+          def self.__saci_join_sql(assoc_name : String) : String?
+            if assoc_name == {{n}}
+              raise ArgumentError.new("joins(:{{name.id}}) is not supported on has_many :through (preload the join instead)")
+            else
+              previous_def
+            end
           end
         {% else %}
           def {{name.id}} : Saci::Record::Query({{k}})
@@ -1684,11 +2054,75 @@ module Saci
             %kinds[{{n}}] = :has_many
             %kinds
           end
+
+          def self.__saci_join_sql(assoc_name : String) : String?
+            if assoc_name == {{n}}
+              ad = Saci::Record.adapter_of(self.connection)
+              base = Saci::Record.quote(self.table_name, ad)
+              base_pk = Saci::Record.quote(self.__saci_primary_key, ad)
+              target = Saci::Record.quote({{k}}.table_name, ad)
+              {% if foreign_key %}
+                fkq = Saci::Record.quote({{foreign_key.id.stringify}}, ad)
+              {% else %}
+                fkq = Saci::Record.quote(Saci::Record::Inflector.underscore(self.name.split("::").last) + "_id", ad)
+              {% end %}
+              "INNER JOIN " + target + " ON " + target + "." + fkq + " = " + base + "." + base_pk
+            else
+              previous_def
+            end
+          end
+
+          def self.__saci_reset_counter(id : Saci::Record::Value, assoc_name : String) : Bool
+            if assoc_name == {{n}}
+              had = Saci::Record.adapter_of(self.connection)
+              {% if foreign_key %}
+                fkcol = {{foreign_key.id.stringify}}
+              {% else %}
+                fkcol = Saci::Record::Inflector.underscore(self.name.split("::").last) + "_id"
+              {% end %}
+              cnt = {{k}}.where(Saci::Record.quote(fkcol, had) + " = ?", id).count
+              counter_col = {{k}}.table_name + "_count"
+              unless __saci_column_names.any? { |(cname, _)| cname == counter_col }
+                counter_col = {{n}} + "_count"
+              end
+              unless __saci_column_names.any? { |(cname, _)| cname == counter_col }
+                raise Saci::Record::UnknownAttributeError.new("reset_counters: no counter column '#{counter_col}' on #{self.name}")
+              end
+              Saci::Record.exec_compat(connection, "UPDATE " + Saci::Record.quote(table_name, had) + " SET " + Saci::Record.quote(counter_col, had) + " = ? WHERE " + Saci::Record.quote(__saci_primary_key, had) + " = ?", [cnt] of Saci::Record::Value + [Saci::Record.to_db(id, had)] of Saci::Record::Value)
+              true
+            else
+              previous_def
+            end
+          end
         {% end %}
         {% if dependent %}
           def __saci_run_dependents : Nil
             previous_def
-            {% if through %}
+            {% if as_opt %}
+              {% if dependent.id.stringify == "destroy" %}
+                self.{{name.id}}.to_a.each(&.destroy)
+              {% elsif dependent.id.stringify == "delete_all" %}
+                self.{{name.id}}.delete_all
+              {% elsif dependent.id.stringify == "nullify" %}
+                poly_pk = __saci_get_attr(self.class.__saci_primary_key)
+                unless poly_pk.nil?
+                  poly_had = Saci::Record.adapter_of(self.class.connection)
+                  poly_tname = self.class.name
+                  Saci::Record.exec_compat(
+                    {{k}}.connection,
+                    "UPDATE " + Saci::Record.quote({{k}}.table_name, poly_had) +
+                      " SET " + Saci::Record.quote({{poly_fk}}, poly_had) + " = NULL, " + Saci::Record.quote({{poly_type}}, poly_had) + " = NULL" +
+                      " WHERE " + Saci::Record.quote({{poly_fk}}, poly_had) + " = ? AND " + Saci::Record.quote({{poly_type}}, poly_had) + " = ?",
+                    [Saci::Record.to_db(poly_pk, poly_had), poly_tname] of Saci::Record::Value)
+                end
+              {% elsif dependent.id.stringify == "restrict_with_exception" %}
+                if self.{{name.id}}.exists?
+                  raise Saci::Record::DeleteRestrictionError.new("Cannot delete #{self.class} because dependent {{name.id}} exist")
+                end
+              {% else %}
+                raise Saci::Record::RecordNotSaved.new("Unsupported dependent option {{dependent}} on {{name.id}} (supported: :destroy, :delete_all, :nullify, :restrict_with_exception)")
+              {% end %}
+            {% elsif through %}
               %dep_q = self.{{through_call}}
               {% if dependent.id.stringify == "destroy" %}
                 %dep_q.to_a.each(&.destroy)
@@ -1696,8 +2130,12 @@ module Saci
                 %dep_q.delete_all
               {% elsif dependent.id.stringify == "nullify" %}
                 raise Saci::Record::RecordNotSaved.new("dependent: :nullify is not supported on has_many :through ({{name.id}})")
+              {% elsif dependent.id.stringify == "restrict_with_exception" %}
+                if self.{{through_call}}.exists?
+                  raise Saci::Record::DeleteRestrictionError.new("Cannot delete #{self.class} because dependent {{name.id}} exist")
+                end
               {% else %}
-                raise Saci::Record::RecordNotSaved.new("Unsupported dependent option {{dependent}} on {{name.id}} (supported: :destroy, :delete_all, :nullify)")
+                raise Saci::Record::RecordNotSaved.new("Unsupported dependent option {{dependent}} on {{name.id}} (supported: :destroy, :delete_all, :nullify, :restrict_with_exception)")
               {% end %}
             {% else %}
               {% if dependent.id.stringify == "destroy" %}
@@ -1720,8 +2158,12 @@ module Saci
                       " WHERE " + Saci::Record.quote(%fk_col, %had) + " = ?",
                     [%pk_val] of Saci::Record::Value)
                 end
+              {% elsif dependent.id.stringify == "restrict_with_exception" %}
+                if self.{{name.id}}.exists?
+                  raise Saci::Record::DeleteRestrictionError.new("Cannot delete #{self.class} because dependent {{name.id}} exist")
+                end
               {% else %}
-                raise Saci::Record::RecordNotSaved.new("Unsupported dependent option {{dependent}} on {{name.id}} (supported: :destroy, :delete_all, :nullify)")
+                raise Saci::Record::RecordNotSaved.new("Unsupported dependent option {{dependent}} on {{name.id}} (supported: :destroy, :delete_all, :nullify, :restrict_with_exception)")
               {% end %}
             {% end %}
           end
@@ -1798,6 +2240,23 @@ module Saci
           %kinds[{{n}}] = :has_one
           %kinds
         end
+
+        def self.__saci_join_sql(assoc_name : String) : String?
+          if assoc_name == {{n}}
+            ad = Saci::Record.adapter_of(self.connection)
+            base = Saci::Record.quote(self.table_name, ad)
+            base_pk = Saci::Record.quote(self.__saci_primary_key, ad)
+            target = Saci::Record.quote({{k}}.table_name, ad)
+            {% if foreign_key %}
+              fkq = Saci::Record.quote({{foreign_key.id.stringify}}, ad)
+            {% else %}
+              fkq = Saci::Record.quote(Saci::Record::Inflector.underscore(self.name.split("::").last) + "_id", ad)
+            {% end %}
+            "INNER JOIN " + target + " ON " + target + "." + fkq + " = " + base + "." + base_pk
+          else
+            previous_def
+          end
+        end
         {% if dependent %}
           def __saci_run_dependents : Nil
             previous_def
@@ -1836,8 +2295,12 @@ module Saci
                     " WHERE " + Saci::Record.quote(%fk_col, %had) + " = ?",
                   [%pk_val] of Saci::Record::Value)
               end
+            {% elsif dependent.id.stringify == "restrict_with_exception" %}
+              unless self.{{name.id}}.nil?
+                raise Saci::Record::DeleteRestrictionError.new("Cannot delete #{self.class} because dependent {{name.id}} exists")
+              end
             {% else %}
-              raise Saci::Record::RecordNotSaved.new("Unsupported dependent option {{dependent}} on {{name.id}} (supported: :destroy, :delete_all, :nullify)")
+              raise Saci::Record::RecordNotSaved.new("Unsupported dependent option {{dependent}} on {{name.id}} (supported: :destroy, :delete_all, :nullify, :restrict_with_exception)")
             {% end %}
           end
         {% end %}

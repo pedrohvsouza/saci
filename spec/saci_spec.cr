@@ -747,3 +747,67 @@ describe "params upgrades" do
     params.file("pic").not_nil!.filename.should eq("two.png")
   end
 end
+
+# -- router static prefix/suffix params (Lobsters-style tilde/at/avatar) ---
+
+class SpecTildeController < SpecAppController
+  def show
+    render json: {username: params["username"]?, size: params["username_size"]?}
+  end
+
+  def stories
+    render json: {username: params["username"]?}
+  end
+end
+
+def spec_tilde_router : Saci::Router
+  Saci::Router.new.draw do |r|
+    r.get "/~:username", SpecTildeController, :show
+    r.get "/~:username/stories", SpecTildeController, :stories
+    r.redirect("/@:username", to: "/~%{username}", status: 301)
+    r.get "/avatars/:username_size.png", SpecTildeController, :show
+  end
+end
+
+describe "router static prefix/suffix params" do
+  it "matches /~:username with a tilde prefix" do
+    _route, path_params = spec_tilde_router.find("GET", "/~bob").not_nil!
+    path_params["username"].should eq("bob")
+    spec_tilde_router.find("GET", "/~bob/extra").should be_nil
+  end
+
+  it "matches /~:username/stories nested under the prefix" do
+    _route, path_params = spec_tilde_router.find("GET", "/~alice/stories").not_nil!
+    path_params["username"].should eq("alice")
+  end
+
+  it "matches /@:username redirect route with an at prefix" do
+    _route, path_params = spec_tilde_router.find("GET", "/@carol").not_nil!
+    path_params["username"].should eq("carol")
+  end
+
+  it "matches /avatars/:username_size.png with a suffix literal" do
+    _route, path_params = spec_tilde_router.find("GET", "/avatars/bob_32.png").not_nil!
+    path_params["username_size"].should eq("bob_32")
+    _route, path_params = spec_tilde_router.find("GET", "/avatars/alice.png").not_nil!
+    path_params["username_size"].should eq("alice")
+    spec_tilde_router.find("GET", "/avatars/bob_32.jpg").should be_nil
+  end
+
+  it "dispatches prefix/suffix routes and redirects @ to ~" do
+    Saci::TestSession.serve(spec_tilde_router) do |app|
+      resp = app.get("/~bob")
+      JSON.parse(resp.body)["username"].should eq("bob")
+
+      resp = app.get("/~bob/stories")
+      JSON.parse(resp.body)["username"].should eq("bob")
+
+      resp = app.get("/avatars/bob_32.png")
+      JSON.parse(resp.body)["size"].should eq("bob_32")
+
+      resp = app.get("/@carol")
+      resp.status_code.should eq(301)
+      resp.headers["Location"].should eq("/~carol")
+    end
+  end
+end

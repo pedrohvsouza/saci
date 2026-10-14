@@ -44,23 +44,26 @@ module Saci
     def self.help_text(topic : String?) : String
       case topic
       when "new"
-        "Usage: saci new APP_NAME [--saci-path PATH] [--skip-shards] [--skip-git]\n\nGenerates a runnable app skeleton in ./APP_NAME."
+        "Usage: saci new APP_NAME [--db=sqlite|postgres|mysql] [--saci-path PATH] [--skip-shards] [--skip-git]\n\nGenerates a runnable app skeleton in ./APP_NAME (--db picks driver deps + require lines + URL defaults)."
       when "generate", "g"
         <<-HELP
         Usage:
           saci generate model NAME [field:type ...]
           saci generate controller NAME [action ...]
-          saci generate migration NAME [field:type ...]
+          saci generate migration NAME [field:type ...] [--unique]
           saci generate channel NAME
           saci generate job NAME
           saci generate mailer NAME
           saci generate scaffold NAME [field:type ...]
 
         Field types: string, text, integer, bigint, float, boolean, datetime.
+        Migration names: AddXToY emits add_column; AddIndex... (or --unique) emits add_index.
+        Request specs use real verbs (create->POST, update->PATCH, destroy->DELETE).
         Examples:
           saci g model Post title:string views:integer published:boolean
           saci g controller Posts index show
           saci g migration AddBioToUsers bio:text
+          saci g migration AddIndexToFollows follower_id --unique
           saci g channel Chat
           saci g job Welcome
           saci g mailer User
@@ -69,9 +72,9 @@ module Saci
       when "serve", "server", "s"
         "Usage: saci serve [--port N] [--host H] [--release] [--watch] [--watch-interval SECS] [--mt] [--workers N] [-- extra crystal args]\n\nRuns src/<app>.cr with crystal run (PORT/HOST env are set for the app). With --watch, rebuilds and restarts on file changes. With --mt, compiles with multithreading (-Dexecution_context) and enables it at boot via SACI_MT."
       when "db:migrate"
-        "Usage: saci db:migrate\n\nRuns pending migrations in db/migrate/ (keeps db/migrations.cr in sync first)."
+        "Usage: saci db:migrate [--all]\n\nRuns pending migrations in db/migrate/ (keeps db/migrations.cr in sync first). With --all, migrates primary + all named DBs."
       when "db:rollback"
-        "Usage: saci db:rollback [STEPS]\n\nRolls back the last STEPS migrations (default 1)."
+        "Usage: saci db:rollback [STEPS] [--all]\n\nRolls back the last STEPS migrations (default 1). With --all, rolls back on all databases."
       when "secret"
         "Usage: saci secret\n\nPrints a random secret for SECRET_KEY_BASE."
       when "credentials:show", "credentials:edit", "credentials:keygen"
@@ -84,12 +87,12 @@ module Saci
 
         Usage: saci COMMAND [args]
 
-          new APP_NAME              generate a new app skeleton
+          new APP_NAME              generate a new app skeleton (--db=sqlite|postgres|mysql)
           generate (g) KIND ...     generate a model, controller or migration
           serve (s)                 run the app (see `saci help serve`)
           test (t)                  run the spec suite (see `saci help test`)
-          db:migrate                run pending migrations
-          db:rollback [STEPS]       roll back migrations
+          db:migrate [--all]        run pending migrations (all DBs with --all)
+          db:rollback [STEPS] [--all] roll back migrations
           secret                    print a random SECRET_KEY_BASE
           credentials:show         decrypt and print credentials
           credentials:edit         edit credentials in $EDITOR

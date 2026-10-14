@@ -93,27 +93,37 @@ shards build saci   # -> bin/saci (gitignored build artifact)
 ## CLI
 
 ```sh
-saci new blog
+saci new blog --db=sqlite            # or --db=postgres|mysql (driver deps + require + URL defaults)
 cd blog
 saci generate model Post title:string views:integer published:boolean
 saci generate controller Posts index show
 saci generate migration AddBioToUsers bio:text
-saci db:migrate
-saci db:rollback        # rolls back the last migration
+saci generate migration AddIndexToFollows follower_id --unique  # -> add_index
+saci db:migrate [--all]              # --all migrates primary + named DBs
+saci db:rollback                     # rolls back the last migration
 saci serve --port 3000
 ```
 
-- `new` scaffolds `shard.yml` (path-dependency on the framework source),
+- `new [--db=...]` scaffolds `shard.yml` (path-dependency on the framework source),
   `src/<app>.cr` entrypoint, controllers/models dirs, `db/migrate/` +
   `db/migrations.cr` manifest + standalone `db/migrate.cr` runner, and specs.
+  `--db=postgres|mysql` emits driver deps (`will/crystal-pg` / `crystal-mysql`),
+  `require "pg"` / `require "mysql"` lines and URL defaults (SQLite stays default).
 - Generators write files and print next steps (routes to add). The migration
   generator rebuilds `db/migrations.cr` from `db/migrate/*.cr`, so hand-added
-  migration files are picked up too.
+  migration files are picked up too. `AddIndex...` names (or `--unique`) emit
+  `add_index` instead of `add_column`; `g controller` request specs use real
+  verbs (create->POST, update->PATCH, destroy->DELETE).
 - `serve` execs `crystal run src/<app>.cr` with `PORT`/`HOST` set; anything
   after `--` is forwarded to `crystal` as compiler flags
   (e.g. `--link-flags=...`).
-- `db:migrate` / `db:rollback [STEPS]` re-sync the manifest, then run the
-  standalone runner (models only — the web server is never booted).
+- `db:migrate [--all]` / `db:rollback [STEPS] [--all]` re-sync the manifest, then run the
+  standalone runner (models only — the web server is never booted). `--all`
+  migrates every database in `Saci::Record.configuration_names`; specs use
+  `Saci::Record.clean_all!` to truncate all connections (single-DB apps keep
+  `clean_database!`).
+- Routes support static prefix/suffix params anywhere in a segment:
+  `/~:username`, `/@:username` (redirect to `/~%{username}`), `/avatars/:username_size.png`.
 
 ## ORM (ActiveRecord equivalent)
 
@@ -150,7 +160,15 @@ class Post < Saci::Record::Base
   validates :email, format: /@/, uniqueness: true
   validates :score, numericality: {greater_than_or_equal_to: 0}
   validates :kind, inclusion: {in: ["a", "b"]}, allow_nil: true
-  validate :title_is_fine
+  validates :title, presence: true, if: :published?
+  validate :title_is_fine, unless: ->(r : Post) { r.views == 0 }
+
+  belongs_to :user, counter_cache: true, touch: true
+  belongs_to :notifiable, polymorphic: true   # notifiable_type + notifiable_id
+  has_many :taggings, dependent: :destroy
+  has_many :tags, through: :taggings
+  has_many :notifications, as: :notifiable    # polymorphic has_many
+  has_one :moderation, dependent: :restrict_with_exception
 
   belongs_to :user, counter_cache: true, touch: true
   has_many :taggings, dependent: :destroy
@@ -181,7 +199,9 @@ Post.where(created_at: 1.day.ago..Time.utc).to_a   # Range where
 Post.where(a: 1).or(Post.where(b: 2)).to_a         # or
 Post.where.not(published: true).to_a               # hash negation
 Post.joins("INNER JOIN users ON users.id = posts.user_id").to_a
+Post.joins(:user).where("users.email = ?", "a@b").to_a  # symbol joins via FK
 Post.includes(:user, :tags).to_a                   # preload (no N+1)
+Post.includes(story: :user).to_a                   # nested preload, 2 levels
 Post.select(:id, :title).to_a                      # partial models
 Post.select("title", "views + 1 AS more").first!.read_attribute("more")
 Post.distinct.pluck(:title)
@@ -190,6 +210,11 @@ Post.sum(:views) / Post.average(:views) / Post.minimum(:views)
 Post.count / Post.exists?(published: true) / Post.pluck(:title)
 Post.where(published: false).update_all({published: true})
 Post.upsert({id: 1, title: "Hi"})                  # skips validations/callbacks
+Post.update_counter(1, :views)                     # atomic COALESCE + delta
+Post.reset_counters(1, :comments)                  # recount counter_cache
+Post.where(published: true).touch_all              # bump updated_at, no callbacks
+Saci::Record::FTS.setup(Post, [:title, :body])     # SQLite FTS5 index + triggers
+Post.search_fts("crystal").where(published: true).limit(10).to_a  # rank-ordered
 user.posts.where(published: true).to_a    # has_many returns a chainable Query
 Saci::Record.transaction { ... }          # raise DB::Rollback to roll back
 ```
@@ -209,19 +234,28 @@ Notes:
   `LOWER()` elsewhere), `inclusion: {in: [...]}`, `numericality:`
   (`only_integer:`, `greater_than[_or_equal_to]:`,
   `less_than[_or_equal_to]:`, `equal_to:`), custom `validate :method` /
-  `validate { }`, `allow_nil:` / `allow_blank:`, `on: :create`/`:update`.
+  `validate { }`, `allow_nil:` / `allow_blank:`, `on: :create`/`:update`,
+  plus `if:`/`unless:` (method-name Symbol or `->(r) { }` Proc) on both
+  `validates` and `validate`.
 - Callbacks (`previous_def`-chained, parents first): `before_validation`
   (with `on:`), `before_save`, `after_save`, `after_create`,
   `after_commit` (with `on:`, deferred to the outermost transaction commit
   and discarded on rollback), `after_destroy`. Each takes method names,
   lambdas (`-> { }`) and/or a block (`|record|` optional).
 - Queries: base-table columns render qualified (`"posts"."id"`) so `joins`
-  never ambiguates; `select` symbols give partial models while raw
+  never ambiguates; `joins(:assoc)` resolves the FK alongside raw-SQL
+  `joins("...")`; `select` symbols give partial models while raw
   expressions land in `read_attribute`/`#[]`; `includes` preloads
   `belongs_to`/`has_many`/`has_one` (`has_many :through` raises — preload
-  the join instead); `touch`/`update_columns`/`upsert` skip validations and
-  callbacks; `belongs_to` supports `counter_cache:` / `touch:`, `has_many` /
-  `has_one` support `dependent: :destroy`/`:delete_all`/`:nullify`.
+  the join instead) plus nested `includes(a: :b)` to 2 levels (grouped by
+  concrete class, so polymorphic parents work); `touch`/`update_columns`/
+  `upsert`/`touch_all` skip validations and callbacks; `belongs_to`
+  supports `counter_cache:` / `touch:` plus `polymorphic: true`
+  (`<name>_type` + `<name>_id` via the polymorphic registry) with
+  `has_many ..., as: :interface`; `has_many` /
+  `has_one` support `dependent: :destroy`/`:delete_all`/`:nullify`/
+  `:restrict_with_exception` (`DeleteRestrictionError`); counters polish:
+  `update_counter`/`update_counters`/`reset_counters`/`touch_all`.
 - `change`-style migrations roll back automatically (`create_table`,
   `add_column`, `add_index`); `drop_table`/`remove_column`/`remove_index`
   inside `change` raise `IrreversibleMigration` on rollback — use `up`/`down`.
@@ -397,9 +431,12 @@ user.authenticate("secret")     # => user or nil
   constant time). `form_authenticity_token` returns the token for forms.
   Failures raise `InvalidAuthenticityToken`, rendered as 422.
 - **Secure headers** (`X-Frame-Options: SAMEORIGIN`,
-  `X-Content-Type-Options: nosniff`, `Referrer-Policy`) are applied to every
+  `X-Content-Type-Options: nosniff`, `Referrer-Policy`,
+  `Content-Security-Policy: default-src 'self'`) are applied to every
   controller response unless already set; tune via
-  `Saci::SecureHeaders.configure`.
+  `Saci::SecureHeaders.configure`. Per-action escape hatches:
+  `skip_csp only: [...]` (no CSP on those actions), `csp false` (whole
+  controller), or `csp "default-src 'none'"` (custom policy).
 - **Passwords**: `has_secure_password` digests with bcrypt on assignment,
   validates presence-on-create, confirmation match, and the 72-byte bcrypt
   limit. `Saci::Record.bcrypt_min_cost = true` speeds up specs (like
@@ -416,7 +453,6 @@ user.authenticate("secret")     # => user or nil
   `tmp/.dev_secret`, never commit it). Set `Saci::Session.encrypt = true`
   for opaque sessions (generated production envs do); enabling it
   invalidates previously signed sessions, so turn it on before launch.
-- Not yet: CSP defaults — see roadmap.
 
 ## Logging
 
@@ -463,6 +499,9 @@ WelcomeJob.perform_now({user_id: 1})
 - Retries count total tries; failures/discards report via `Saci::Job.on_error`
   (default: STDERR line). Redis adapters remain roadmap; at-least-once
   everywhere, so jobs MUST be idempotent.
+- `limits_concurrency to: 1, key: "cache-page"` caps concurrent runs per key
+  (extra runs skip while the slot is held); honored by `:inline`, `:async`
+  and `:db` adapters (explicit `perform_now` always runs).
 
 ## Mailers
 
@@ -488,6 +527,11 @@ UserMailer.welcome("a@b.c").deliver_later            # via Saci::Job
   `MAILER_ADAPTER=smtp` plus `SMTP_HOST/PORT/USERNAME/PASSWORD`).
 - `deliver_later` renders now and delivers the rendered email later, so it
   works with every job adapter (present and future).
+- `layout "mailer"` wraps text/html parts with a registered layout
+  (`Saci::Mailer.register_layout("mailer", text:, html:)` templates using
+  `<%= content %>`); `default_reply_to` plus per-mail `reply_to:`; threading
+  headers via `mail(..., headers: {"Message-Id" => "<..>", "In-Reply-To" => "<..>"})`
+  (a custom `Message-Id` replaces the generated one).
 
 ## Views
 
@@ -548,6 +592,9 @@ end
 `stale?(etag:, last_modified:)` / `fresh_when` set validators and reply 304
 when fresh (weak-etag comparison, `*` support, second-resolution IMS);
 `expires_in(60.seconds, public: true)` sets `Cache-Control`.
+File page cache (a `CachePageJob` calls these): `Saci::PageCache.write(path, html)`
+/ `.read` / `.expire` / `.expire_dir(dir)` under `tmp/page_cache`, with
+write-through `.fetch(path) { render }`.
 
 ## Rate limiting
 
@@ -664,10 +711,11 @@ src/saci/controller.cr  # Saci::Controller
 src/saci/params.cr      # Saci::Params
 src/saci/application.cr # Saci::Application / Handler (rails server equiv.)
 src/saci/record.cr      # Saci::Record entrypoint + coercions
-src/saci/job.cr           # background jobs
+src/saci/job.cr           # background jobs (+ limits_concurrency)
+src/saci/page_cache.cr  # file page cache (CachePageJob-friendly)
 src/saci/job_db.cr        # durable DB-backed queue (:db adapter)
 src/saci/logging.cr       # logger, tags, filtering, request lines
-src/saci/mailer.cr        # mailers + delivery
+src/saci/mailer.cr        # mailers + delivery (+ layouts, reply_to, headers)
 src/saci/smtp.cr          # dependency-free SMTP client (STARTTLS + AUTH)
 src/saci/views.cr         # ECR templates, forms, links, caching, files
 src/saci/throttle.cr      # rate limiting
@@ -675,6 +723,7 @@ src/saci/storage.cr       # disk uploads + signed serving
 src/saci/crypto.cr        # vendored AES-256-GCM (see note)
 src/saci/credentials.cr   # encrypted credentials file
 src/saci/record/base.cr # Saci::Record::Base (models)
+src/saci/record/fts.cr        # SQLite FTS5 search (setup + search_fts)
 src/saci/record/query.cr      # chainable queries
 src/saci/record/migration.cr  # migrations + Migrator
 src/saci/record/errors.cr     # validation errors
@@ -709,6 +758,11 @@ spec/cli_spec.cr        # CLI generator specs (temp dirs, no compilation)
 spec/test_session_spec.cr  # TestSession request specs (ephemeral ports)
 spec/cable_spec.cr      # Cable specs (live two-client broadcast, reject, unsubscribe)
 spec/security_spec.cr   # CSRF/headers/escaping/bcrypt specs
+spec/csp_spec.cr        # CSP default + skip_csp/csp escape hatches
+spec/fts_spec.cr        # FTS5 setup/triggers/ranked search
+spec/page_cache_spec.cr # file page-cache writer
+spec/job_concurrency_spec.cr # limits_concurrency skip-if-running
+spec/mailer_layout_spec.cr   # layouts, reply_to, threading headers
 spec/session_spec.cr    # session/flash/cookie/secret specs
 spec/forem_lite_spec.cr # Forem Lite validation app (all subsystems, live HTTP)
 examples/basic_app.cr   # runnable web example
