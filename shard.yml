@@ -1,0 +1,26 @@
+name: saci
+version: 0.1.0
+
+description: >
+  Saci — a Rails-compatible (Rails-like API) web framework in Crystal.
+  Router + Controller (ActionDispatch / ActionController) and ORM
+  (ActiveRecord equivalent with SQLite).
+
+authors:
+  - Saci Contributors
+
+crystal: ">= 1.0.0"
+
+targets:
+  saci:
+    main: src/cli.cr
+
+dependencies:
+  db:
+    github: crystal-lang/crystal-db
+    version: "~> 0.14.0"
+  sqlite3:
+    github: crystal-lang/crystal-sqlite3
+    version: "~> 0.22.0"
+
+license: MIT

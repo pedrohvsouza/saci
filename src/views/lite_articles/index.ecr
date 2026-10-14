@@ -1,0 +1,10 @@
+<h1>Forem Lite — <%= h(t("lite.feed_title")) %></h1>
+<p><%= h(t("lite.articles", count: articles.size)) %></p>
+<%= render_partial("shared/lite_guidelines") %>
+<% articles.each do |a| %>
+<article>
+  <h2><a href="/lite_articles/<%= a.id %>"><%= h(a.title || "") %></a></h2>
+  <p><%= h(a.body || "") %></p>
+  <p>score: <%= a.score %></p>
+</article>
+<% end %>

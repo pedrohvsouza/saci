@@ -1,0 +1,14 @@
+en:
+  hello: "Hello"
+  greeting: "Hello, %{name}!"
+  items:
+    zero: "no items"
+    one: "%{count} item"
+    other: "%{count} items"
+es:
+  hello: "Hola"
+  greeting: "Hola, %{name}!"
+  items:
+    zero: "ningún artículo"
+    one: "%{count} artículo"
+    other: "%{count} artículos"

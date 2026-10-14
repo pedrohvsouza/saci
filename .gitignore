@@ -1,0 +1,12 @@
+/.crystal/
+/.shards/
+/lib/
+/bin/
+/tmp/
+*.dwarf
+*.db
+*.db-shm
+*.db-wal
+.DS_Store
+# Libraries don't commit lockfiles (apps do) — reproducible via shard.yml.
+/shard.lock

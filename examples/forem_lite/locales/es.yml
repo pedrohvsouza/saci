@@ -1,0 +1,9 @@
+es:
+  lite:
+    welcome: "¡Bienvenido, %{name}!"
+    feed_title: "Últimas publicaciones"
+    guidelines: "Sé amable. Nada de spam. Comparte lo que aprendiste."
+    articles:
+      zero: "Aún no hay artículos"
+      one: "%{count} artículo"
+      other: "%{count} artículos"
