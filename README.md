@@ -141,32 +141,87 @@ class Post < Saci::Record::Base
   column views : Int64
   column published : Bool, default: false
   column user_id : Int64
+  column score : Decimal
+  column posted_on : Date
+  column meta : JSON
   timestamps
 
   validates :title, presence: true, max_length: 200
   validates :email, format: /@/, uniqueness: true
+  validates :score, numericality: {greater_than_or_equal_to: 0}
+  validates :kind, inclusion: {in: ["a", "b"]}, allow_nil: true
+  validate :title_is_fine
 
-  belongs_to :user
+  belongs_to :user, counter_cache: true, touch: true
+  has_many :taggings, dependent: :destroy
+  has_many :tags, through: :taggings
+  has_one :moderation
+
+  before_validation :strip_title, on: :create
+  before_save :normalize
+  after_create :notify
+  after_commit :rebuild_cache, on: :create
+  after_destroy :cleanup
+
+  def title_is_fine
+    errors.add(:title, "is bad") if title == "bad"
+  end
 end
 
 post = Post.create!(title: "Hi")          # raises RecordInvalid when invalid
 post.update(views: 10)
-post.destroy
+post.update_columns(views: 11)            # skips validations + callbacks
+post.touch                                # bumps updated_at, skips validations
+post.destroy                              # runs dependents, then callbacks
 Post.find(1)                              # raises RecordNotFound when missing
 Post.find_by(title: "Hi")
 Post.where(published: true).where("views > ?", 5)
     .order(views: :desc).limit(10).offset(5).to_a
+Post.where(created_at: 1.day.ago..Time.utc).to_a   # Range where
+Post.where(a: 1).or(Post.where(b: 2)).to_a         # or
+Post.where.not(published: true).to_a               # hash negation
+Post.joins("INNER JOIN users ON users.id = posts.user_id").to_a
+Post.includes(:user, :tags).to_a                   # preload (no N+1)
+Post.select(:id, :title).to_a                      # partial models
+Post.select("title", "views + 1 AS more").first!.read_attribute("more")
+Post.distinct.pluck(:title)
+Post.group(:published).count                        # => {true => 2, ...}
+Post.sum(:views) / Post.average(:views) / Post.minimum(:views)
 Post.count / Post.exists?(published: true) / Post.pluck(:title)
 Post.where(published: false).update_all({published: true})
+Post.upsert({id: 1, title: "Hi"})                  # skips validations/callbacks
 user.posts.where(published: true).to_a    # has_many returns a chainable Query
 Saci::Record.transaction { ... }          # raise DB::Rollback to roll back
 ```
 
 Notes:
 
-- Table names are inferred (`SpecUser` → `spec_users`); override with
-  `table "custom"`. Column types: `Int32/Int64/Float64/String/Bool/Time/Bytes`
-  (all nilable); `timestamps` maintains `created_at/updated_at`.
+- Table names are inferred (`SpecUser` → `spec_users`, `Shelf` →
+  `shelves`); override with `table "custom"`. Column types:
+  `Int32/Int64/Float64/String/Bool/Time/Bytes` (all nilable) plus logical
+  `Decimal` (Float64-backed), `Date` (Time-backed) and `JSON`
+  (String-backed, with `<col>_json` / `<col>_json=` helpers);
+  `timestamps` maintains `created_at/updated_at`. Migrations add
+  `t.decimal` / `t.date` / `t.json`.
+- Validations: `presence`, `length:` (`minimum:`/`maximum:`/`in:`/`within:`),
+  `format:`, `uniqueness:` (`true`, `:scope`, `[:scopes]`,
+  `{scope:, case_sensitive: false}` — `COLLATE NOCASE` on SQLite,
+  `LOWER()` elsewhere), `inclusion: {in: [...]}`, `numericality:`
+  (`only_integer:`, `greater_than[_or_equal_to]:`,
+  `less_than[_or_equal_to]:`, `equal_to:`), custom `validate :method` /
+  `validate { }`, `allow_nil:` / `allow_blank:`, `on: :create`/`:update`.
+- Callbacks (`previous_def`-chained, parents first): `before_validation`
+  (with `on:`), `before_save`, `after_save`, `after_create`,
+  `after_commit` (with `on:`, deferred to the outermost transaction commit
+  and discarded on rollback), `after_destroy`. Each takes method names,
+  lambdas (`-> { }`) and/or a block (`|record|` optional).
+- Queries: base-table columns render qualified (`"posts"."id"`) so `joins`
+  never ambiguates; `select` symbols give partial models while raw
+  expressions land in `read_attribute`/`#[]`; `includes` preloads
+  `belongs_to`/`has_many`/`has_one` (`has_many :through` raises — preload
+  the join instead); `touch`/`update_columns`/`upsert` skip validations and
+  callbacks; `belongs_to` supports `counter_cache:` / `touch:`, `has_many` /
+  `has_one` support `dependent: :destroy`/`:delete_all`/`:nullify`.
 - `change`-style migrations roll back automatically (`create_table`,
   `add_column`, `add_index`); `drop_table`/`remove_column`/`remove_index`
   inside `change` raise `IrreversibleMigration` on rollback — use `up`/`down`.
@@ -442,6 +497,14 @@ class PostsController < ApplicationController
     @post = Post.find(params["id"])
     render_template(:show)         # views/posts/show.ecr + layout
   end
+
+  def feed
+    respond_to do |f|
+      f.html { render_template(:index) }
+      f.json { render json: Post.all }
+      f.rss { render xml: rss_feed(title: "Posts", link: "/posts", description: "latest", items: rss_items) }
+    end
+  end
 end
 ```
 
@@ -454,11 +517,23 @@ end
 - Templates live in `<app>/src/views/` (layouts in `views/layouts/`,
   default `application` with `<%= content %>`); actions share state via
   instance variables. `render_template("posts/show", layout: false)` skips
-  the layout. `<%= %>` does NOT escape — use `h()` (documented loudly).
+  the layout; `render_template(:new, status: 422)` re-renders with an error
+  code. `<%= %>` does NOT escape — use `h()` (documented loudly).
+- `render_partial("comments/comment", comment: c)` passes locals;
+  `render_partial("comments/comment", collection: list)` renders once per
+  item (variable inferred from the partial name, `as:` overrides it).
 - `form_with(url) { |f| f.text_field("name") + f.submit }` builds escaped
   forms with `_method` override + CSRF token; `link_to("Delete", url,
   method: :delete)` renders a self-contained mini-form (works with the
-  `_method` routing override, no JavaScript).
+  `_method` routing override, no JavaScript). With `model:` + `scope:`,
+  fields bind to the model (`story[title]` names) and render
+  `record.errors`: `f.text_field/check_box/select/date_field/file_field` +
+  `f.error_messages` (`multipart: true` sets the upload encoding).
+- Helpers: `markdown(text)` (XSS-safe minimal: fences, code, bold/italic,
+  safe links, headings, paragraphs), `page_numbers(page, total, base)`
+  (`"/stories"` → `/stories/page/N`, `:page` placeholders honored),
+  `rss_feed(title:, link:, description:, items:)` (render with
+  `render xml:`).
 
 ## HTTP caching
 
@@ -531,18 +606,39 @@ a `secret_key_base` that sessions pick up automatically.
 ## API notes (web)
 
 - **Routes**: `get/post/put/patch/delete(path, Controller, :action)`,
-  `root`, `resources` (index/show/create/update/destroy, with
-  `only:`/`except:`), `namespace`/`scope`, and block routes via
-  `add`/arity overloads. Unknown routes render JSON 404.
-- **Params**: path + query + JSON/form body merged into `params`,
+  `root`, `resources` (index/new/show/create/update/destroy/edit, with
+  `only:`/`except:`; block form adds `member` (`m.post :upvote` →
+  `POST /base/:id/upvote`), `collection` (`c.get :search`), and nested
+  `resources` → `/base/:parent_id/...`), `namespace`/`scope` (Symbol or
+  String, `mod:` documents the controller module), and block routes via
+  `add`/arity overloads. Segment regexes via per-route `constraints:` or a
+  `constraints({...}) do` block; `(...)` groups are optional
+  (`/top(/:length(/page/:page))`, `(.:format)` → `params["format"]`);
+  `*splat` wildcards plus a `fallback` catch-all. Redirects:
+  `r.redirect("/u/:username", to: "/~%{username}", status: 301)` (`:name`
+  and `%{name}` interpolation). Unknown routes render JSON 404.
+- **Params**: path + query + JSON/form/multipart body merged into `params`,
   with `require` (raises `Saci::ParameterMissing` → 400),
-  `permit`, `int`, `to_h`.
-- **Rendering**: `render json:/html:/text:/plain:` with `status:`
-  (integer or `:ok`, `:created`, `:no_content`, `:unauthorized`, …),
-  `redirect_to`, `head`.
-- **Filters**: `before_action :name, only: [...], except: [...]`.
-  Parent filters run before child filters; rendering/redirecting inside a
-  filter halts the chain (the action is skipped).
+  `permit`, `int`, `to_h`. Nested bracket keys and JSON bodies build a
+  tree: `params.require(:story).permit(:title, tags: [] of String)`
+  (bare `[]` needs the annotation — Crystal can't infer empty literals),
+  `params.dig(:story, :title)`, `params.array("tags")`, and
+  `params.file("avatar")` (multipart uploads: filename, content type,
+  bytes; repeated field names keep the last file).
+- **Rendering**: `render json:/html:/text:/plain:/xml:` with `status:`
+  (integer or `:ok`, `:created`, `:no_content`, `:unauthorized`,
+  `:unprocessable_content`, …) and `content_type:` override,
+  `render_template :x, status: 422`, `redirect_to`, `head`.
+  `respond_to do |f| f.html/json/rss/xml/text/any end` negotiates via
+  `params["format"]` (`.json` URLs, `?format=`) then the `Accept` header
+  (no match → `UnknownFormat` → 406).
+- **Filters**: `before_action :name, only: [...], except: [...]`,
+  `after_action` (symbol or block form; child-first, runs even when a
+  before filter halts), `skip_before/after_action` (with `only:`/`except:`).
+  Parent before-filters run before child filters; rendering/redirecting
+  inside a before filter halts the chain (the action is skipped).
+  `rescue_from ErrorClass do ... end` handles filter/action exceptions per
+  controller (child handlers first).
 - **Errors**: `params.require` failures → 400 JSON; unhandled exceptions →
   500 JSON; actions that never render → 500 JSON hint.
 
@@ -635,9 +731,15 @@ examples/record_example.cr  # runnable ORM example
 - [x] Rate limiting, disk storage, encrypted credentials, env config, multidb
 - [x] PostgreSQL + MySQL adapters (SQL generation specced; live servers needed)
 - [x] SMTP delivery (STARTTLS + AUTH LOGIN, verified live via Ethereal)
+- [x] ORM upgrades: `has_one` / `has_many :through`, callbacks
+  (`before_validation` … `after_commit`), extended validations (case-insensitive
+  uniqueness, inclusion, numericality, custom `validate`, `allow_nil` /
+  `allow_blank`, `on:`), query surface (`select`, `distinct`, `group` +
+  aggregates, `or`, `where.not`, ranges, `joins`, `includes`, `upsert`,
+  `update_columns`, `touch`), `decimal` / `date` / `json` columns,
+  `counter_cache` / `touch:` / `dependent:` (`:destroy`, `:delete_all`, `:nullify`)
 - ECR-based views / layouts
 - ActiveJob durable Redis adapters; encrypted cookies
-- Eager loading (`includes`), joins, callbacks, has_many :through
 
 > The living plan — framework, CLI, Forem Lite app and ops, prioritized
 > P0/P1/P2 with the validation story behind each item — is [ROADMAP.md](ROADMAP.md).

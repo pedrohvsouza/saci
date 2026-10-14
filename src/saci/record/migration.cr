@@ -68,6 +68,18 @@ module Saci
         add(name, :float, null, default)
       end
 
+      def decimal(name : String | Symbol, null : Bool = true, default : Value = nil)
+        add(name, :decimal, null, default)
+      end
+
+      def date(name : String | Symbol, null : Bool = true, default : Value = nil)
+        add(name, :date, null, default)
+      end
+
+      def json(name : String | Symbol, null : Bool = true, default : Value = nil)
+        add(name, :json, null, default)
+      end
+
       def boolean(name : String | Symbol, null : Bool = true, default : Value = nil)
         add(name, :boolean, null, default)
       end

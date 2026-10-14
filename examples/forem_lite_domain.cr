@@ -314,8 +314,8 @@ end
 
 class LiteSessionsController < LiteApplicationController
   def create
-    user = LiteUser.find_by(username: params.require("username"))
-    if user && user.authenticate(params.require("password"))
+    user = LiteUser.find_by(username: params.require("username").as_s)
+    if user && user.authenticate(params.require("password").as_s)
       reset_session
       session[:user_id] = user.id.to_s
       render json: {id: user.id, username: user.username}
@@ -342,7 +342,7 @@ class LiteCommentsController < LiteApplicationController
     comment = LiteComment.new(
       article_id: article.id,
       user_id: user.id,
-      body: params.require("body")
+      body: params.require("body").as_s
     )
     if comment.save
       Saci::Cable.broadcast("lite_article_#{article.id}",
@@ -381,7 +381,7 @@ class LiteUploadsController < LiteApplicationController
   def create
     user = require_lite_login
     return unless user
-    data = params.require("data")
+    data = params.require("data").as_s
     filename = params["filename"]? || "upload.bin"
     content_type = params["content_type"]? || "application/octet-stream"
     key = Saci::Storage.upload(data, filename: filename, content_type: content_type)

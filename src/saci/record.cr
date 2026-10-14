@@ -1,5 +1,6 @@
 require "db"
 require "sqlite3"
+require "json"
 require "./record/inflector"
 require "./record/errors"
 require "./record/query"
@@ -302,6 +303,9 @@ module Saci
     # database if nested in the same fiber). Raise to roll back
     # (`DB::Rollback` rolls back silently and returns nil, like
     # ActiveRecord::Rollback). No atomicity across databases.
+    # `after_commit` model callbacks registered inside the block are
+    # deferred: they run after the outermost commit and are discarded on
+    # rollback.
     def self.transaction(&block : DB::Connection -> T) : T? forall T
       transaction_on(connection, &block)
     end
@@ -312,14 +316,29 @@ module Saci
       elsif current = tx_for_database(db)
         block.call(current)
       else
-        db.transaction do |t|
-          tx_push(db, t.connection)
-          begin
-            block.call(t.connection)
-          ensure
-            tx_pop
+        committed = false
+        result : T? = nil
+        begin
+          result = db.transaction do |t|
+            tx_push(db, t.connection)
+            begin
+              r = block.call(t.connection)
+              committed = true
+              r
+            ensure
+              tx_pop
+            end
           end
+        rescue ex : Exception
+          discard_after_commit(db)
+          raise ex
         end
+        if committed
+          run_after_commit(db)
+        else
+          discard_after_commit(db)
+        end
+        result
       end
     end
 
@@ -352,6 +371,58 @@ module Saci
           @@tx_stacks.delete(Fiber.current.object_id) if stack.empty?
         end
       end
+    end
+
+    # Owning database behind a transaction connection (`nil` when the
+    # connection is not part of this fiber's transaction stack).
+    def self.tx_database_for(conn : DB::Connection) : DB::Database?
+      @@tx_mutex.synchronize do
+        @@tx_stacks[Fiber.current.object_id]?.try do |stack|
+          stack.find { |(_, c)| c == conn }.try(&.[0])
+        end
+      end
+    end
+
+    # Deferred `after_commit` hooks, keyed by fiber. Each entry records the
+    # database it belongs to so per-database commits/rollbacks only affect
+    # their own hooks.
+    @@after_commit_hooks = {} of UInt64 => Array(Tuple(UInt64, Proc(Nil)))
+
+    # Registers a hook to run when the current outermost transaction on
+    # `db` commits (call only while inside that transaction).
+    def self.defer_after_commit(db : DB::Database, &block : -> Nil) : Nil
+      key = Fiber.current.object_id
+      @@tx_mutex.synchronize do
+        (@@after_commit_hooks[key] ||= [] of Tuple(UInt64, Proc(Nil))) << {db.object_id, block}
+      end
+    end
+
+    private def self.take_after_commit(db : DB::Database) : Array(Proc(Nil))
+      key = Fiber.current.object_id
+      @@tx_mutex.synchronize do
+        if arr = @@after_commit_hooks[key]?
+          mine = arr.select { |(id, _)| id == db.object_id }.map(&.[1])
+          rest = arr.reject { |(id, _)| id == db.object_id }
+          if rest.empty?
+            @@after_commit_hooks.delete(key)
+          else
+            @@after_commit_hooks[key] = rest
+          end
+          mine
+        else
+          [] of Proc(Nil)
+        end
+      end
+    end
+
+    # Runs hooks deferred on `db` (outermost commit path).
+    def self.run_after_commit(db : DB::Database) : Nil
+      take_after_commit(db).each(&.call)
+    end
+
+    # Discards hooks deferred on `db` (rollback path).
+    def self.discard_after_commit(db : DB::Database) : Nil
+      take_after_commit(db)
     end
 
     def self.to_i64(v : Value) : Int64?
@@ -412,11 +483,30 @@ module Saci
       end
     end
 
+    # Rails-like blank? for validation gating (`allow_blank`): nil, false
+    # and empty/whitespace strings (or empty blobs) are blank.
+    def self.blank?(v : Value) : Bool
+      case v
+      when Nil    then true
+      when Bool   then !v
+      when String then v.strip.empty?
+      when Bytes  then v.empty?
+      else             false
+      end
+    end
+
     def self.parse_time(s : String?) : Time?
       return nil if s.nil? || s.empty?
-      Time.parse_rfc3339(s)
-    rescue Time::Format::Error
-      nil
+      str = s.as(String)
+      begin
+        Time.parse_rfc3339(str)
+      rescue Time::Format::Error
+        begin
+          Time.parse(str, "%Y-%m-%d", Time::Location::UTC)
+        rescue Time::Format::Error
+          nil
+        end
+      end
     end
 
     # Renders a column DEFAULT clause value (nil = no default).
@@ -439,6 +529,9 @@ module Saci
       when :integer  then "INTEGER"
       when :bigint   then adapter == :sqlite ? "INTEGER" : "BIGINT"
       when :float    then adapter == :sqlite ? "REAL" : (adapter == :postgres ? "DOUBLE PRECISION" : "DOUBLE")
+      when :decimal  then adapter == :sqlite ? "REAL" : (adapter == :postgres ? "DOUBLE PRECISION" : "DOUBLE")
+      when :date     then adapter == :sqlite ? "TEXT" : "DATE"
+      when :json     then adapter == :sqlite ? "TEXT" : (adapter == :postgres ? "JSONB" : "JSON")
       when :boolean  then adapter == :sqlite ? "INTEGER" : "BOOLEAN"
       when :datetime then adapter == :sqlite ? "TEXT" : (adapter == :postgres ? "TIMESTAMP" : "DATETIME")
       when :serial   then adapter == :postgres ? "BIGSERIAL" : (adapter == :mysql ? "BIGINT" : "INTEGER")
@@ -461,6 +554,37 @@ module Saci
         rs.each { tables << rs.read(String) }
       end
       tables.each { |t| exec_compat(db, "DELETE FROM #{quote(t, adapter)}") }
+    end
+
+    # Atomically adjusts an integer counter column (`counter_cache`).
+    def self.update_counter(db : DB::Database | DB::Connection, table : String, pk : String, id : Value, column : String, delta : Int64) : Nil
+      return if id.nil?
+      ad = adapter_of(db)
+      exec_compat(db,
+        "UPDATE #{quote(table, ad)} SET #{quote(column, ad)} = COALESCE(#{quote(column, ad)}, 0) + (#{delta}) WHERE #{quote(pk, ad)} = ?",
+        [to_db(id, ad)] of Value)
+    end
+
+    # Bumps timestamp columns directly (`belongs_to touch:`).
+    def self.touch_row(db : DB::Database | DB::Connection, table : String, pk : String, id : Value, columns : Array(String)) : Nil
+      return if id.nil? || columns.empty?
+      ad = adapter_of(db)
+      now = to_db(Time.utc, ad)
+      sets = columns.map { |c| "#{quote(c, ad)} = ?" }.join(", ")
+      vals = columns.map { now } + [to_db(id, ad)] of Value
+      exec_compat(db, "UPDATE #{quote(table, ad)} SET #{sets} WHERE #{quote(pk, ad)} = ?", vals)
+    end
+
+    # Reads one result column of unknown type (raw `select` expressions,
+    # aggregates, group keys) into a `Value`. Anything the drivers return
+    # outside `Value` (e.g. PG numerics) degrades to its string form.
+    def self.read_generic(rs : DB::ResultSet) : Value
+      case v = rs.read
+      when Value
+        v
+      else
+        v.to_s
+      end
     end
 
     # Reads one column from a result set given the declared column type.

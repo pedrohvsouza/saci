@@ -11,7 +11,9 @@ module Saci
 
       def self.pluralize(word : String) : String
         return word if word.empty?
-        if word.ends_with?("s") || word.ends_with?("x") || word.ends_with?("z") || word.ends_with?("ch") || word.ends_with?("sh")
+        if (word.ends_with?("lf") || word.ends_with?("rf")) && word.size > 2
+          word[0...-1] + "ves"
+        elsif word.ends_with?("s") || word.ends_with?("x") || word.ends_with?("z") || word.ends_with?("ch") || word.ends_with?("sh")
           word + "es"
         elsif word.ends_with?("y") && word.size > 1 && !"aeiou".includes?(word[-2].downcase)
           word[0...-1] + "ies"
