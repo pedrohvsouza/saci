@@ -33,6 +33,36 @@ module Saci
       @@mutex.synchronize { @@rules << Rule.new(name.to_s, limit, period, discriminator) }
     end
 
+    # Multi-window helper: registers one rule per window sharing the same
+    # discriminator (lobsters-style stacked globals, e.g. 4/s + 30/m).
+    # Rule names are `"#{name}/#{index}"` so counters stay independent.
+    #
+    # ```
+    # Saci::Throttle.multi("global", windows: [
+    #   {limit: 4, period: 1.second},
+    #   {limit: 30, period: 1.minute},
+    # ]) { |ctx| Saci::Throttle.client_ip(ctx) }
+    # ```
+    def self.multi(name : String | Symbol, windows : Array(NamedTuple(limit: Int32, period: Time::Span)), &discriminator : HTTP::Server::Context -> String?) : Nil
+      base = name.to_s
+      windows.each_with_index do |w, i|
+        throttle("#{base}/#{i}", limit: w[:limit], period: w[:period], &discriminator)
+      end
+    end
+
+    # Convenience for lobsters' login throttle (POST /login* per IP).
+    # Keeps the single-window `throttle` API untouched.
+    def self.throttle_login(limit : Int32 = 4, period : Time::Span = 1.minute, name : String | Symbol = "login") : Nil
+      throttle(name, limit: limit, period: period) do |ctx|
+        path = ctx.request.path || ""
+        if ctx.request.method == "POST" && path.starts_with?("/login")
+          client_ip(ctx)
+        else
+          nil
+        end
+      end
+    end
+
     def self.safelist(&rule : HTTP::Server::Context -> Bool) : Nil
       @@mutex.synchronize { @@safelists << rule }
     end
