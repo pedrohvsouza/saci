@@ -679,8 +679,10 @@ module Saci
             __saci_set_attr(pk, new_id) if pk_val.nil?
           else
             # NOTE: the id is read from the insert's own ExecResult (same
-            # pooled connection) — never via a separate query.
-            res = Record.exec_compat(conn, "INSERT INTO #{table} DEFAULT VALUES")
+            # pooled connection) — never via a separate query. MySQL has no
+            # `DEFAULT VALUES` syntax (`INSERT INTO t () VALUES ()` instead).
+            empty_sql = ad == :mysql ? "INSERT INTO #{table} () VALUES ()" : "INSERT INTO #{table} DEFAULT VALUES"
+            res = Record.exec_compat(conn, empty_sql)
             if pk_val.nil?
               __saci_set_attr(pk, res.last_insert_id)
             end

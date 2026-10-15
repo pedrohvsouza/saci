@@ -1082,7 +1082,9 @@ describe "Saci::Record" do
     Saci::Record.db_type(:date, :postgres).should eq("DATE")
     Saci::Record.db_type(:json, :sqlite).should eq("TEXT")
     Saci::Record.db_type(:json, :postgres).should eq("JSONB")
-    Saci::Record.db_type(:json, :mysql).should eq("JSON")
+    # crystal-mysql cannot decode the native JSON wire type, so MySQL
+    # stores JSON as TEXT (content round-trips unchanged).
+    Saci::Record.db_type(:json, :mysql).should eq("TEXT")
     table_columns(record_db, "orm_metrics").should contain("ratio")
     table_columns(record_db, "orm_metrics").should contain("day")
     table_columns(record_db, "orm_metrics").should contain("meta")

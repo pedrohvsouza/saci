@@ -10,3 +10,6 @@
 .DS_Store
 # Libraries don't commit lockfiles (apps do) — reproducible via shard.yml.
 /shard.lock
+
+# live harness build artifact
+/live/ossl_shim.o

@@ -28,14 +28,16 @@ green plain and with `-Dexecution_context`.
 
 ## Framework — ORM (`Saci::Record`)
 
-- [ ] **P0 — Live PostgreSQL/MySQL verification. [M]** Adapters are
-  implemented and SQL-specced (`spec/adapters_spec.cr`), but no servers exist
-  here. Done when: dockerized PG 16 + MySQL 8 + a `spec/*_live` harness
-  behind env flags exercises CRUD/validations/associations/migrations on both.
-  (Discovered: drivers must stay app-opt-in — `DB.open`'s virtual dispatch
-  links every driver's connect path, and pg's `Digest` auth can't link on
-  OpenSSL ≥ 3.2.) **Now unblocked: Docker works — this is the biggest
-  remaining correctness gap.**
+- [x] **Live PostgreSQL/MySQL verification.** Dockerized PG 16 + MySQL 8
+  + `live/*` harness (26 examples: DDL/CRUD/validations/associations/tx/
+  placeholders/quoting/RETURNING/type round-trips) run via `live/run.sh`;
+  CI runs it as a services job. Found 3 real bugs: PG jsonb `PullParser`
+  reads, MySQL native-JSON wire type (now `TEXT`), MySQL all-default
+  `INSERT`. Known limits: MySQL `DATETIME` seconds, PG `TIMESTAMP`
+  microseconds, no ENUM (documented in `live/README.md`). Driver notes:
+  pg/mysql stay app-opt-in (`development_dependencies` here); pg needs the
+  2-symbol OpenSSL shim (`live/ossl_shim.c`) on OpenSSL ≥ 3.2, same class of
+  fix as the vendored GCM core; crystal-mysql needs `mysql_native_password`.
 - [x] **Composite uniqueness validation.** `validates :x, uniqueness:
   [:a, :b]` (Symbol or Array scope, nil-safe, self-excluding on update).
 - [x] **Eager loading + joins + `has_many :through`.** `includes` (nested,

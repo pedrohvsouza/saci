@@ -537,7 +537,10 @@ module Saci
       when :float    then adapter == :sqlite ? "REAL" : (adapter == :postgres ? "DOUBLE PRECISION" : "DOUBLE")
       when :decimal  then adapter == :sqlite ? "REAL" : (adapter == :postgres ? "DOUBLE PRECISION" : "DOUBLE")
       when :date     then adapter == :sqlite ? "TEXT" : "DATE"
-      when :json     then adapter == :sqlite ? "TEXT" : (adapter == :postgres ? "JSONB" : "JSON")
+      # crystal-mysql cannot decode the native JSON column type
+      # (MYSQL_TYPE_JSON), so JSON is stored as TEXT on MySQL (the JSON
+      # content itself is unchanged — String-backed round-trip).
+      when :json     then adapter == :postgres ? "JSONB" : "TEXT"
       when :boolean  then adapter == :sqlite ? "INTEGER" : "BOOLEAN"
       when :datetime then adapter == :sqlite ? "TEXT" : (adapter == :postgres ? "TIMESTAMP" : "DATETIME")
       when :serial   then adapter == :postgres ? "BIGSERIAL" : (adapter == :mysql ? "BIGINT" : "INTEGER")
@@ -634,10 +637,14 @@ module Saci
     # Reads one result column of unknown type (raw `select` expressions,
     # aggregates, group keys) into a `Value`. Anything the drivers return
     # outside `Value` (e.g. PG numerics) degrades to its string form.
+    # crystal-pg decodes `json`/`jsonb` as `JSON::PullParser` — consume it
+    # to its raw source text (not `to_s`, which is the parser's inspect).
     def self.read_generic(rs : DB::ResultSet) : Value
       case v = rs.read
       when Value
         v
+      when JSON::PullParser
+        v.read_raw
       else
         v.to_s
       end
@@ -646,6 +653,10 @@ module Saci
     # Reads one column from a result set given the declared column type.
     # Native drivers return native values (real booleans/timestamps/ints);
     # SQLite returns the text/int encodings `to_db` produced.
+    #
+    # String-backed columns (`String`, `JSON`) on PostgreSQL are read
+    # untyped: `json`/`jsonb` arrive as `JSON::PullParser` (which
+    # `read(String?)` rejects), so convert here instead.
     def self.read_typed(rs : DB::ResultSet, col_type : String, adapter : Adapter = :sqlite) : Value
       case col_type
       when "Bool"
@@ -656,7 +667,18 @@ module Saci
       when "Int32"
         adapter == :sqlite ? rs.read(Int64?) : rs.read(Int32?)
       when "Float64" then rs.read(Float64?)
-      when "String"  then rs.read(String?)
+      when "String"
+        if adapter == :postgres
+          case v = rs.read
+          when Nil              then nil
+          when String           then v
+          when Bytes            then String.new(v)
+          when JSON::PullParser then v.read_raw
+          else                       v.to_s
+          end
+        else
+          rs.read(String?)
+        end
       when "Bytes"   then rs.read(Bytes?)
       else                rs.read(String?)
       end

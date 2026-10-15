@@ -1,0 +1,26 @@
+# Dev-only live database verification (P0 roadmap item).
+# Usage: docker compose -f docker-compose.live.yml up -d
+#   PG_URL=postgres://saci:saci@127.0.0.1:55432/saci_test \
+#   MYSQL_URL=mysql://saci:saci@127.0.0.1:53306/saci_test crystal spec spec/live_spec.cr
+services:
+  saci-pg:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: saci
+      POSTGRES_PASSWORD: saci
+      POSTGRES_DB: saci_test
+    ports:
+      - "55432:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+  saci-mysql:
+    image: mysql:8
+    environment:
+      MYSQL_USER: saci
+      MYSQL_PASSWORD: saci
+      MYSQL_DATABASE: saci_test
+      MYSQL_ROOT_PASSWORD: saci-root
+    ports:
+      - "53306:3306"
+    tmpfs:
+      - /var/lib/mysql
