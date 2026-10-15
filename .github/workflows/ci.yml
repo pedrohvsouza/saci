@@ -1,0 +1,21 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  spec:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: crystal-lang/install-crystal@v1
+        with:
+          crystal: "1.22"
+      - name: Install dependencies
+        run: shards install --frozen
+      - name: Specs (single-threaded)
+        run: crystal spec
+      - name: Specs (multithreaded)
+        run: CRYSTAL_WORKERS=4 crystal spec -Dexecution_context
