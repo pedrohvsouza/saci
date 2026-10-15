@@ -27,11 +27,10 @@ it matters. Anything marked [x] was proven by specs and/or live traffic.
 - [x] **Composite uniqueness validation.** `validates :x, uniqueness:
   [:a, :b]` (Symbol or Array scope, nil-safe, self-excluding on update);
   reactions/follows carry model-level guards alongside their DB indexes.
-- [ ] **P1 — Eager loading (`includes`) + joins. [M]** The bell `COUNT`, tag
-  lists and notification actors are N+1 by construction today; feeds cap rows
-  to cope. Done when: `includes(:user)` kills the notification-page N+1 in a
-  spec. `joins` first, `has_many :through` after (tags currently traverse
-  joins with hand-written subselects).
+- [x] **N+1 audit (Claw).** Feeds + inbox + mod queues + user pages preload
+  (`home 51→6`, `inbox 153→5`, `modlog 103→5` queries) with count-ceiling
+  specs. Done when: ceilings hold as rows grow — proven by
+  `spec/requests/n_plus_one_spec.cr`.
 - [ ] **P1 — Model callbacks. [M]** (`before_save`, `after_create`, …). Forem
   semantics (score recalcs, counter caches, slug generation) are currently
   hand-called in controllers/jobs. Done when: score recalc moves into an

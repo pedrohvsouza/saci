@@ -4,8 +4,10 @@ A Rails-compatible (Rails-like API) web framework in Crystal. Familiar MVC
 conventions and directory-free single-shard design, implemented idiomatically
 on top of Crystal's `HTTP::Server`.
 
-**Status: Router + Controller (0.1.0) and ORM (0.2.0)** — the equivalents of
-ActionDispatch + ActionController + ActiveRecord (SQLite).
+**Status: 0.2.0** — Router + Controller, ORM (SQLite/PostgreSQL/MySQL),
+CLI, Cable, I18n, security, jobs, mailers, views, caching, throttle,
+storage, credentials, multidb, FTS5, page-cache — proven by two validation
+apps: Forem Lite (87 specs) and Claw, a Lobsters port (357 specs).
 
 ## Requirements
 
