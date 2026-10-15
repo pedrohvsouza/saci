@@ -103,6 +103,9 @@ saci generate migration AddBioToUsers bio:text
 saci generate migration AddIndexToFollows follower_id --unique  # -> add_index
 saci db:migrate [--all]              # --all migrates primary + named DBs
 saci db:rollback                     # rolls back the last migration
+saci db:schema:dump [--all]          # write db/schema.cr snapshot (all DBs with --all)
+saci db:schema:load                  # recreate schema from db/schema.cr
+saci db:schema:check [--all]         # warn when DB and models disagree
 saci serve --port 3000
 ```
 
@@ -123,7 +126,18 @@ saci serve --port 3000
   standalone runner (models only — the web server is never booted). `--all`
   migrates every database in `Saci::Record.configuration_names`; specs use
   `Saci::Record.clean_all!` to truncate all connections (single-DB apps keep
-  `clean_database!`).
+  `clean_database!`). After every migrate/rollback the runner prints schema
+  drift warnings to STDERR (see `db:schema:check` below) — warnings only,
+  the migrate itself never fails on drift.
+- `db:schema:dump [--all]` writes a standalone runnable `db/schema.cr`
+  snapshot (Rails `schema.rb` equivalent, portable across SQLite /
+  PostgreSQL / MySQL — see below); `saci db:schema:load` replays it with
+  `crystal run`. `--all` dumps primary + named DBs (registered via
+  `DATABASE_URL_<NAME>` env vars) into per-database sections.
+- `db:schema:check [--all]` compares the database against the registered
+  models and prints one line per mismatch (table/columns missing on either
+  side). Exits 1 when drift is found, 0 when clean — gate it in CI.
+  `--all` checks primary + all named DBs.
 - Routes support static prefix/suffix params anywhere in a segment:
   `/~:username`, `/@:username` (redirect to `/~%{username}`), `/avatars/:username_size.png`.
 
@@ -305,6 +319,85 @@ Two things you must know:
    quoting, DDL per adapter, portable rollback) plus the unchanged SQLite
    suite. Point `DATABASE_URL` at a real server to verify live — the
    execution paths are shared with SQLite by construction.
+
+## Schema snapshots (`schema.rb` equivalent)
+
+```sh
+saci db:schema:dump [--all]   # write db/schema.cr (all DBs with --all)
+saci db:schema:load           # recreate tables + indexes from db/schema.cr
+```
+
+`db/schema.cr` is a standalone runnable (`crystal run db/schema.cr`):
+it connects via `DATABASE_URL`-or-default (the same default expression
+as your `db/migrate.cr`, so it tracks `APP_ENV` too) and calls
+`Saci::Record::Schema.load` with an embedded snapshot. The snapshot is
+*data* (column/index definitions) plus a loader call — never raw SQL —
+so one `schema.cr` loads on SQLite, PostgreSQL and MySQL through
+adapter-aware DDL. `saci new` scaffolds nothing for this (the file is
+generated output).
+
+Table choice: every table is dumped EXCEPT `schema_migrations`
+(rebuilt by the Migrator on each database) and SQLite internals.
+Durable queue tables (`saci_jobs`, `saci_dead_jobs`) ARE included so a
+schema-loaded database boots queue workers without extra steps.
+
+Two normalizations to know:
+
+- `t.timestamps` is detected (`created_at` + `updated_at`, both
+  NOT NULL without defaults) and re-emitted as a pair on load.
+- SQLite shares storage across logical types, so BOOLEAN / DATE /
+  DATETIME / JSON reload as `:integer` / `:text` and DECIMAL / BIGINT
+  as `:float` / `:integer` (likewise `:decimal` reads back as `:float`
+  on PostgreSQL/MySQL, where the forward map itself stores doubles).
+  Re-dumping a loaded database is byte-stable. Defaults that cannot
+  round-trip exactly are normalized to no default and reported as
+  `# NOTE:` lines in the generated file.
+
+Multidb: with `--all`, the dump runner also snapshots every database
+registered through `DATABASE_URL_<NAME>` env vars (plus primary) into
+per-database sections; loading re-establishes each one the same way.
+
+Programmatic API: `Saci::Record::Schema.introspect(db)` (canonical
+`TableInfo` list), `Saci::Record::Schema.dump(db, url_default,
+others)` (renders `db/schema.cr`), `Saci::Record::Schema.load(db,
+tables)` (recreate).
+
+## Schema drift check
+
+Every `Saci::Record::Base` subclass self-registers in
+`Saci::Record.models`, so the framework can compare the database against
+the models and warn when they disagree (forgotten migration, hand-edited
+table, stale column declaration):
+
+```crystal
+Saci::Record.check_schema!.each { |w| STDERR.puts "warning: #{w}" }
+```
+
+`check_schema!` returns one warning string per mismatch and never raises
+on drift. Four kinds, compared by NAME only (types are ignored):
+
+- table in the DB with no registered model (`schema_migrations`,
+  `saci_jobs`/`saci_dead_jobs` are skipped — queue tables have no models
+  by design, as are column-less intermediates like `ApplicationRecord`);
+- model whose table is missing from the DB;
+- DB column with no mapping in the model;
+- model column missing from the DB table.
+
+`saci db:schema:check [--all]` runs the same check through your app's
+`db/migrate.cr` runner (models loaded, server never booted) and exits 1
+when drift is found. `saci db:migrate` / `saci db:rollback` print the
+same warnings to STDERR after every run.
+
+Existing apps (generated before this feature — e.g. `forem_lite`, `claw`)
+get both by copying the `print_schema_drift!` helper plus one
+`targets.each { |db_name| print_schema_drift!(db_name) }` call after the
+`up`/`down` branches of their `db/migrate.cr` (or diff against a fresh
+`saci new` scaffold's `db/migrate.cr`). One-liner for scripts/specs
+instead:
+
+```crystal
+Saci::Record.check_schema!(db).each { |w| STDERR.puts "warning: schema drift: #{w}" }
+```
 
 ## Testing
 
@@ -728,6 +821,7 @@ src/saci/record/base.cr # Saci::Record::Base (models)
 src/saci/record/fts.cr        # SQLite FTS5 search (setup + search_fts)
 src/saci/record/query.cr      # chainable queries
 src/saci/record/migration.cr  # migrations + Migrator
+src/saci/record/schema.cr     # db:schema:dump/load (schema.rb equivalent)
 src/saci/record/errors.cr     # validation errors
 src/saci/record/inflector.cr  # table-name inflection
 src/saci/cable.cr         # ActionCable-style channels + TestClient
@@ -757,6 +851,7 @@ spec/credentials_spec.cr  # AES-GCM, credentials file, CLI commands
 spec/multidb_spec.cr    # named DBs, connects_to, connected_to, tx routing
 spec/env_spec.cr        # env, log levels, force_ssl, error pages
 spec/cli_spec.cr        # CLI generator specs (temp dirs, no compilation)
+spec/schema_spec.cr     # schema dump/load round-trips (SQLite + live PG/MySQL when URLs present)
 spec/test_session_spec.cr  # TestSession request specs (ephemeral ports)
 spec/cable_spec.cr      # Cable specs (live two-client broadcast, reject, unsubscribe)
 spec/security_spec.cr   # CSRF/headers/escaping/bcrypt specs

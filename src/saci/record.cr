@@ -6,6 +6,7 @@ require "./record/errors"
 require "./record/query"
 require "./record/base"
 require "./record/migration"
+require "./record/schema"
 require "./record/fts"
 
 module Saci

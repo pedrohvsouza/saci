@@ -31,6 +31,7 @@ require "./saci/page_cache"
 require "./saci/smtp"
 require "./saci/mailer"
 require "./saci/record"
+require "./saci/record/schema_check"
 require "./saci/record/secure_password"
 
 module Saci

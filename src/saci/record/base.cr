@@ -63,6 +63,13 @@ module Saci
       # -- schema DSL -------------------------------------------------------
 
       macro inherited
+        # Self-register for schema drift checks (`Saci::Record.check_schema!`,
+        # mirroring `Saci::Job.register`). A statement, not a method — the
+        # `previous_def` chains below are untouched. Column-less
+        # intermediates (e.g. `ApplicationRecord`) register too but are
+        # skipped by the check (no columns = no table by design).
+        Saci::Record.register_model(self)
+
         def self.__saci_column_names : Array(Tuple(String, String))
           super
         end

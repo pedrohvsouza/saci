@@ -1,0 +1,584 @@
+module Saci
+  module Record
+    # Rails `schema.rb` equivalent: introspect a live database into a
+    # canonical, adapter-aware snapshot (`dump` / `introspect`) and
+    # recreate it (`load`). One `db/schema.cr` loads on SQLite,
+    # PostgreSQL and MySQL because it carries *data* (column/index
+    # definitions) plus a loader call — never raw SQL strings.
+    #
+    # Table choice: every table is dumped EXCEPT `schema_migrations`
+    # (rebuilt by the Migrator on each database) and SQLite internals
+    # (`sqlite_%`). Durable queue tables (`saci_jobs`, `saci_dead_jobs`)
+    # ARE included so a schema-loaded database boots queue workers
+    # without extra steps.
+    #
+    # SQLite normalization (documented, byte-stable): SQLite shares one
+    # storage type across several logical types, so BOOLEAN/DATE/
+    # DATETIME/JSON map back to :integer/:text, DECIMAL/BIGINT to
+    # :float/:integer, and only single-column integer primary keys map
+    # back to :serial. `t.timestamps` (created_at + updated_at, both
+    # NOT NULL without defaults) is detected and re-emitted.
+    # Re-dumping a loaded database is byte-stable. Defaults that cannot
+    # round-trip exactly are normalized to no default and reported as
+    # `# NOTE:` lines in the generated file.
+    #
+    # Driver-free: introspection uses only the generic `DB` API plus
+    # `Record.query_compat` (catalog queries return text/int/nil on all
+    # three drivers), so requiring this file never pulls in pg/mysql.
+    module Schema
+      # Index snapshot (name, ordered columns, uniqueness).
+      struct IndexInfo
+        getter name : String
+        getter columns : Array(String)
+        getter unique : Bool
+
+        def initialize(@name : String, @columns : Array(String), @unique : Bool)
+        end
+      end
+
+      # Table snapshot. `timestamps` means created_at + updated_at (both
+      # NOT NULL, no defaults) were detected and are re-emitted by the
+      # loader instead of two plain columns.
+      struct TableInfo
+        getter name : String
+        getter columns : Array(ColumnDef)
+        getter indexes : Array(IndexInfo)
+        getter timestamps : Bool
+
+        def initialize(@name : String, @columns : Array(ColumnDef), @indexes : Array(IndexInfo) = [] of IndexInfo, @timestamps : Bool = false)
+        end
+      end
+
+      # A non-primary database section of a `--all` dump (name, handle,
+      # and the `DATABASE_URL_<NAME>` fallback baked into schema.cr).
+      struct DatabaseDump
+        getter name : String
+        getter db : DB::Database | DB::Connection
+        getter url_default : String
+
+        def initialize(@name : String, @db : DB::Database | DB::Connection, @url_default : String)
+        end
+      end
+
+      # Migration bookkeeping is rebuilt by the Migrator on every
+      # database, so it is never part of the snapshot.
+      SKIP_TABLES = ["schema_migrations"]
+
+      # Canonical snapshot of every kept table (sorted by name).
+      def self.introspect(db : DB::Database | DB::Connection) : Array(TableInfo)
+        tables, _ = introspect_with_notes(db)
+        tables
+      end
+
+      # Recreates snapshot tables on any adapter: drops (so loading is
+      # repeatable on a fresh database) then CREATE TABLE + indexes
+      # through adapter-aware DDL.
+      def self.load(db : DB::Database | DB::Connection, tables : Array(TableInfo)) : Nil
+        ad = Record.adapter_of(db)
+        tables.each do |t|
+          cols = t.columns.map(&.to_sql(ad))
+          if t.timestamps
+            cols << ColumnDef.new("created_at", :datetime, false, nil, false).to_sql(ad)
+            cols << ColumnDef.new("updated_at", :datetime, false, nil, false).to_sql(ad)
+          end
+          Record.exec_compat(db, "DROP TABLE IF EXISTS #{Record.quote(t.name, ad)}")
+          Record.exec_compat(db, "CREATE TABLE #{Record.quote(t.name, ad)} (#{cols.join(", ")})")
+          t.indexes.each do |ix|
+            uniq = ix.unique ? "UNIQUE " : ""
+            Record.exec_compat(db, "CREATE #{uniq}INDEX #{Record.quote(ix.name, ad)} ON #{Record.quote(t.name, ad)} (#{ix.columns.map { |c| Record.quote(c, ad) }.join(", ")})")
+          end
+        end
+      end
+
+      # Renders a standalone runnable `db/schema.cr`: connects via
+      # `DATABASE_URL`-or-default (same convention as the migrate
+      # runner), then calls `load` with the embedded snapshot.
+      # `url_default` is embedded verbatim (it usually carries a
+      # `#{env_name}` interpolation the generated file resolves).
+      def self.dump(db : DB::Database | DB::Connection, url_default : String = "sqlite3://./db/development.db", others : Array(DatabaseDump) = [] of DatabaseDump) : String
+        primary_tables, notes = introspect_with_notes(db)
+        rest = others.map do |o|
+          other_tables, other_notes = introspect_with_notes(o.db)
+          {o, other_tables, other_notes}
+        end
+        String.build do |io|
+          io << "# db/schema.cr — auto-generated by `saci db:schema:dump` (#{Time.utc.to_rfc3339}).\n"
+          io << "# Rails schema.rb equivalent: canonical snapshot, portable across\n"
+          io << "# adapters (SQLite / PostgreSQL / MySQL) through adapter-aware DDL.\n"
+          io << "# Load with: saci db:schema:load   (or: crystal run db/schema.cr)\n"
+          io << "#\n"
+          io << "# Table choice: every table EXCEPT `schema_migrations` (rebuilt by the\n"
+          io << "# Migrator on each database) and SQLite internals (`sqlite_%`). Durable\n"
+          io << "# queue tables (`saci_jobs`, `saci_dead_jobs`) ARE included so a\n"
+          io << "# schema-loaded database boots queue workers without extra steps.\n"
+          io << "#\n"
+          io << "# SQLite normalization: SQLite shares storage across logical types, so\n"
+          io << "# BOOLEAN/DATE/DATETIME/JSON reload as :integer/:text and DECIMAL/BIGINT\n"
+          io << "# as :float/:integer; only single-column integer primary keys reload as\n"
+          io << "# :serial. `t.timestamps` (created_at + updated_at, both NOT NULL without\n"
+          io << "# defaults) is detected and re-emitted. Re-dumping a loaded database is\n"
+          io << "# byte-stable; defaults that cannot round-trip exactly are normalized to\n"
+          io << "# no default (noted below).\n"
+          notes.each { |n| io << "# NOTE: " << n << "\n" }
+          rest.each do |o, _, other_notes|
+            other_notes.each { |n| io << "# NOTE: [" << o.name << "] " << n << "\n" }
+          end
+          pg = url_default.includes?("postgres") || rest.any? { |o, _, _| o.url_default.includes?("postgres") }
+          mysql = url_default.includes?("mysql") || rest.any? { |o, _, _| o.url_default.includes?("mysql") }
+          io << "require \"pg\"\n" if pg
+          io << "require \"mysql\"\n" if mysql
+          io << "require \"saci\"\n"
+          io << "require \"file_utils\"\n"
+          io << "\n"
+          io << "FileUtils.mkdir_p(\"db\")\n"
+          io << "env_name = ENV.fetch(\"APP_ENV\", \"development\")\n"
+          io << "db_url = ENV.fetch(\"DATABASE_URL\", \"" << url_default << "\")\n"
+          io << "Saci::Record.connect(db_url)\n"
+          io << "db = Saci::Record.database(\"primary\")\n"
+          io << "\n"
+          io << "SCHEMA_TABLES = [\n"
+          primary_tables.each { |t| emit_table(io, t) }
+          io << "] of Saci::Record::Schema::TableInfo\n"
+          io << "\n"
+          io << "Saci::Record::Schema.load(db, SCHEMA_TABLES)\n"
+          rest.each do |o, other_tables, _|
+            const = "SCHEMA_TABLES_" + o.name.upcase.gsub(/[^A-Z0-9_]/, "_")
+            io << "\n"
+            io << "Saci::Record.establish_connection(" << o.name.inspect << ", ENV.fetch(" << ("DATABASE_URL_" + o.name.upcase).inspect << ", \"" << crystal_escape(o.url_default) << "\"))\n"
+            io << const << " = [\n"
+            other_tables.each { |t| emit_table(io, t) }
+            io << "] of Saci::Record::Schema::TableInfo\n"
+            io << "\n"
+            io << "Saci::Record::Schema.load(Saci::Record.database(" << o.name.inspect << "), " << const << ")\n"
+          end
+        end
+      end
+
+      # -- emission -----------------------------------------------------
+
+      private def self.emit_table(io : IO, t : TableInfo) : Nil
+        io << "  Saci::Record::Schema::TableInfo.new(\n"
+        io << "    " << t.name.inspect << ",\n"
+        io << "    [\n"
+        t.columns.each do |c|
+          io << "      Saci::Record::ColumnDef.new(" << c.name.inspect << ", :" << c.logical_type.to_s << ", " << c.null.to_s << ", " << value_literal(c.default_value) << ", " << c.primary_key.to_s << "),\n"
+        end
+        io << "    ] of Saci::Record::ColumnDef,\n"
+        io << "    [\n"
+        t.indexes.each do |ix|
+          cols = ix.columns.map(&.inspect).join(", ")
+          io << "      Saci::Record::Schema::IndexInfo.new(" << ix.name.inspect << ", [" << cols << "] of String, " << ix.unique.to_s << "),\n"
+        end
+        io << "    ] of Saci::Record::Schema::IndexInfo,\n"
+        io << "    " << t.timestamps.to_s << ", # t.timestamps (created_at/updated_at, NOT NULL)\n" if t.timestamps
+        io << "    false,\n" unless t.timestamps
+        io << "  ),\n"
+      end
+
+      # Time/Bytes (the `else` branch) cannot round-trip through the
+      # snapshot (datetime defaults are already normalized to nil at
+      # introspection); nil keeps the file loading.
+      private def self.value_literal(v : Value) : String
+        case v
+        when Nil              then "nil"
+        when Bool             then v ? "true" : "false"
+        when Int32, Int64     then "#{v}_i64"
+        when Float32, Float64 then v.to_s
+        when String           then v.inspect
+        else                       "nil"
+        end
+      end
+
+      # Escapes a baked URL for embedding in double quotes. `#{...}`
+      # sequences pass through untouched (the primary default carries a
+      # `#{env_name}` interpolation the generated file must resolve).
+      private def self.crystal_escape(s : String) : String
+        s.gsub("\\", "\\\\").gsub("\"", "\\\"")
+      end
+
+      # -- introspection --------------------------------------------------
+
+      private def self.introspect_with_notes(db : DB::Database | DB::Connection) : Tuple(Array(TableInfo), Array(String))
+        notes = [] of String
+        tables = case Record.adapter_of(db)
+                 when :postgres then introspect_postgres(db, notes)
+                 when :mysql    then introspect_mysql(db, notes)
+                 else                introspect_sqlite(db, notes)
+                 end
+        {tables, notes}
+      end
+
+      private def self.keep_table?(name : String) : Bool
+        !SKIP_TABLES.includes?(name) && !name.starts_with?("sqlite_")
+      end
+
+      # `t.timestamps` detection: created_at + updated_at, both NOT NULL
+      # without defaults (exactly what `t.timestamps` generates). The
+      # pair is removed from the column list and re-emitted by the loader.
+      private def self.extract_timestamps(cols : Array(ColumnDef)) : Tuple(Array(ColumnDef), Bool)
+        ca = cols.index { |c| c.name == "created_at" }
+        ua = cols.index { |c| c.name == "updated_at" }
+        if ca && ua
+          c1, c2 = cols[ca], cols[ua]
+          if !c1.null && !c2.null && c1.default_value.nil? && c2.default_value.nil? && !c1.primary_key && !c2.primary_key
+            return {cols.reject { |c| c.name == "created_at" || c.name == "updated_at" }, true}
+          end
+        end
+        {cols, false}
+      end
+
+      # -- value coercions (catalog reads vary by driver) -----------------
+
+      private def self.any_to_str(v) : String?
+        case v
+        when Nil    then nil
+        when String then v
+        when Bytes  then String.new(v)
+        else             v.to_s
+        end
+      end
+
+      private def self.any_to_i64(v) : Int64
+        case v
+        when Nil    then 0_i64
+        when Bool   then v ? 1_i64 : 0_i64
+        when Number then v.to_i64
+        when String then v.strip.to_i64? || 0_i64
+        when Time   then v.to_unix
+        else             0_i64
+        end
+      end
+
+      private def self.any_to_bool(v) : Bool
+        case v
+        when Nil    then false
+        when Bool   then v
+        when Number then v != 0
+        when String
+          s = v.strip.downcase
+          s == "1" || {"t", "true", "y", "yes"}.includes?(s)
+        else false
+        end
+      end
+
+      # -- SQLite ---------------------------------------------------------
+
+      private def self.introspect_sqlite(db : DB::Database | DB::Connection, notes : Array(String)) : Array(TableInfo)
+        names = [] of String
+        Record.query_compat(db, "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name != 'schema_migrations' ORDER BY name") do |rs|
+          rs.each { names << rs.read(String) }
+        end
+        names.select { |n| keep_table?(n) }.map { |n| introspect_sqlite_table(db, n, notes) }
+      end
+
+      private def self.introspect_sqlite_table(db : DB::Database | DB::Connection, table : String, notes : Array(String)) : TableInfo
+        qt = table.gsub('"', "\"\"")
+        col_names = {} of Int64 => String
+        cols = [] of ColumnDef
+        Record.query_compat(db, "PRAGMA table_info(\"#{qt}\")") do |rs|
+          rs.each do
+            cid = any_to_i64(rs.read)
+            name = any_to_str(rs.read) || "col#{cid}"
+            decltype = any_to_str(rs.read) || "TEXT"
+            notnull = any_to_bool(rs.read)
+            dflt_raw = rs.read
+            pk = any_to_i64(rs.read) != 0
+            col_names[cid] = name
+            logical = sqlite_reverse_type(decltype, pk)
+            default, note = sqlite_parse_default(table, name, dflt_raw)
+            notes << note if note
+            cols << ColumnDef.new(name, logical, !notnull && !pk, default, pk)
+          end
+        end
+        raw_indexes = [] of Tuple(String, Bool)
+        Record.query_compat(db, "PRAGMA index_list(\"#{qt}\")") do |rs|
+          rs.each do
+            rs.read # seq
+            name = any_to_str(rs.read) || ""
+            unique = any_to_bool(rs.read)
+            origin = any_to_str(rs.read) || ""
+            rs.read # partial
+            next if name.empty? || origin == "pk" || name.starts_with?("sqlite_autoindex_")
+            raw_indexes << {name, unique}
+          end
+        end
+        idxs = raw_indexes.map do |(name, unique)|
+          qi = name.gsub('"', "\"\"")
+          ordered = [] of Tuple(Int32, String)
+          Record.query_compat(db, "PRAGMA index_info(\"#{qi}\")") do |irs|
+            irs.each do
+              seqno = any_to_i64(irs.read).to_i32
+              cid = any_to_i64(irs.read)
+              if col = col_names[cid]?
+                ordered << {seqno, col}
+              end
+            end
+          end
+          ordered.sort_by!(&.[0])
+          IndexInfo.new(name, ordered.map(&.[1]), unique)
+        end
+        idxs.sort_by!(&.name)
+        columns, timestamps = extract_timestamps(cols)
+        TableInfo.new(table, columns, idxs, timestamps)
+      end
+
+      # Matches `Record.db_type` forward maps exactly; SQLite shares
+      # storage across logical types (see module docs), so several kinds
+      # collapse here — the collapse is stable across dump/load cycles.
+      private def self.sqlite_reverse_type(decltype : String, primary : Bool) : Symbol
+        return :serial if primary
+        case decltype.strip.upcase.split("(")[0].strip
+        when "VARCHAR", "CHARACTER VARYING", "CHAR", "CHARACTER", "NCHAR", "NVARCHAR", "CLOB" then :string
+        when "TEXT", "DATE", "DATETIME", "TIMESTAMP"                                                                                  then :text
+        when "INTEGER", "INT", "BIGINT", "SMALLINT", "MEDIUMINT", "TINYINT", "BOOLEAN", "BOOL"                                          then :integer
+        when "REAL", "FLOAT", "DOUBLE", "DOUBLE PRECISION", "DECIMAL", "NUMERIC"                                                       then :float
+        else                                                                                                                          :text
+        end
+      end
+
+      private def self.sqlite_parse_default(table : String, column : String, raw) : Tuple(Value, String?)
+        case raw
+        when Nil                        then {nil, nil}
+        when Bool                       then {raw, nil}
+        when Float                      then {raw.to_f64, nil}
+        when Number                     then {raw.to_i64, nil}
+        when Time                       then {nil, "#{table}.#{column}: datetime default does not round-trip; normalized to no default"}
+        when String
+          s = raw.strip
+          return {nil, nil} if s.empty? || s.upcase == "NULL"
+          if s.size >= 2 && s.starts_with?("'") && s.ends_with?("'")
+            return {s[1..-2].gsub("''", "'"), nil}
+          end
+          if s.size >= 2 && s.starts_with?("\"") && s.ends_with?("\"")
+            return {s[1..-2], nil}
+          end
+          up = s.upcase
+          return {true, nil} if up == "TRUE"
+          return {false, nil} if up == "FALSE"
+          if {"CURRENT_TIMESTAMP", "CURRENT_DATE", "CURRENT_TIME"}.includes?(up)
+            return {nil, "#{table}.#{column}: default #{s} does not round-trip; normalized to no default"}
+          end
+          return {s.to_i64, nil} if s.to_i64?
+          return {s.to_f64, nil} if s.to_f64?
+          {nil, "#{table}.#{column}: default #{raw.inspect} does not round-trip; normalized to no default"}
+        else
+          {nil, "#{table}.#{column}: default does not round-trip; normalized to no default"}
+        end
+      end
+
+      # -- PostgreSQL -----------------------------------------------------
+
+      private def self.introspect_postgres(db : DB::Database | DB::Connection, notes : Array(String)) : Array(TableInfo)
+        names = [] of String
+        Record.query_compat(db, "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename != 'schema_migrations' ORDER BY tablename") do |rs|
+          rs.each { names << (any_to_str(rs.read) || next) }
+        end
+        names.select { |n| keep_table?(n) }.map { |n| introspect_postgres_table(db, n, notes) }
+      end
+
+      private def self.introspect_postgres_table(db : DB::Database | DB::Connection, table : String, notes : Array(String)) : TableInfo
+        pk_cols = Set(String).new
+        escaped = table.gsub("'", "''")
+        Record.query_compat(db, "SELECT a.attname FROM pg_index ix JOIN pg_attribute a ON a.attrelid = ix.indrelid AND a.attnum = ANY(ix.indkey) WHERE ix.indrelid = '#{escaped}'::regclass AND ix.indisprimary") do |rs|
+          rs.each { pk_cols << (any_to_str(rs.read) || next) }
+        end
+        cols = [] of ColumnDef
+        Record.query_compat(db, "SELECT column_name, data_type, udt_name, is_nullable, column_default FROM information_schema.columns WHERE table_schema = 'public' AND table_name = ? ORDER BY ordinal_position", [table] of Value) do |rs|
+          rs.each do
+            name = any_to_str(rs.read) || next
+            data_type = (any_to_str(rs.read) || "text").downcase
+            udt_name = (any_to_str(rs.read) || "").downcase
+            nullable = (any_to_str(rs.read) || "YES").upcase == "YES"
+            dflt_raw = any_to_str(rs.read)
+            primary = pk_cols.includes?(name)
+            logical = pg_reverse_type(data_type, udt_name, dflt_raw, primary)
+            default, note = pg_parse_default(table, name, logical, dflt_raw)
+            notes << note if note
+            cols << ColumnDef.new(name, logical, nullable && !primary, default, primary)
+          end
+        end
+        idxs = [] of IndexInfo
+        Record.query_compat(db, "SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = 'public' AND tablename = ?", [table] of Value) do |rs|
+          rs.each do
+            name = any_to_str(rs.read) || next
+            indexdef = any_to_str(rs.read) || next
+            next if name == "#{table}_pkey"
+            list = pg_index_columns(indexdef)
+            next unless list
+            idxs << IndexInfo.new(name, list, indexdef.upcase.starts_with?("CREATE UNIQUE INDEX"))
+          end
+        end
+        idxs.sort_by!(&.name)
+        columns, timestamps = extract_timestamps(cols)
+        TableInfo.new(table, columns, idxs, timestamps)
+      end
+
+      private def self.pg_reverse_type(data_type : String, udt_name : String, column_default : String?, primary : Bool) : Symbol
+        return :serial if primary && !!(column_default.try(&.starts_with?("nextval")))
+        case data_type
+        when "bigint"                                                   then :bigint
+        when "integer"                                                  then :integer
+        when "character varying", "character"                           then :string
+        when "text"                                                     then :text
+        when "double precision", "real"                                 then :float
+        when "numeric"                                                  then :decimal
+        when "date"                                                     then :date
+        when "jsonb", "json"                                            then :json
+        when "boolean"                                                  then :boolean
+        when "timestamp without time zone", "timestamp with time zone",
+             "timestamp"                                                then :datetime
+        else
+          udt_name == "jsonb" ? :json : :text
+        end
+      end
+
+      private def self.pg_parse_default(table : String, column : String, logical : Symbol, raw : String?) : Tuple(Value, String?)
+        return {nil, nil} if raw.nil? || raw.empty?
+        s = raw.strip
+        return {nil, nil} if s.starts_with?("nextval")
+        return {true, nil} if s == "true"
+        return {false, nil} if s == "false"
+        if s.starts_with?("'")
+          if m = s.match(/\A'(.*)'::[\w ]+\z/m)
+            return {m[1].gsub("''", "'"), nil}
+          end
+          return {s, nil} if logical == :string || logical == :text
+        end
+        if i = s.to_i64?
+          return {logical == :boolean ? (i != 0) : i, nil}
+        end
+        if f = s.to_f64?
+          return {f, nil}
+        end
+        if {"CURRENT_TIMESTAMP", "CURRENT_DATE", "NOW()", "CURRENT_TIME"}.includes?(s.upcase)
+          return {nil, "#{table}.#{column}: default #{s} does not round-trip; normalized to no default"}
+        end
+        {nil, "#{table}.#{column}: default #{raw.inspect} does not round-trip; normalized to no default"}
+      end
+
+      private def self.pg_index_columns(indexdef : String) : Array(String)?
+        o = indexdef.rindex('(')
+        c = indexdef.rindex(')')
+        return nil unless o && c && c > o
+        inner = indexdef[o + 1, c - o - 1].strip
+        return nil if inner.starts_with?("(")
+        cols = inner.split(",").map do |part|
+          token = part.strip.split(" ")[0]
+          if token.size >= 2 && token.starts_with?("\"") && token.ends_with?("\"")
+            token[1..-2]
+          else
+            token
+          end
+        end
+        return nil if cols.any?(&.empty?) || cols.any? { |c| c.includes?("(") || c.includes?(")") }
+        cols
+      end
+
+      # -- MySQL ----------------------------------------------------------
+
+      private def self.introspect_mysql(db : DB::Database | DB::Connection, notes : Array(String)) : Array(TableInfo)
+        names = [] of String
+        Record.query_compat(db, "SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name != 'schema_migrations' AND table_type = 'BASE TABLE' ORDER BY table_name") do |rs|
+          rs.each { names << (any_to_str(rs.read) || next) }
+        end
+        names.select { |n| keep_table?(n) }.map { |n| introspect_mysql_table(db, n, notes) }
+      end
+
+      private def self.introspect_mysql_table(db : DB::Database | DB::Connection, table : String, notes : Array(String)) : TableInfo
+        pk_cols = Set(String).new
+        Record.query_compat(db, "SELECT column_name FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = ? AND index_name = 'PRIMARY' ORDER BY seq_in_index", [table] of Value) do |rs|
+          rs.each { pk_cols << (any_to_str(rs.read) || next) }
+        end
+        cols = [] of ColumnDef
+        Record.query_compat(db, "SELECT column_name, column_type, data_type, is_nullable, column_default, extra FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? ORDER BY ordinal_position", [table] of Value) do |rs|
+          rs.each do
+            name = any_to_str(rs.read) || next
+            column_type = (any_to_str(rs.read) || "").downcase
+            data_type = (any_to_str(rs.read) || "").downcase
+            nullable = (any_to_str(rs.read) || "YES").upcase == "YES"
+            dflt_raw = any_to_str(rs.read)
+            extra = (any_to_str(rs.read) || "").downcase
+            primary = pk_cols.includes?(name)
+            logical = mysql_reverse_type(column_type, data_type, extra, primary)
+            default, note = mysql_parse_default(table, name, logical, dflt_raw, extra)
+            notes << note if note
+            cols << ColumnDef.new(name, logical, nullable && !primary, default, primary)
+          end
+        end
+        grouped = {} of String => NamedTuple(unique: Bool, cols: Array(Tuple(Int64, String)))
+        Record.query_compat(db, "SELECT index_name, non_unique, seq_in_index, column_name FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = ? AND index_name != 'PRIMARY' ORDER BY index_name, seq_in_index", [table] of Value) do |rs|
+          rs.each do
+            name = any_to_str(rs.read) || next
+            non_unique = any_to_i64(rs.read) != 0
+            seq = any_to_i64(rs.read)
+            col = any_to_str(rs.read) || next
+            entry = grouped[name]? || {unique: !non_unique, cols: [] of Tuple(Int64, String)}
+            entry[:cols] << {seq, col}
+            grouped[name] = {unique: entry[:unique], cols: entry[:cols]}
+          end
+        end
+        idxs = grouped.map do |name, entry|
+          IndexInfo.new(name, entry[:cols].sort_by(&.[0]).map(&.[1]), entry[:unique])
+        end.sort_by!(&.name)
+        columns, timestamps = extract_timestamps(cols)
+        TableInfo.new(table, columns, idxs, timestamps)
+      end
+
+      # Matches `Record.db_type` forward maps: MySQL stores JSON as TEXT
+      # (crystal-mysql cannot decode the native JSON wire type), so a
+      # native `json` column maps back to :text exactly like our DDL does.
+      private def self.mysql_reverse_type(column_type : String, data_type : String, extra : String, primary : Bool) : Symbol
+        return :serial if primary && extra.includes?("auto_increment")
+        case data_type
+        when "bigint"   then :bigint
+        when "int", "mediumint", "smallint", "year" then :integer
+        when "varchar", "char"                      then :string
+        when "text", "mediumtext", "longtext", "tinytext", "json" then :text
+        when "double", "float"                      then :float
+        when "decimal", "numeric", "newdecimal"     then :decimal
+        when "date"                                 then :date
+        when "datetime", "timestamp"                then :datetime
+        when "tinyint"                              then column_type.starts_with?("tinyint(1)") ? :boolean : :integer
+        when "boolean", "bool"                      then :boolean
+        else                                             :text
+        end
+      end
+
+      private def self.mysql_parse_default(table : String, column : String, logical : Symbol, raw : String?, extra : String) : Tuple(Value, String?)
+        return {nil, nil} if raw.nil?
+        s = raw.strip
+        return {nil, nil} if s.empty? || s.upcase == "NULL"
+        if extra.includes?("auto_increment")
+          return {nil, nil}
+        end
+        up = s.upcase
+        if {"CURRENT_TIMESTAMP", "CURRENT_DATE", "CURRENT_TIME", "NOW()", "CURDATE()"}.includes?(up) || up.starts_with?("CURRENT_TIMESTAMP(")
+          return {nil, "#{table}.#{column}: default #{s} does not round-trip; normalized to no default"}
+        end
+        unquoted = if s.size >= 2 && s.starts_with?("'") && s.ends_with?("'")
+                     s[1..-2].gsub("''", "'").gsub("\\\\", "\\")
+                   else
+                     s
+                   end
+        case logical
+        when :boolean
+          return {false, nil} if {"0", "b'0'", "false"}.includes?(unquoted.downcase)
+          return {true, nil} if {"1", "b'1'", "true"}.includes?(unquoted.downcase)
+        when :integer, :bigint
+          return {unquoted.to_i64, nil} if unquoted.to_i64?
+        when :float, :decimal
+          return {unquoted.to_f64, nil} if unquoted.to_f64?
+        when :string, :text
+          return {unquoted, nil}
+        end
+        if i = unquoted.to_i64?
+          return {i, nil}
+        end
+        if f = unquoted.to_f64?
+          return {f, nil}
+        end
+        {unquoted, nil}
+      end
+    end
+  end
+end

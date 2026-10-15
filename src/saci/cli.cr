@@ -23,6 +23,12 @@ module Saci
         Db.run(args, "up")
       when "db:rollback", "db:migrate:down"
         Db.run(args, "down")
+      when "db:schema:dump"
+        Schema.run(args, "dump")
+      when "db:schema:load"
+        Schema.run(args, "load")
+      when "db:schema:check"
+        SchemaCheck.run(args)
       when "secret"
         Secret.run(args)
       when "credentials:show"
@@ -75,6 +81,12 @@ module Saci
         "Usage: saci db:migrate [--all]\n\nRuns pending migrations in db/migrate/ (keeps db/migrations.cr in sync first). With --all, migrates primary + all named DBs."
       when "db:rollback"
         "Usage: saci db:rollback [STEPS] [--all]\n\nRolls back the last STEPS migrations (default 1). With --all, rolls back on all databases."
+      when "db:schema:dump"
+        "Usage: saci db:schema:dump [--all] [-- crystal flags]\n\nDumps the schema to db/schema.cr (standalone runnable, portable across SQLite/PostgreSQL/MySQL). With --all, dumps primary + named DBs (registered via DATABASE_URL_<NAME> env vars) into per-database sections."
+      when "db:schema:load"
+        "Usage: saci db:schema:load [-- crystal flags]\n\nLoads db/schema.cr (runs it with crystal run), recreating tables + indexes. Repeatable on a fresh database."
+      when "db:schema:check"
+        "Usage: saci db:schema:check [--all]\n\nWarns when the database and the models disagree (missing tables/columns on either side). Exits 1 when drift is found, 0 when clean. With --all, checks primary + all named DBs."
       when "secret"
         "Usage: saci secret\n\nPrints a random secret for SECRET_KEY_BASE."
       when "credentials:show", "credentials:edit", "credentials:keygen"
@@ -93,6 +105,9 @@ module Saci
           test (t)                  run the spec suite (see `saci help test`)
           db:migrate [--all]        run pending migrations (all DBs with --all)
           db:rollback [STEPS] [--all] roll back migrations
+          db:schema:dump [--all]      dump the schema to db/schema.cr (all DBs with --all)
+          db:schema:load              load db/schema.cr (recreate tables + indexes)
+          db:schema:check [--all] warn when DB and models disagree (exit 1 on drift)
           secret                    print a random SECRET_KEY_BASE
           credentials:show         decrypt and print credentials
           credentials:edit         edit credentials in $EDITOR
