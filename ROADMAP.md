@@ -1,19 +1,30 @@
-# Roadmap — Saci framework + Forem Lite
+# Roadmap — Saci framework + validation apps
 
-Consolidated plan from building Forem Lite (`../forem_lite`) against Saci.
 Every item traces to a real product need or a limit hit during validation.
 Horizons: **P0** correctness/safety, **P1** product depth, **P2** scale/polish.
-Effort: **S** < half day, **M** 1–3 days, **L** a week+. Depends-on noted where
-it matters. Anything marked [x] was proven by specs and/or live traffic.
+Effort: **S** < half day, **M** 1–3 days, **L** a week+. Anything marked [x]
+was proven by specs and/or live traffic.
+
+Validation: **Forem Lite** (`../forem_lite`, 87 specs) and **Claw**
+(`../claw`, a Lobsters port, 357 specs). Framework suite: **339 specs**,
+green plain and with `-Dexecution_context`.
 
 ## Milestones
 
-- **M1 — Auth complete.** Password reset (below) closes signup → verify →
-  login → reset. After M1 no auth flow is missing.
-- **M2 — Production credible.** Durable jobs + backups + alerting + verified
-  Docker image. After M2 a small community could run here for real.
-- **M3 — Community depth.** Threading, bookmarks, markdown, drafts/scheduling.
-- **M4 — Scale.** Eager loading, distributed Cable/throttle, metrics.
+- **M1 — Auth complete. [x]** Forem Lite password reset closed signup →
+  verify → login → reset; Claw added 2FA TOTP (scannable QR), GitHub/
+  Mastodon/Pushover wiring, invitation-gated signup, username history.
+- **M2 — Production credible. [~]** Durable jobs [x], backups [x, Claw
+  script + drill], alerting [x, Claw webhook + admin inbox], multi-window
+  rate limits [x], recurring jobs [x, Claw]. Docker image produced but
+  **unbuilt** (daemon permission at the time); live PG/MySQL still unverified.
+- **M3 — Community depth. [x]** Threading (Claw depth-3+ threads + reply
+  forms), bookmarks (saved stories + `/saved`), markdown (escape-first
+  renderer, spec-pinned), drafts/scheduling (Claw suggestions queue +
+  `set(wait:)` scheduling; Forem Lite drafts by URL only).
+- **M4 — Scale. [~]** Eager loading [x] + N+1 ceilings [x] (`home 51→6`,
+  `inbox 153→5`, `modlog 103→5`). Still open: distributed Cable/throttle,
+  metrics endpoint.
 
 ## Framework — ORM (`Saci::Record`)
 
@@ -23,138 +34,113 @@ it matters. Anything marked [x] was proven by specs and/or live traffic.
   behind env flags exercises CRUD/validations/associations/migrations on both.
   (Discovered: drivers must stay app-opt-in — `DB.open`'s virtual dispatch
   links every driver's connect path, and pg's `Digest` auth can't link on
-  OpenSSL ≥ 3.2.)
+  OpenSSL ≥ 3.2.) **Now unblocked: Docker works — this is the biggest
+  remaining correctness gap.**
 - [x] **Composite uniqueness validation.** `validates :x, uniqueness:
-  [:a, :b]` (Symbol or Array scope, nil-safe, self-excluding on update);
-  reactions/follows carry model-level guards alongside their DB indexes.
-- [x] **N+1 audit (Claw).** Feeds + inbox + mod queues + user pages preload
-  (`home 51→6`, `inbox 153→5`, `modlog 103→5` queries) with count-ceiling
-  specs. Done when: ceilings hold as rows grow — proven by
-  `spec/requests/n_plus_one_spec.cr`.
-- [ ] **P1 — Model callbacks. [M]** (`before_save`, `after_create`, …). Forem
-  semantics (score recalcs, counter caches, slug generation) are currently
-  hand-called in controllers/jobs. Done when: score recalc moves into an
-  `after_save` on Reaction/Comment and the job becomes a thin wrapper.
-- [ ] **P1 — Multipart form parsing. [M]** `Params` reads JSON + urlencoded
-  only; browser `<input type=file>` silently loses fields (spec-pinned).
-  Blocks avatar/cover uploads from HTML forms. Done when: the multipart-gap
-  spec flips to green (fields + file bytes available, size-capped).
-- [ ] **P1 — Richer column types. [S]** No `decimal`, `json`, enums, arrays;
-  no PG-native `t.timestamps` precision. Needed before any serious PG app.
-- [ ] **P2 — `render` custom content types + template status. [S]** RSS writes
-  `response` directly and sets `@performed`; validation re-renders return
-  200 instead of 422. Done when: `render xml:, status:` / `render_template
-  :x, status:` exist.
-- [ ] **P2 — Query polish. [S]** `select` column lists, `distinct`, `group`
-  + aggregates, `or` combinator, `find_each` batching beyond basics.
-- [x] Single-arg `where(sql)` overload (was overload error; added with spec).
-- [x] PostgreSQL + MySQL adapters, SMTP adapter (both verified live).
+  [:a, :b]` (Symbol or Array scope, nil-safe, self-excluding on update).
+- [x] **Eager loading + joins + `has_many :through`.** `includes` (nested,
+  2-level, N+1-killing), `joins` (string + symbol), `has_one`,
+  `through`/`source`, polymorphic `belongs_to` / `has_many as:`,
+  `dependent: :destroy/:delete_all/:nullify/:restrict_with_exception`,
+  `counter_cache` + `touch:`.
+- [x] **Model callbacks.** `before_validation/before_save`,
+  `after_save/create/commit(on:)/destroy` (names, blocks, `previous_def`
+  chains; `after_commit` deferred to outermost commit, discarded on rollback).
+- [x] **Multipart form parsing.** Nested tree (bracket query + JSON +
+  urlencoded + multipart): `require().permit(tags: [] of String)`,
+  `dig/array/file/files` (`UploadedFile`). Repeated field names keep the last
+  file (spec-pinned).
+- [x] **Richer column types.** `decimal/date/json` (+ migrations); `t.timestamps`
+  PG precision, enums, arrays still missing (see Next).
+- [x] **`render` custom content types + template status.** `render xml:`,
+  `content_type:`, `render_template :x, status: 422`, `respond_to`
+  html/json/rss/xml (+406 `UnknownFormat`).
+- [x] **Query polish.** `select/distinct/group` + aggregates
+  (`sum/avg/min/max`, grouped hashes), `or`, `where.not`, ranges, `merge`-via-
+  chaining, `upsert/update_columns/touch/touch_all/reset_counters`,
+  `update_counter(s)`.
+- [x] Single-arg `where(sql)` overload; PG + MySQL adapters; SMTP adapter
+  (STARTTLS + AUTH LOGIN, verified live via Ethereal).
+- [x] **Validations depth.** `length:` (min/max/in/within), `inclusion:`,
+  `numericality:`, case-insensitive uniqueness, custom `validate`,
+  `if:/unless:`, `on:`, `allow_nil/allow_blank`.
+- [x] **FTS5 helper** (`Saci::Record::FTS`: virtual tables + triggers +
+  rank-ordered `search_fts`, SQLite-only with clear cross-adapter error).
 
 ## Framework — web, jobs, mailers, misc
 
-- [x] **Encrypted cookies/sessions.** `cookies.encrypted` (AES-256-GCM via
-  the vendored core, purpose-separated keys) + opt-in `Session.encrypt`
-  (strict, invalidates signed sessions; generated production envs enable it).
-- [x] **Durable job adapter (DB).** `:db` persists to `saci_jobs`
-  (+ `saci_dead_jobs` dead letters with retry/drop ops), survives restarts
-  (proven live via kill -9 + reboot), atomic conditional-UPDATE claims,
-  stale-lock reclamation, reuses jobs' own `retry_on` rules. Redis remains
-  roadmap; at-least-once everywhere, so jobs MUST be idempotent.
+- [x] **Encrypted cookies/sessions.** `cookies.encrypted` (AES-256-GCM,
+  purpose-separated) + opt-in `Session.encrypt` (strict).
+- [x] **Durable job adapter (DB).** `saci_jobs` + `saci_dead_jobs`
+  (retry/drop ops), kill -9 + reboot proven, conditional-UPDATE claims,
+  stale-lock reclamation, per-key `limits_concurrency`, `retry_on` reuse.
+  Redis remains roadmap; at-least-once everywhere.
+- [x] **Router depth.** Constraints, `member/collection`, nested resources,
+  `new/edit`, optional segments, `(.:format)` + defaults, redirects (with
+  interpolation), fallback, `~:user`-style prefix segments.
+- [x] **Controller depth.** `rescue_from`, `after_action` + skips,
+  `respond_to`, extended statuses.
+- [x] **Views depth.** Partial locals/collections, model forms (check/select/
+  date/file, binding, errors), markdown/pagination/RSS helpers.
+- [x] **Mailer depth.** Layouts, `reply_to`, threading `headers:`,
+  `deliver_later` renders-now.
+- [x] **CSP defaults + escape hatch.** `default-src 'self'` + `skip_csp`/`csp`.
+- [x] **Multi-window throttles** (`Throttle.multi`, `throttle_login`,
+  429 + `Retry-After`).
+- [x] **Page-cache writer** (`Saci::PageCache`: write/read/expire/fetch).
 - [ ] **P1 — Cable Redis adapter. [M]** Pub/sub is single-process;
   multi-replica deploys need sticky sessions today (documented). Done when:
   two processes on one Redis fan out in a spec.
 - [ ] **P1 — Distributed throttle store. [S/M]** Counters are in-process;
   same replica caveat as Cable. Redis- or DB-backed buckets.
-- [ ] **P1 — CSP defaults + security headers review. [S]** Secure headers
-  exist; no Content-Security-Policy story (inline Cable JS would need
-  nonces/hashes). Done when: default policy + per-action escape hatch.
-- [ ] **P1 — Signed-URL expiry strategy for public assets. [S]** Cover images
-  use 30-day signed URLs; needs rotation story or public-file mode.
-- [ ] **P2 — Mailer previews + multipart/alternative polish. [S]** Dev
-  preview route for mails (Mailpit covers local, but in-app preview helps);
-  subject encoding for non-ASCII (currently raw UTF-8 — legal but unpolished).
+- [ ] **P1 — Metrics endpoint. [M]** Request counts, job stats, DB sizes
+  (or Prometheus format). Claw has JSON stat caches to feed it.
+- [ ] **P1 — Signed-URL expiry strategy for public assets. [S]** Needs
+  rotation story or public-file mode.
+- [ ] **P2 — Mailer previews + subject encoding. [S]** Layouts/reply_to/
+  threading done; in-app preview route + non-ASCII subject encoding remain.
+- [ ] **P2 — PG column depth. [S]** Enums, arrays, native timestamp precision.
 
 ## CLI (`saci`)
 
-- [x] **Migration filename/class validation.** `regenerate_manifest!`
-  fails fast on filename↔class mismatches and duplicate classes (was cryptic
-  `undefined constant`). Also fixed `cli_spec` missing the
-  `credentials_command` require (passed only via load-order luck).
-- [ ] **P1 — `add_index` generator. [S]** `AddXToY` only emits `add_column`;
-  every unique index so far is hand-written. `saci g migration
-  AddIndexToFollows follower_id:integer … --unique` (or an `AddIndex…` name
-  pattern).
-- [ ] **P1 — Multidb awareness. [M]** `db:migrate`, `clean_database!` and
-  generators only know the primary DB; analytics manifests are hand-wired.
-  Done when: `saci db:migrate --all` + a `clean_all!` test helper exist.
-- [ ] **P1 — `saci new` database picker. [S]** `--db=postgres` emitting driver
-  deps + `require "pg"` + URL defaults (templates already carry the comments).
-- [ ] **P2 — Request specs generate real verbs. [S]** `g controller` emits
-  `GET` for create/update/destroy in specs (always rewritten by hand so far).
+- [x] Migration filename/class validation.
+- [x] `add_index` generator (`AddIndex…` pattern / `--unique`).
+- [x] Multidb awareness (`db:migrate --all`, `clean_all!`).
+- [x] `saci new --db=postgres|mysql|sqlite` picker.
+- [x] Request specs generate real verbs (POST/PATCH/DELETE).
+- [x] CI workflow (plain + `-Dexecution_context`).
 - [ ] **P2 — Generator dry-run + conflict handling. [S]** `--pretend` and
   overwrite prompts; today generators silently overwrite.
 
-## Forem Lite app
+## Validation apps
 
-- [ ] **P0 — Password reset flow. [S, closes M1]** Token mailer + 2h expiry,
-  sibling of verification. **In progress below.**
-- [ ] **P0 — CI for both repos. [S]** Neither repo has CI; app suite (79+) and
-  framework suite (201) each run on one `crystal spec` invocation. Plain
-  GitHub Actions with the pcre2 link flags baked in.
-- [ ] **P1 — Bookmarks / reading list. [S]** Save-for-later join (same
-  patterns as follows; exercises the same query shapes). Needs: toggle,
-  `/bookmarks` page, feed affordance.
-- [ ] **P1 — Comment threading. [M]** `parent_id` + nested display; currently
-  flat. Needs pagination thought (deep threads vs page size) and a reply
-  form per comment.
-- [ ] **P1 — API tokens. [S/M]** JSON API is session-cookie-only; token auth
-  (per-user `api_token`, `Authorization: Bearer`) unlocks non-browser
-  clients. Depends on: encrypted-at-rest preference (see framework).
-- [ ] **P1 — Admin moderation queue. [M]** Flagged-content view + user list +
-  analytics counts; admins currently moderate one-by-one from article pages.
-  Needs: report/flag model first.
-- [ ] **P1 — Markdown rendering. [M]** Bodies are plaintext; minimal
-  code-fence/paragraph renderer (no dependency) or a shard. Must stay
-  XSS-safe by construction (escape-then-render, spec-pinned).
-- [ ] **P1 — "My drafts" page + scheduled publishing. [M]** Drafts exist but
-  are reachable only by URL; add listing + `published_at` future scheduling
-  via a job. Depends on: durable jobs for reliability (else M2 first).
-- [ ] **P2 — SQLite FTS5 search. [M]** Current search is escaped `LIKE`
-  (correct but ranks nothing); FTS5 virtual table + triggers.
-- [ ] **P2 — Single-read notifications + email digests. [S]** Mark-one-read
-  endpoint; optional mailer digest reusing the SMTP adapter.
-- [ ] **P2 — Avatars. [S, blocked on framework multipart]** Storage-backed
-  avatars with variants once HTML file upload works.
-- [ ] **P2 — SEO/sitemap/robots + meta tags. [S]** `/sitemap.xml` sibling of
-  `/feed.xml`; OpenGraph tags in the layout.
-- [ ] **P2 — Bell COUNT caching. [S]** Per-render `COUNT` is fine now;
-  counter cache or short TTL when traffic matters.
-- [ ] **P2 — I18n completion. [S]** Views use `t()` for feed strings but
-  hardcoded English for auth/settings copy; extract remaining keys + fill es.
+- [x] Forem Lite password reset (M1); 87 specs green.
+- [x] CI for the framework repo (Claw carries its own workflow; first push
+  still pending — needs `gh auth login` + `gh repo create`).
+- [x] Claw: moderation stack, hats, inbox/notifications, feeds (html/json/
+  rss + private tokens), filters/tags, users tree/standing, avatars
+  (MD5 Gravatar + fetch chain), stats (+SVG), FTS search, 2FA/OAuth,
+  recurring jobs, alerting, backup drill, rate limits, N+1 ceilings,
+  dogfood seed + live verification (one live-found 500→400 fix).
+- [ ] **P1 — Verify the Docker image. [S]** Claw's Dockerfile + Caddyfile +
+  logrotate ship; build + boot + migrate where the daemon allows.
+- [ ] **P2 — Staging env + seed variants. [S]** Claw has `db/seed.cr`;
+  no `APP_ENV=staging` config yet.
 
-## Ops / release
+## Next (ordered)
 
-- [ ] **P0 — Backup story beyond docs. [S]** WAL-mode snapshot script
-  (`.db` + `-wal`/`-shm` or checkpoint-first) + a restore drill against a
-  scratch copy.
-- [ ] **P0 — `on_error` alerting. [S]** Job/mail failures only hit logs today;
-  document wiring to a tracker (or add a webhook hook in the app).
-- [ ] **P1 — Verify the Docker image. [S]** Unbuilt here (daemon permission);
-  build + boot + migrate on a machine with Docker access.
-- [ ] **P1 — Log rotation + access logs. [S]** Only app-level `Completed`
-  lines exist; reverse-proxy logging is assumed but unstated. Caddy snippet
-  already ships; add rotation + retention.
-- [ ] **P2 — Staging env + seed variants. [S]** `APP_ENV=staging` config and a
-  richer `db/seed.cr` demo dataset (tags, threads, follows).
-- [ ] **P2 — Metrics endpoint. [M]** Request counts, job stats, DB sizes for
-  the systemd/Caddy layout (or Prometheus format).
+1. **P0 — Live PG/MySQL verification.** Docker is available; compose PG 16 +
+   MySQL 8, run the shared suite behind flags. Closes the last correctness
+   unknown in the framework.
+2. **P1 — Distributed Cable + throttle** (Redis adapters). Unblocks
+   multi-replica deploys; the documented sticky-session caveat goes away.
+3. **P1 — Metrics endpoint.** Small, feeds from existing stat caches.
+4. **P2 — CLI `--pretend`/conflicts, mailer previews/subject encoding,
+   PG enums/arrays, signed-URL rotation, staging env.**
 
-## Done this round — P0 password reset (M1 auth complete)
+## Done this round — 0.2.0 Lobsters port + audit + release
 
-Token mailer + 2h expiry + single-use, mirroring verification:
-`GET /password/new` → `POST /password` (always succeeds publicly — no account
-enumeration) → mail with `/password/:token/edit` → `PUT /password/:token`
-(min-8 rule, auto-login on success).
-Proven by `spec/requests/password_resets_controller_spec.cr` (84 app examples
-green) and live via Mailpit (request → mail → weak-reject → update → login
-with the new password).
+See [CHANGELOG.md](CHANGELOG.md). Framework 339 specs, Claw 357, both
+suites green single-threaded and (`saci`) under `-Dexecution_context`;
+proven by two live boots, a kill -9 durability drill, a seeded dogfood pass,
+and an N+1 audit with count-ceiling specs.
