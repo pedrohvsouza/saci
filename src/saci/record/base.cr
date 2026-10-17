@@ -25,8 +25,9 @@ module Saci
     #
     # Supported column types: `Int32`, `Int64`, `Float64`, `String`,
     # `Bool`, `Time`, `Bytes` (all automatically nilable), plus logical
-    # types `Decimal` (Float64-backed), `Date` (Time-backed) and `JSON`
-    # (String-backed, with a `<name>_json` helper).
+    # types `Decimal` (Float64-backed), `Date` (Time-backed), `JSON`
+    # (String-backed, with a `<name>_json` helper) and `Array(String)`
+    # (string arrays: native `TEXT[]` on PostgreSQL, JSON text elsewhere).
     class Base
       # -- connection ------------------------------------------------------
       # Delegates to the module-global connection (see `Saci::Record` —
@@ -199,9 +200,11 @@ module Saci
       # `default:` sets the initial value on `new` (like ActiveRecord).
       #
       # Logical types `Decimal` (Float64-backed, e.g. confidence scores),
-      # `Date` (Time-backed, use `.date` on values) and `JSON`
+      # `Date` (Time-backed, use `.date` on values), `JSON`
       # (String-backed, with a `<name>_json` / `<name>_json=` `JSON::Any`
-      # helper) map to physical column types for storage.
+      # helper) and `Array(String)` (string arrays, declared as
+      # `column tags : Array(String)` for `t.string_array` columns) map to
+      # physical column types for storage.
       macro column(decl, primary = false, default = nil)
         {% ctype = decl.type.stringify %}
         {% if ctype.ends_with?("?") %}
@@ -216,12 +219,15 @@ module Saci
         {% elsif ctype == "JSON" %}
           {% ptype = "String" %}
           {% stype = "String" %}
+        {% elsif ctype == "Array(String)" %}
+          {% ptype = "Array(String)" %}
+          {% stype = "Array(String)" %}
         {% else %}
           {% ptype = ctype %}
           {% stype = ctype %}
         {% end %}
-        {% unless ["Int32", "Int64", "Float64", "String", "Bool", "Time", "Bytes"].includes?(ptype) %}
-          {% raise "Saci::Record.column #{decl.var}: unsupported type #{ctype}. Supported: Int32, Int64, Float64, String, Bool, Time, Bytes, Decimal, Date, JSON." %}
+        {% unless ["Int32", "Int64", "Float64", "String", "Bool", "Time", "Bytes", "Array(String)"].includes?(ptype) %}
+          {% raise "Saci::Record.column #{decl.var}: unsupported type #{ctype}. Supported: Int32, Int64, Float64, String, Bool, Time, Bytes, Decimal, Date, JSON, Array(String)." %}
         {% end %}
         @{{decl.var.id}} : {{ptype.id}}?
 
@@ -268,6 +274,8 @@ module Saci
               @{{decl.var.id}} = value.is_a?(Time) ? value : nil
             {% elsif stype == "Bytes" %}
               @{{decl.var.id}} = value.is_a?(Bytes) ? value : nil
+            {% elsif stype == "Array(String)" %}
+              @{{decl.var.id}} = Saci::Record.to_string_array(value)
             {% end %}
             return true
           end

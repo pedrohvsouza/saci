@@ -438,7 +438,7 @@ describe "saci generate" do
       Dir.cd(dir) do
         Saci::CLI::Generate.run(["admin", "Post", "title:string"])
         File.write("src/controllers/admin/posts_controller.cr", "stale")
-        Saci::CLI::Generate.run(["admin", "Post", "title:string"])
+        Saci::CLI::Generate.run(["admin", "Post", "title:string", "--force"])
         File.read("src/controllers/admin/posts_controller.cr").should contain("module Admin")
       end
     end
@@ -684,6 +684,308 @@ describe "saci console" do
         File.symlink(File.join(Saci::CLI::New::SACI_ROOT, "lib"), "lib") unless File.exists?("lib")
         Saci::CLI::Inspect::Console.run(["-e", "File.write(\"console_marker.txt\", \"console-ok\")"]).should eq(0)
         File.read("console_marker.txt").should eq("console-ok")
+      end
+    end
+  end
+end
+
+# Captures generator output via the injectable Generate.output/error IOs
+# (no fd juggling — `STDOUT.dup` is a shallow copy and breaks the spec
+# runner's stdout, so fds are left alone).
+def capture_cli_output(& : ->) : Tuple(String, String)
+  out_mem = IO::Memory.new
+  err_mem = IO::Memory.new
+  Saci::CLI::Generate.output = out_mem
+  Saci::CLI::Generate.error = err_mem
+  begin
+    yield
+  ensure
+    Saci::CLI::Generate.reset_output!
+  end
+  {out_mem.to_s, err_mem.to_s}
+end
+
+# Answers one conflict prompt from piped input, always restoring STDIN.
+def with_generate_input(answer : String, & : ->) : Nil
+  Saci::CLI::Generate.input = IO::Memory.new(answer)
+  begin
+    yield
+  ensure
+    Saci::CLI::Generate.reset_input!
+  end
+end
+
+describe "saci generate --pretend" do
+  it "prints would-be writes with previews and changes nothing on disk" do
+    with_tmp_app(name: "cli_pretend") do |dir|
+      Dir.cd(dir) do
+        manifest_before = File.read("db/migrations.cr")
+        out, _ = capture_cli_output do
+          Saci::CLI::Generate.run(["model", "Post", "title:string", "--pretend"]).should eq(0)
+        end
+        out.should contain("create src/models/post.cr")
+        out.should contain("class Post < ApplicationRecord")
+        out.should contain("create spec/models/post_spec.cr")
+        out.should contain("create db/migrate/")
+        out.should contain("skip db/migrations.cr (pretend: manifest rebuild skipped)")
+
+        File.exists?("src/models/post.cr").should be_false
+        File.exists?("spec/models/post_spec.cr").should be_false
+        Dir.glob("db/migrate/*_create_posts.cr").should be_empty
+        File.read("db/migrations.cr").should eq(manifest_before)
+      end
+    end
+  end
+
+  it "reports overwrite with a preview and identical for unchanged files" do
+    with_tmp_app(name: "cli_pretend_conflict") do |dir|
+      Dir.cd(dir) do
+        Saci::CLI::Generate.run(["controller", "Posts", "index"])
+        before = File.read("src/controllers/posts_controller.cr")
+
+        out, _ = capture_cli_output do
+          Saci::CLI::Generate.run(["controller", "Posts", "index", "show", "--pretend"]).should eq(0)
+        end
+        out.should contain("overwrite src/controllers/posts_controller.cr")
+        out.should contain("would replace")
+        out.should contain("def show")
+        File.read("src/controllers/posts_controller.cr").should eq(before)
+
+        same_out, _ = capture_cli_output do
+          Saci::CLI::Generate.run(["controller", "Posts", "index", "--pretend"]).should eq(0)
+        end
+        same_out.should contain("identical src/controllers/posts_controller.cr")
+        same_out.should contain("identical spec/requests/posts_controller_spec.cr")
+      end
+    end
+  end
+
+  it "caps content previews at 40 lines" do
+    with_tmp_app(name: "cli_pretend_cap") do |dir|
+      Dir.cd(dir) do
+        out, _ = capture_cli_output do
+          Saci::CLI::Generate.run(["admin", "Post", "title:string", "--pretend"]).should eq(0)
+        end
+        out.should contain("more lines)")
+        File.exists?("src/controllers/admin/posts_controller.cr").should be_false
+        File.exists?("src/views/admin/posts/index.ecr").should be_false
+      end
+    end
+  end
+end
+
+describe "saci generate conflicts" do
+  it "answers y (overwrite) and n (skip) from piped stdin" do
+    with_tmp_app(name: "cli_conflict_yn") do |dir|
+      Dir.cd(dir) do
+        Saci::CLI::Generate.run(["job", "Welcome"])
+
+        File.write("src/jobs/welcome_job.cr", "stale")
+        with_generate_input("y\n") do
+          Saci::CLI::Generate.run(["job", "Welcome"]).should eq(0)
+        end
+        File.read("src/jobs/welcome_job.cr").should contain("class WelcomeJob < Saci::Job::Base")
+
+        File.write("src/jobs/welcome_job.cr", "stale")
+        out, _ = capture_cli_output do
+          with_generate_input("n\n") do
+            Saci::CLI::Generate.run(["job", "Welcome"]).should eq(0)
+          end
+        end
+        File.read("src/jobs/welcome_job.cr").should eq("stale")
+        out.should contain("skip src/jobs/welcome_job.cr")
+      end
+    end
+  end
+
+  it "answers a (overwrite all remaining files)" do
+    with_tmp_app(name: "cli_conflict_all") do |dir|
+      Dir.cd(dir) do
+        Saci::CLI::Generate.run(["admin", "Post", "title:string"])
+        File.write("src/controllers/admin/posts_controller.cr", "stale1")
+        File.write("src/views/admin/posts/index.ecr", "stale2")
+        with_generate_input("a\n") do
+          Saci::CLI::Generate.run(["admin", "Post", "title:string"]).should eq(0)
+        end
+        File.read("src/controllers/admin/posts_controller.cr").should contain("module Admin")
+        File.read("src/views/admin/posts/index.ecr").should contain("(admin)")
+      end
+    end
+  end
+
+  it "answers q (abort the run)" do
+    with_tmp_app(name: "cli_conflict_quit") do |dir|
+      Dir.cd(dir) do
+        Saci::CLI::Generate.run(["job", "Welcome"])
+        File.write("src/jobs/welcome_job.cr", "stale")
+        with_generate_input("q\n") do
+          expect_raises(Saci::CLI::Error, /borted/) do
+            Saci::CLI::Generate.run(["job", "Welcome"])
+          end
+        end
+        File.read("src/jobs/welcome_job.cr").should eq("stale")
+      end
+    end
+  end
+
+  it "skips identical files without prompting" do
+    with_tmp_app(name: "cli_conflict_identical") do |dir|
+      Dir.cd(dir) do
+        Saci::CLI::Generate.run(["mailer", "User"])
+        out, _ = capture_cli_output do
+          with_generate_input("") do
+            Saci::CLI::Generate.run(["mailer", "User"]).should eq(0)
+          end
+        end
+        out.should contain("identical src/mailers/user_mailer.cr")
+        out.should contain("identical spec/mailers/user_mailer_spec.cr")
+      end
+    end
+  end
+
+  it "skips with a warning on non-TTY stdin instead of hanging" do
+    with_tmp_app(name: "cli_conflict_nontty") do |dir|
+      Dir.cd(dir) do
+        Saci::CLI::Generate.run(["channel", "Chat"])
+        File.write("src/channels/chat_channel.cr", "stale")
+        out, err = capture_cli_output do
+          with_generate_input("") do
+            Saci::CLI::Generate.run(["channel", "Chat"]).should eq(0)
+          end
+        end
+        File.read("src/channels/chat_channel.cr").should eq("stale")
+        out.should contain("skip src/channels/chat_channel.cr")
+        err.should contain("warning")
+      end
+    end
+  end
+
+  it "--force overwrites without prompting, wherever the flag sits" do
+    with_tmp_app(name: "cli_conflict_force") do |dir|
+      Dir.cd(dir) do
+        Saci::CLI::Generate.run(["channel", "Chat"])
+        File.write("src/channels/chat_channel.cr", "stale")
+        out, _ = capture_cli_output do
+          with_generate_input("") do
+            Saci::CLI::Generate.run(["--force", "channel", "Chat"]).should eq(0)
+          end
+        end
+        File.read("src/channels/chat_channel.cr").should contain("class ChatChannel")
+        out.should contain("overwrite src/channels/chat_channel.cr")
+      end
+    end
+  end
+end
+
+describe "saci new staging environment" do
+  it "scaffolds config/environments/staging.cr" do
+    with_tmp_app(name: "cli_staging_file") do |dir|
+      staging = File.join(dir, "config", "environments", "staging.cr")
+      File.exists?(staging).should be_true
+      File.read(staging).should eq(Saci::CLI::New.env_staging)
+    end
+  end
+
+  it "stages production-like values with staging-distinct logging" do
+    staging = Saci::CLI::New.env_staging
+    staging.should contain("Saci.env == \"staging\"")
+    staging.should contain("Saci.log_level = :info")
+    staging.should contain("Saci.log_requests = true")
+    staging.should contain("Saci.force_ssl = true")
+    staging.should contain("Saci.show_detailed_exceptions = false")
+    staging.should contain("Saci::Session.encrypt = true")
+    staging.should contain("Staging mirrors production")
+    staging.should contain("Staging vs production")
+  end
+
+  it "defines Saci.staging? and refuses to boot in staging without a secret" do
+    staging = Saci::CLI::New.env_staging
+    staging.should contain("def self.staging?")
+    staging.should contain("MissingSecretInProduction")
+    staging.should contain("Refusing to boot in staging")
+    staging.should contain("SECRET_KEY_BASE")
+  end
+
+  it "requires environments via glob in entrypoint and spec_helper" do
+    entry = Saci::CLI::New.entrypoint("blog")
+    entry.should contain("require \"../config/environments/*\"")
+    entry.should_not contain("environments/development\"")
+    entry.should_not contain("environments/production\"")
+
+    helper = Saci::CLI::New.spec_helper("blog")
+    helper.should contain("require \"../config/environments/*\"")
+  end
+
+  # Boots the rendered staging template in a subprocess (compile-checked):
+  # APP_ENV=staging applies staging values; other envs leave them alone.
+  it "boots APP_ENV=staging with staging config applied" do
+    with_tmp_app(name: "cli_staging_boot") do |dir|
+      Dir.cd(dir) do
+        link_framework_lib!
+        rel = Saci::CLI::Inspect::Runner.relativize(Dir.current, File.join(Saci::CLI::New::SACI_ROOT, "src", "saci"))
+        File.write("staging_probe.cr", <<-CRYSTAL)
+          require "#{rel}"
+          require "./config/environments/staging"
+          puts "log_level=\#{Saci.log_level}"
+          puts "force_ssl=\#{Saci.force_ssl}"
+          puts "detailed=\#{Saci.show_detailed_exceptions?}"
+          puts "staging?=\#{Saci.staging?}"
+          CRYSTAL
+        stdout_io = IO::Memory.new
+        status = Process.run("crystal", args: ["run", "staging_probe.cr"],
+          output: stdout_io, error: IO::Memory.new, chdir: dir,
+          env: {"APP_ENV" => "staging", "SECRET_KEY_BASE" => "0" * 64})
+        status.success?.should be_true
+        lines = stdout_io.to_s.lines.map(&.strip)
+        lines.should contain("log_level=info")
+        lines.should contain("force_ssl=true")
+        lines.should contain("detailed=false")
+        lines.should contain("staging?=true")
+      end
+    end
+  end
+
+  it "leaves Saci.staging? false outside staging" do
+    with_tmp_app(name: "cli_staging_pred") do |dir|
+      Dir.cd(dir) do
+        link_framework_lib!
+        rel = Saci::CLI::Inspect::Runner.relativize(Dir.current, File.join(Saci::CLI::New::SACI_ROOT, "src", "saci"))
+        File.write("staging_pred_probe.cr", <<-CRYSTAL)
+          require "#{rel}"
+          require "./config/environments/staging"
+          puts "staging?=\#{Saci.staging?}"
+          puts "log_level=\#{Saci.log_level}"
+          CRYSTAL
+        stdout_io = IO::Memory.new
+        status = Process.run("crystal", args: ["run", "staging_pred_probe.cr"],
+          output: stdout_io, error: IO::Memory.new, chdir: dir,
+          env: {"APP_ENV" => "development", "SECRET_KEY_BASE" => ""})
+        status.success?.should be_true
+        lines = stdout_io.to_s.lines.map(&.strip)
+        lines.should contain("staging?=false")
+        lines.should contain("log_level=info")
+      end
+    end
+  end
+
+  it "refuses APP_ENV=staging without any secret" do
+    with_tmp_app(name: "cli_staging_secret") do |dir|
+      Dir.cd(dir) do
+        link_framework_lib!
+        File.delete("config/credentials.yml.enc")
+        File.delete("config/master.key")
+        rel = Saci::CLI::Inspect::Runner.relativize(Dir.current, File.join(Saci::CLI::New::SACI_ROOT, "src", "saci"))
+        File.write("staging_secret_probe.cr", <<-CRYSTAL)
+          require "#{rel}"
+          require "./config/environments/staging"
+          puts "booted (unexpected)"
+          CRYSTAL
+        err = IO::Memory.new
+        status = Process.run("crystal", args: ["run", "staging_secret_probe.cr"],
+          output: IO::Memory.new, error: err, chdir: dir,
+          env: {"APP_ENV" => "staging", "SECRET_KEY_BASE" => ""})
+        status.success?.should be_false
+        err.to_s.should contain("Refusing to boot in staging")
       end
     end
   end

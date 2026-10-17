@@ -84,6 +84,7 @@ module Saci
         write(File.join(dir, "config", "environments", "development.cr"), env_development)
         write(File.join(dir, "config", "environments", "test.cr"), env_test)
         write(File.join(dir, "config", "environments", "production.cr"), env_production)
+        write(File.join(dir, "config", "environments", "staging.cr"), env_staging)
         write(File.join(dir, "config", "locales", "en.yml"), locales_en)
         write(File.join(dir, "config", "locales", "es.yml"), locales_es)
         write(File.join(dir, "spec", "spec_helper.cr"), spec_helper(name, db))
@@ -190,9 +191,9 @@ module Saci
         <<-CRYSTAL
         #{driver}require "saci"
         require "file_utils"
-        require "../config/environments/development"
-        require "../config/environments/test"
-        require "../config/environments/production"
+        # Glob so every env file (development/test/production/staging and
+        # any future `config/environments/*.cr`) loads without editing this.
+        require "../config/environments/*"
         require "./models/*"
         require "./controllers/*"
         require "./channels/*"
@@ -276,6 +277,48 @@ module Saci
           # Redis is down — see README). Zero new dependencies (vendored RESP2).
           # Saci::Cable.server = Saci::Cable::RedisServer.new(ENV.fetch("REDIS_URL", "redis://127.0.0.1:6379"))
           # Saci::Throttle.store = Saci::Throttle::RedisStore.new(ENV.fetch("REDIS_URL", "redis://127.0.0.1:6379"))
+        end
+        CRYSTAL
+      end
+
+      def self.env_staging : String
+        <<-CRYSTAL
+        # Staging mirrors production (real secrets, SSL, encrypted sessions)
+        # but stays distinct: `log_level = :info` (production uses `:warn`)
+        # plus request logging, so pre-release issues are debuggable.
+        # Boot with: APP_ENV=staging saci serve
+        # (Staging vs production: same hardening, more visibility. Staging
+        # data is production-like — treat dumps, logs and secrets with
+        # equal care. Framework-generic: no app-specific defaults here.)
+
+        # `Saci.staging?` mirrors `Saci.production?`/`Saci.test?` (defined
+        # here, outside the guard, so every scaffolded app has it in any env
+        # — this file always compiles in via the environments glob).
+        module Saci
+          def self.staging? : Bool
+            env == "staging"
+          end
+        end
+
+        if Saci.env == "staging"
+          Saci.log_level = :info
+          Saci.log_requests = true
+          Saci.force_ssl = true
+          Saci.show_detailed_exceptions = false
+          # Opaque sessions (no downgrade: enable before launch, since
+          # previously signed sessions stop being accepted).
+          Saci::Session.encrypt = true
+          # Staging uses real secrets, like production: refuse to boot
+          # without one (the framework only enforces this for production,
+          # so staging enforces it here).
+          has_secret = !ENV.fetch("SECRET_KEY_BASE", "").empty? ||
+            !(begin Saci::Credentials.dig("secret_key_base") rescue nil end).to_s.empty?
+          unless has_secret
+            raise Saci::Secrets::MissingSecretInProduction.new(
+              "SECRET_KEY_BASE is not set (and no secret_key_base in credentials). " +
+              "Refusing to boot in staging with a generated dev secret. " +
+              "Set SECRET_KEY_BASE (e.g. from `saci secret`) and restart.")
+          end
         end
         CRYSTAL
       end
@@ -395,6 +438,9 @@ module Saci
         require "spec"
         #{driver}require "saci"
         require "file_utils"
+        # Glob so every env file (including staging) loads without editing
+        # this (each file guards on `Saci.env` itself).
+        require "../config/environments/*"
         require "../src/models/*"
         require "../src/controllers/*"
         require "../src/channels/*"

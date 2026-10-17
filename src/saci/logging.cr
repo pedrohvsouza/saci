@@ -111,6 +111,10 @@ module Saci
     env == "production"
   end
 
+  def self.staging? : Bool
+    env == "staging"
+  end
+
   @@log_level : Symbol = :info
   @@log_level_mutex = Mutex.new
 
@@ -154,7 +158,7 @@ module Saci
   def self.show_detailed_exceptions? : Bool
     @@detailed_mutex.synchronize do
       v = @@detailed_exceptions
-      v.nil? ? env != "production" : v
+      v.nil? ? (env != "production" && env != "staging") : v
     end
   end
 

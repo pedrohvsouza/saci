@@ -102,6 +102,8 @@ saci generate controller Posts index show
 saci generate admin Post title:string published:boolean  # admin namespace scaffold (search/sort/pagination + specs)
 saci generate migration AddBioToUsers bio:text
 saci generate migration AddIndexToFollows follower_id --unique  # -> add_index
+saci generate ... --pretend            # dry run: print create/overwrite/identical + previews, write nothing
+saci generate ... --force              # overwrite conflicting files without prompting
 saci db:migrate [--all]              # --all migrates primary + named DBs
 saci db:rollback                     # rolls back the last migration
 saci db:schema:dump [--all]          # write db/schema.cr snapshot (all DBs with --all)
@@ -126,7 +128,18 @@ saci db:seed                         # run db/seed.cr (or db/seeds.cr) in app co
   verbs (create->POST, update->PATCH, destroy->DELETE); `g admin` writes a
   namespaced `Admin::` controller (search on string columns, sortable
   headers, `Saci::Pagination.paginate` + `paginate_nav` views, deny-by-default
-  `require_admin`) plus a namespace route hint — reruns overwrite.
+  `require_admin`) plus a namespace route hint — reruns prompt before
+  overwriting (see below).
+- Generator conflicts: a target that already exists with identical content
+  prints `identical` and is skipped; different content prompts
+  `overwrite? [y/n/a/q]` (yes / no / all / quit) when STDIN is a TTY.
+  Piped/non-TTY input never blocks — an EOF/empty answer skips with a
+  warning, so pass `--force` in CI to overwrite without prompting.
+  `--pretend` dry-runs any generator (`saci g ... --pretend`): it prints
+  `create`/`overwrite`/`identical` lines plus a ~40-line content preview per
+  file, exits 0, and writes nothing (no files, no `db/migrations.cr`
+  rebuild). `db/migrations.cr` itself is derived state rebuilt from
+  `db/migrate/*.cr`, so it always overwrites silently (no prompt).
 - `serve` execs `crystal run src/<app>.cr` with `PORT`/`HOST` set; anything
   after `--` is forwarded to `crystal` as compiler flags
   (e.g. `--link-flags=...`).
@@ -265,10 +278,20 @@ Notes:
 - Table names are inferred (`SpecUser` → `spec_users`, `Shelf` →
   `shelves`); override with `table "custom"`. Column types:
   `Int32/Int64/Float64/String/Bool/Time/Bytes` (all nilable) plus logical
-  `Decimal` (Float64-backed), `Date` (Time-backed) and `JSON`
-  (String-backed, with `<col>_json` / `<col>_json=` helpers);
+  `Decimal` (Float64-backed), `Date` (Time-backed), `JSON`
+  (String-backed, with `<col>_json` / `<col>_json=` helpers) and
+  `Array(String)` (string arrays for `t.string_array`: native `TEXT[]` on
+  PostgreSQL, JSON-encoded text on MySQL/SQLite — assign a new array to
+  change it);
   `timestamps` maintains `created_at/updated_at`. Migrations add
-  `t.decimal` / `t.date` / `t.json`.
+  `t.decimal` / `t.date` / `t.json` / `t.string_array` /
+  `t.enum :status, values: ["draft", "published"]` (model column stays
+  `String`: PostgreSQL creates a `<table>_<column>_enum` type idempotently
+  and drops it on rollback, MySQL renders inline `ENUM(...)`, SQLite stores
+  `TEXT` so enforce with `validates :status, inclusion: {in: [...]}`) and
+  `t.datetime :at, precision: 6` / `t.timestamps precision: 6`
+  (`TIMESTAMP(p)` on PostgreSQL, `DATETIME(fsp)` on MySQL, ignored on
+  SQLite — model `Time` keeps nanoseconds regardless).
 - Validations: `presence`, `length:` (`minimum:`/`maximum:`/`in:`/`within:`),
   `format:`, `uniqueness:` (`true`, `:scope`, `[:scopes]`,
   `{scope:, case_sensitive: false}` — `COLLATE NOCASE` on SQLite,
@@ -757,6 +780,18 @@ UserMailer.welcome("a@b.c").deliver_later            # via Saci::Job
   `<%= content %>`); `default_reply_to` plus per-mail `reply_to:`; threading
   headers via `mail(..., headers: {"Message-Id" => "<..>", "In-Reply-To" => "<..>"})`
   (a custom `Message-Id` replaces the generated one).
+- Previews (dev-only — disabled in production): register with
+  `Saci::Mailer::Preview.register("welcome") { UserMailer.welcome("demo@example.com") }`
+  and mount `Saci::Mailer::PreviewController` at `/saci/mailers` (list) plus
+  `/saci/mailers/:name` (headers + text/html parts in a debug layout);
+  deliberately not `/rails/mailers*` to avoid confusion with Rails. Toggle
+  with `Saci::Mailer::Preview.enabled` (default: `Saci.env != "production"`);
+  both actions 404 when disabled, and unknown names 404.
+- Non-ASCII subjects are RFC 2047 encoded-word encoded (`=?UTF-8?B?...?=`,
+  folded at 75 chars) on the wire (`to_mime`, hence `:file`/`:sendmail`/`:smtp`;
+  long ASCII subjects fold the same way). In-memory and `:test` deliveries keep
+  the readable string; `Mail#encoded_subject` / `Mail#decoded_subject`
+  (backed by `Saci::Mailer.encode_subject` / `decode_subject`) round-trip it.
 
 ## Views
 
@@ -920,6 +955,27 @@ Disk service with sharded keys + JSON sidecars (type/filename/size);
 files through expiring HMAC-signed URLs (tampered/expired/missing → 404,
 path traversal rejected).
 
+```crystal
+Saci::Storage.rotate_signing_key!("new-secret") # old URLs verify till expiry
+Saci::Storage.signing_keys = ["primary", "old", "older"] # explicit form
+Saci::Storage.reset_signing_keys! # back to [Secrets.secret_key_base]
+```
+
+Rotation grace is the URL's natural `expires`: `verified_url?` tries every
+known key, so pre-rotation URLs keep working until they expire and unknown
+keys never verify.
+
+```crystal
+pub = Saci::Storage::DiskService.new("storage", public: true)
+key = pub.upload(data, filename: "a.png", public: true) # per-upload override
+pub.public_url(key) # => "/files/public/ab/cd/…" (stable, unsigned)
+```
+
+Public mode is per-service (`DiskService.new(root, public: true)`) with a
+per-upload `public:` override (`nil` inherits the service default). Public
+files live under a `public/` key prefix and are served without expiry/sig;
+private keys still require a signature. No directory listing is served.
+
 ## Credentials
 
 ```sh
@@ -938,9 +994,11 @@ a `secret_key_base` that sessions pick up automatically.
 
 ## Environments & multidatabase
 
-- `APP_ENV` (`Saci.env`, `production?`…) with `config/environments/*.cr`
-  (`log_level`, `force_ssl` with localhost bypass, detailed HTML error pages
-  outside production, test env silences logs + cheap bcrypt).
+- `APP_ENV` (`Saci.env`, `production?`, `staging?`…) with `config/environments/*.cr`
+  (development/test/production/staging; `log_level`, `force_ssl` with localhost
+  bypass, detailed HTML error pages outside production/staging, test env silences
+  logs + cheap bcrypt; staging mirrors production with `:info` logs and refuses
+  to boot without `SECRET_KEY_BASE`, like production — `APP_ENV=staging`).
 - Named databases: `Saci::Record.establish_connection("analytics", url)`,
   `connects_to database: "analytics"` per model,
   `Saci::Record.connected_to("analytics") { }` scoping, per-database

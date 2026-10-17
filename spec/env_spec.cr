@@ -44,7 +44,12 @@ describe "environments" do
     ENV["APP_ENV"] = "production"
     Saci.env.should eq("production")
     Saci.production?.should be_true
+    Saci.staging?.should be_false
     Saci.test?.should be_false
+    ENV["APP_ENV"] = "staging"
+    Saci.staging?.should be_true
+    Saci.production?.should be_false
+    Saci.show_detailed_exceptions?.should be_false
   end
 
   it "configures log levels" do

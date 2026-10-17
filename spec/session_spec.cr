@@ -321,9 +321,12 @@ describe "Saci::Secrets" do
       ENV.delete("SECRET_KEY_BASE")
       Saci::Secrets.reset_secret_key_base!
       # Credentials are absent in the framework repo, so lookup falls through.
-      ENV["APP_ENV"] = "production"
-      expect_raises(Saci::Secrets::MissingSecretInProduction, /SECRET_KEY_BASE/) do
-        Saci::Secrets.secret_key_base
+      ["production", "staging"].each do |env_name|
+        ENV["APP_ENV"] = env_name
+        Saci::Secrets.reset_secret_key_base!
+        expect_raises(Saci::Secrets::MissingSecretInProduction, /SECRET_KEY_BASE/) do
+          Saci::Secrets.secret_key_base
+        end
       end
     ensure
       if old_env

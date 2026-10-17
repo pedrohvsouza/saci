@@ -15,20 +15,181 @@ module Saci
         "datetime" => "Time",
       }
 
+      # -- flags + central file writer ---------------------------------------
+      # `--pretend` (dry run) and `--force` are global: accepted anywhere in
+      # the `saci generate` argv and stripped before KIND dispatch, so nested
+      # generators (scaffold -> model + controller) share the same mode.
+
+      @@pretend : Bool = false
+      @@force : Bool = false
+      @@overwrite_all : Bool = false
+      @@input : IO = STDIN
+      @@output : IO = STDOUT
+      @@error : IO = STDERR
+
+      # Lines of new file content shown per file in `--pretend` output.
+      PREVIEW_LINES = 40
+
+      def self.pretend? : Bool
+        @@pretend
+      end
+
+      def self.force? : Bool
+        @@force
+      end
+
+      # Prompt answers are read from here instead of STDIN directly so specs
+      # (and piped callers) can inject answers. Restore with `reset_input!`.
+      def self.input=(io : IO) : Nil
+        @@input = io
+      end
+
+      def self.reset_input! : Nil
+        @@input = STDIN
+      end
+
+      # All generator output (status lines, previews, prompts, hints) goes
+      # through here instead of STDOUT directly so specs can capture it.
+      # Restore with `reset_output!`.
+      def self.output=(io : IO) : Nil
+        @@output = io
+      end
+
+      def self.error=(io : IO) : Nil
+        @@error = io
+      end
+
+      def self.reset_output! : Nil
+        @@output = STDOUT
+        @@error = STDERR
+      end
+
+      # Shadows top-level `puts`/`print` inside this module's methods so
+      # every status line, preview and hint honors `@@output`.
+      private def self.puts(*args) : Nil
+        @@output.puts(*args)
+      end
+
+      private def self.puts : Nil
+        @@output.puts
+      end
+
+      private def self.print(*args) : Nil
+        @@output.print(*args)
+      end
+
+      # Central writer every generator funnels through. Returns :created,
+      # :overwritten, :identical or :skipped (:pretend_create,
+      # :pretend_overwrite, :pretend_identical under `--pretend`, which
+      # prints statuses + a content preview and writes nothing).
+      #
+      # Existing targets with different content prompt
+      # `overwrite? [y/n/a/q]` unless `--force`/all was given. The generated
+      # `db/migrations.cr` manifest is derived state (rebuilt from
+      # `db/migrate/*.cr`), so it passes `prompt: false` and always
+      # overwrites like before — identical content still skips.
+      def self.write_file(path : String, content : String, prompt : Bool = true) : Symbol
+        exists = File.exists?(path)
+        same = exists && File.read(path) == content
+
+        if @@pretend
+          if same
+            puts "  identical #{path}"
+            return :pretend_identical
+          elsif exists
+            puts "  overwrite #{path}"
+            puts "    (would replace #{File.read(path).lines.size} lines with #{content.lines.size} lines)"
+          else
+            puts "  create #{path}"
+          end
+          print_preview(content)
+          return same ? :pretend_identical : exists ? :pretend_overwrite : :pretend_create
+        end
+
+        unless exists
+          parent = File.dirname(path)
+          Dir.mkdir_p(parent) unless parent == "."
+          File.write(path, content)
+          puts "  create #{path}"
+          return :created
+        end
+
+        if same
+          puts "  identical #{path}"
+          return :identical
+        end
+
+        if @@force || @@overwrite_all || !prompt
+          File.write(path, content)
+          puts "  overwrite #{path}"
+          return :overwritten
+        end
+
+        answer = prompt_overwrite(path)
+        case answer
+        when :yes, :all
+          @@overwrite_all = true if answer == :all
+          File.write(path, content)
+          puts "  overwrite #{path}"
+          :overwritten
+        when :quit
+          raise Error.new("Generation aborted by user.")
+        else
+          puts "  skip #{path} (exists; use --force to overwrite)"
+          @@error.puts "warning: skipping existing file #{path} (rerun with --force to overwrite it)"
+          :skipped
+        end
+      end
+
+      # Reads one y/n/a/q answer. Never hangs CI: a TTY blocks for the user,
+      # while piped input honors a piped answer and treats EOF as "no".
+      private def self.prompt_overwrite(path : String) : Symbol
+        input = @@input
+        if input.is_a?(IO::FileDescriptor) && input.tty?
+          print "    overwrite #{path}? [y/n/a/q] "
+        end
+        answer = @@input.gets
+        return :no if answer.nil?
+        case answer.strip.downcase
+        when "y", "yes"  then :yes
+        when "a", "all"  then :all
+        when "q", "quit" then :quit
+        else                  :no
+        end
+      end
+
+      # `--pretend` body preview: first PREVIEW_LINES lines of the would-be
+      # content, with a truncation note when longer.
+      private def self.print_preview(content : String) : Nil
+        lines = content.lines
+        lines.first(PREVIEW_LINES).each { |line| puts line.chomp }
+        if lines.size > PREVIEW_LINES
+          puts "    ... (#{lines.size - PREVIEW_LINES} more lines)"
+        end
+      end
+
       def self.run(args : Array(String)) : Int32
-        kind = args.shift? || raise Error.new("Usage: saci generate KIND NAME [fields...]\nKinds: model, controller, migration, channel, job, mailer, scaffold, admin")
+        @@pretend = args.includes?("--pretend")
+        @@force = args.includes?("--force")
+        @@overwrite_all = false
+        rest = args.reject { |a| a == "--pretend" || a == "--force" }
+        kind = rest.shift? || raise Error.new("Usage: saci generate KIND NAME [fields...]\nKinds: model, controller, migration, channel, job, mailer, scaffold, admin")
         case kind.downcase
-        when "model"      then model(args)
-        when "controller" then controller(args)
-        when "migration"  then migration(args)
-        when "channel"    then channel(args)
-        when "job"        then job(args)
-        when "mailer"     then mailer(args)
-        when "scaffold"   then scaffold(args)
-        when "admin"      then admin(args)
+        when "model"      then model(rest)
+        when "controller" then controller(rest)
+        when "migration"  then migration(rest)
+        when "channel"    then channel(rest)
+        when "job"        then job(rest)
+        when "mailer"     then mailer(rest)
+        when "scaffold"   then scaffold(rest)
+        when "admin"      then admin(rest)
         else                   raise Error.new("Unknown generator '#{kind}'. Kinds: model, controller, migration, channel, job, mailer, scaffold, admin.")
         end
         0
+      ensure
+        @@pretend = false
+        @@force = false
+        @@overwrite_all = false
       end
 
       # -- fields ------------------------------------------------------------
@@ -52,13 +213,11 @@ module Saci
         fields = parse_fields(args)
         ensure_app_layout!
 
-        File.write("src/models/#{Util.file_name(class_name)}.cr", model_source(class_name, fields))
-        puts "  create src/models/#{Util.file_name(class_name)}.cr"
+        write_file("src/models/#{Util.file_name(class_name)}.cr", model_source(class_name, fields))
 
         spec_path = "spec/models/#{Util.file_name(class_name)}_spec.cr"
         Dir.mkdir_p("spec/models")
-        File.write(spec_path, model_spec_source(class_name, fields))
-        puts "  create #{spec_path}"
+        write_file(spec_path, model_spec_source(class_name, fields))
 
         table = Record::Inflector.pluralize(Record::Inflector.underscore(class_name))
         migration_name = "Create#{Record::Inflector.pluralize(class_name)}"
@@ -130,13 +289,11 @@ module Saci
         ensure_app_layout!
 
         path = "src/controllers/#{Util.file_name(class_name)}.cr"
-        File.write(path, controller_source(class_name, actions))
-        puts "  create #{path}"
+        write_file(path, controller_source(class_name, actions))
 
         spec_path = "spec/requests/#{Util.file_name(class_name)}_spec.cr"
         Dir.mkdir_p("spec/requests")
-        File.write(spec_path, controller_spec_source(base, class_name, actions))
-        puts "  create #{spec_path}"
+        write_file(spec_path, controller_spec_source(base, class_name, actions))
 
         puts "Add routes to your router, e.g.:"
         actions.each do |a|
@@ -347,9 +504,12 @@ module Saci
         end
         file = "#{Util.file_name(class_name)}"
         path = "db/migrate/#{version}_#{file}.cr"
-        File.write(path, source)
-        puts "  create #{path}"
-        regenerate_manifest!
+        write_file(path, source)
+        if @@pretend
+          puts "  skip db/migrations.cr (pretend: manifest rebuild skipped)"
+        else
+          regenerate_manifest!
+        end
         path
       end
 
@@ -371,8 +531,10 @@ module Saci
         unless dupes.empty?
           raise Error.new("Duplicate migration class(es) #{dupes.join(", ")} in db/migrate/. Keep one file per class.")
         end
-        File.write("db/migrations.cr", manifest_source(files, names))
-        puts "  update db/migrations.cr (#{names.size} migration#{names.size == 1 ? "" : "s"})"
+        result = write_file("db/migrations.cr", manifest_source(files, names), prompt: false)
+        if result == :created || result == :overwritten
+          puts "  update db/migrations.cr (#{names.size} migration#{names.size == 1 ? "" : "s"})"
+        end
       end
 
       def self.manifest_source(files : Array(String), names : Array(String)) : String
@@ -395,13 +557,11 @@ module Saci
 
         Dir.mkdir_p("src/channels")
         path = "src/channels/#{Util.file_name(class_name)}.cr"
-        File.write(path, channel_source(class_name))
-        puts "  create #{path}"
+        write_file(path, channel_source(class_name))
 
         Dir.mkdir_p("spec/channels")
         spec_path = "spec/channels/#{Util.file_name(class_name)}_spec.cr"
-        File.write(spec_path, channel_spec_source(class_name))
-        puts "  create #{spec_path}"
+        write_file(spec_path, channel_spec_source(class_name))
 
         puts "Mount it in your router, e.g.:"
         puts "  r.cable \"/cable\", #{class_name}"
@@ -453,13 +613,11 @@ module Saci
 
         Dir.mkdir_p("src/jobs")
         path = "src/jobs/#{Util.file_name(class_name)}.cr"
-        File.write(path, job_source(class_name))
-        puts "  create #{path}"
+        write_file(path, job_source(class_name))
 
         Dir.mkdir_p("spec/jobs")
         spec_path = "spec/jobs/#{Util.file_name(class_name)}_spec.cr"
-        File.write(spec_path, job_spec_source(class_name))
-        puts "  create #{spec_path}"
+        write_file(spec_path, job_spec_source(class_name))
       end
 
       def self.job_source(class_name : String) : String
@@ -495,13 +653,11 @@ module Saci
 
         Dir.mkdir_p("src/mailers")
         path = "src/mailers/#{Util.file_name(class_name)}.cr"
-        File.write(path, mailer_source(class_name))
-        puts "  create #{path}"
+        write_file(path, mailer_source(class_name))
 
         Dir.mkdir_p("spec/mailers")
         spec_path = "spec/mailers/#{Util.file_name(class_name)}_spec.cr"
-        File.write(spec_path, mailer_spec_source(class_name))
-        puts "  create #{spec_path}"
+        write_file(spec_path, mailer_spec_source(class_name))
       end
 
       def self.mailer_source(class_name : String) : String
@@ -570,8 +726,7 @@ module Saci
 
         Dir.mkdir_p("src/controllers/admin")
         controller_path = "src/controllers/admin/#{file_base}_controller.cr"
-        File.write(controller_path, admin_controller_source(class_name, plural, table, fields))
-        puts "  create #{controller_path}"
+        write_file(controller_path, admin_controller_source(class_name, plural, table, fields))
 
         Dir.mkdir_p("src/views/admin/#{table}")
         {
@@ -580,14 +735,12 @@ module Saci
           "edit"  => admin_edit_view(class_name, plural, table, fields),
         }.each do |view, source|
           path = "src/views/admin/#{table}/#{view}.ecr"
-          File.write(path, source)
-          puts "  create #{path}"
+          write_file(path, source)
         end
 
         Dir.mkdir_p("spec/requests/admin")
         spec_path = "spec/requests/admin/#{file_base}_controller_spec.cr"
-        File.write(spec_path, admin_spec_source(class_name, plural, table, fields))
-        puts "  create #{spec_path}"
+        write_file(spec_path, admin_spec_source(class_name, plural, table, fields))
 
         puts ""
         puts "Add to your router:"

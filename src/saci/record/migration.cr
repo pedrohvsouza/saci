@@ -2,19 +2,26 @@ module Saci
   module Record
     # Column definition used by `TableDefinition` and `add_column`.
     # Stores the *logical* type; SQL renders per adapter (`to_sql`).
+    # `enum_values` serves `:enum` columns; `precision` (0..6) serves
+    # `:datetime`. `to_sql` takes the owning table so PostgreSQL enum
+    # columns can reference their standalone type
+    # (`Migration.enum_type_name`).
     struct ColumnDef
       getter name : String
       getter logical_type : Symbol
       getter null : Bool
       getter default_value : Value
       getter primary_key : Bool
+      getter enum_values : Array(String)?
+      getter precision : Int32?
 
-      def initialize(@name, @logical_type, @null, @default_value, @primary_key)
+      def initialize(@name, @logical_type, @null, @default_value, @primary_key, @enum_values : Array(String)? = nil, @precision : Int32? = nil)
       end
 
-      def to_sql(adapter : Adapter = :sqlite) : String
+      def to_sql(adapter : Adapter = :sqlite, table : String? = nil) : String
         String.build do |s|
-          s << "#{Record.quote(@name, adapter)} #{Record.db_type(@logical_type, adapter)}"
+          enum_type = table ? Migration.enum_type_name(table, @name) : nil
+          s << "#{Record.quote(@name, adapter)} #{Record.db_type(@logical_type, adapter, @enum_values, enum_type, @precision)}"
           if @primary_key
             case adapter
             when :postgres then s << " PRIMARY KEY"
@@ -101,14 +108,48 @@ module Saci
         add(name, :boolean, null, default)
       end
 
-      def datetime(name : String | Symbol, null : Bool = true, default : Value = nil)
-        add(name, :datetime, null, default)
+      def datetime(name : String | Symbol, null : Bool = true, default : Value = nil, precision : Int32? = nil)
+        if p = precision
+          unless 0 <= p <= 6
+            raise ArgumentError.new("datetime #{name}: precision #{p} is out of range (expected 0..6)")
+          end
+        end
+        @columns << ColumnDef.new(name.to_s, :datetime, null, default, false, nil, precision)
+      end
+
+      # PostgreSQL enum column (`t.enum :status, values: ["draft",
+      # "published"]`). Creates a standalone type named
+      # `<table>_<column>_enum` on PostgreSQL (idempotently — reruns keep
+      # the existing type); renders `ENUM(...)` inline on MySQL and `TEXT`
+      # on SQLite. The model column stays `String`; on SQLite enforce the
+      # set with `validates :status, inclusion: {in: [...]}` (nothing
+      # enforces it at the DB level there).
+      def enum(name : String | Symbol, values : Array(String), null : Bool = true, default : Value = nil)
+        if values.empty?
+          raise ArgumentError.new("enum #{name}: values must not be empty")
+        end
+        @columns << ColumnDef.new(name.to_s, :enum, null, default, false, values, nil)
+      end
+
+      # String array column (`column tags : Array(String)` on the model).
+      # PostgreSQL stores `TEXT[]` (bound as a native PG array); MySQL and
+      # SQLite store JSON-encoded text (like `:json`). Assign a new array
+      # to change it (in-place mutation is not tracked).
+      def string_array(name : String | Symbol, null : Bool = true, default : Value = nil)
+        @columns << ColumnDef.new(name.to_s, :string_array, null, default, false, nil, nil)
       end
 
       # Rails-like `t.timestamps` (NOT NULL, ORM maintains them on save).
-      def timestamps
-        @columns << ColumnDef.new("created_at", :datetime, false, nil, false)
-        @columns << ColumnDef.new("updated_at", :datetime, false, nil, false)
+      # `precision:` (0..6) renders `TIMESTAMP(p)` on PostgreSQL and
+      # `DATETIME(fsp)` on MySQL; SQLite ignores it (stores RFC3339 text).
+      def timestamps(precision : Int32? = nil)
+        if p = precision
+          unless 0 <= p <= 6
+            raise ArgumentError.new("timestamps: precision #{p} is out of range (expected 0..6)")
+          end
+        end
+        @columns << ColumnDef.new("created_at", :datetime, false, nil, false, nil, precision)
+        @columns << ColumnDef.new("updated_at", :datetime, false, nil, false, nil, precision)
       end
 
       # Rails-like `t.references :user`: a `bigint` `<name>_id` column plus
@@ -249,6 +290,36 @@ module Saci
         "ALTER TABLE #{Record.quote(table, adapter)} RENAME COLUMN #{Record.quote(old_name, adapter)} TO #{Record.quote(new_name, adapter)}"
       end
 
+      # Standalone PostgreSQL enum type name for `t.enum` columns:
+      # `<table>_<column>_enum` (spec-pinned convention).
+      def self.enum_type_name(table : String | Symbol, column : String | Symbol) : String
+        "#{table}_#{column}_enum"
+      end
+
+      # Idempotent PostgreSQL `CREATE TYPE ... AS ENUM` for a `t.enum`
+      # column. A `DO` block swallows `duplicate_object`, so re-running a
+      # migration (or retrying after a partially applied one — DDL is not
+      # transactional) keeps the existing type instead of failing. Returns
+      # nil on MySQL/SQLite (inline `ENUM(...)` / `TEXT` — no type to
+      # create).
+      def self.create_enum_sql(adapter : Adapter, table : String | Symbol, column : String | Symbol, values : Array(String)) : String?
+        return nil unless adapter == :postgres
+        if values.empty?
+          raise ArgumentError.new("enum #{table}.#{column}: values must not be empty")
+        end
+        type = enum_type_name(table, column)
+        list = values.map { |v| "'#{v.gsub("'", "''")}'" }.join(", ")
+        "DO $$ BEGIN CREATE TYPE #{Record.quote(type, adapter)} AS ENUM (#{list}); EXCEPTION WHEN duplicate_object THEN NULL; END $$;"
+      end
+
+      # Drops a `t.enum` standalone type (rollback). `IF EXISTS` keeps it
+      # safe when the forward migration never created one (e.g. a MySQL /
+      # SQLite run of the same migration). Returns nil on MySQL/SQLite.
+      def self.drop_enum_sql(adapter : Adapter, table : String | Symbol, column : String | Symbol) : String?
+        return nil unless adapter == :postgres
+        "DROP TYPE IF EXISTS #{Record.quote(enum_type_name(table, column), adapter)}"
+      end
+
       # Per-adapter `change_column` statements (no DB needed).
       # PostgreSQL: `ALTER COLUMN TYPE ... USING` + null/default adjusts.
       # MySQL: single `MODIFY COLUMN <full definition>` (InnoDB assumed).
@@ -301,16 +372,36 @@ module Saci
       def create_table(name : String | Symbol, id : Bool = true, & : TableDefinition ->) : Nil
         ad = Record.adapter_of(@db)
         tbl = name.to_s
-        if @inverting
-          @inverse_ops << -> { Record.exec_compat(@db, "DROP TABLE #{Record.quote(tbl, ad)}"); nil }
-          return
-        end
         t = TableDefinition.new
         if id
           t.columns << ColumnDef.new("id", :serial, false, nil, true)
         end
         yield t
-        cols_sql = t.columns.map(&.to_sql(ad)).join(", ")
+        enum_cols = t.columns.select { |c| c.logical_type == :enum }
+        if @inverting
+          @inverse_ops << -> {
+            Record.exec_compat(@db, "DROP TABLE #{Record.quote(tbl, ad)}")
+            # Rollback drops the standalone PG enum types (plain columns
+            # need nothing — arrays drop with the table).
+            enum_cols.each do |c|
+              if drop = Migration.drop_enum_sql(ad, tbl, c.name)
+                Record.exec_compat(@db, drop)
+              end
+            end
+            nil
+          }
+          return
+        end
+        enum_cols.each do |c|
+          vals = c.enum_values
+          if vals.nil? || vals.empty?
+            raise ArgumentError.new("enum #{tbl}.#{c.name}: values must not be empty")
+          end
+          if stmt = Migration.create_enum_sql(ad, tbl, c.name, vals)
+            Record.exec_compat(@db, stmt)
+          end
+        end
+        cols_sql = t.columns.map(&.to_sql(ad, tbl)).join(", ")
         fk_sql = t.foreign_keys.map { |fk| Migration.create_table_fk_sql(ad, tbl, fk) }
         all_sql = ([cols_sql] + fk_sql).reject(&.empty?).join(", ")
         Record.exec_compat(@db, "CREATE TABLE #{Record.quote(tbl, ad)} (#{all_sql})")
@@ -328,14 +419,31 @@ module Saci
         Record.exec_compat(@db, "DROP TABLE #{Record.quote(name, ad)}")
       end
 
-      def add_column(table : String | Symbol, name : String | Symbol, type : Symbol, null : Bool = true, default : Value = nil) : Nil
+      def add_column(table : String | Symbol, name : String | Symbol, type : Symbol, null : Bool = true, default : Value = nil, values : Array(String)? = nil, precision : Int32? = nil) : Nil
         ad = Record.adapter_of(@db)
         tbl, col = table.to_s, name.to_s
         if @inverting
-          @inverse_ops << -> { Record.exec_compat(@db, "ALTER TABLE #{Record.quote(tbl, ad)} DROP COLUMN #{Record.quote(col, ad)}"); nil }
+          @inverse_ops << -> {
+            Record.exec_compat(@db, "ALTER TABLE #{Record.quote(tbl, ad)} DROP COLUMN #{Record.quote(col, ad)}")
+            if type == :enum
+              if drop = Migration.drop_enum_sql(ad, tbl, col)
+                Record.exec_compat(@db, drop)
+              end
+            end
+            nil
+          }
           return
         end
-        Record.exec_compat(@db, "ALTER TABLE #{Record.quote(tbl, ad)} ADD COLUMN #{ColumnDef.new(col, type, null, default, false).to_sql(ad)}")
+        if type == :enum
+          vals = values
+          if vals.nil? || vals.empty?
+            raise ArgumentError.new("add_column #{tbl}.#{col} :enum requires values: [...]")
+          end
+          if stmt = Migration.create_enum_sql(ad, tbl, col, vals)
+            Record.exec_compat(@db, stmt)
+          end
+        end
+        Record.exec_compat(@db, "ALTER TABLE #{Record.quote(tbl, ad)} ADD COLUMN #{ColumnDef.new(col, type, null, default, false, values, precision).to_sql(ad, tbl)}")
       end
 
       def remove_column(table : String | Symbol, name : String | Symbol) : Nil

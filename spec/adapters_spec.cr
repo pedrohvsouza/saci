@@ -1,6 +1,13 @@
 require "spec"
 require "../src/saci"
 
+{% if env("PG_URL") %}
+require "pg"
+{% end %}
+{% if env("MYSQL_URL") %}
+require "mysql"
+{% end %}
+
 # Adapter support (SQLite live; PostgreSQL/MySQL via SQL-generation specs —
 # no servers are available in this environment, and their drivers require
 # app-level opt-in. See `Saci::Record` docs and README).
@@ -333,6 +340,195 @@ describe "database adapters" do
       File.delete(path) if File.exists?(path)
     end
   end
+
+  it "maps enum columns per adapter" do
+    Saci::Record.db_type(:enum, :sqlite, ["draft", "published"], "posts_status_enum").should eq("TEXT")
+    Saci::Record.db_type(:enum, :postgres, ["draft", "published"], "posts_status_enum").should eq(%("posts_status_enum"))
+    Saci::Record.db_type(:enum, :mysql, ["draft", "published"], "posts_status_enum").should eq("ENUM('draft','published')")
+    # Single quotes in values are escaped per adapter quoting rules.
+    Saci::Record.db_type(:enum, :mysql, ["o'clock"], "t_x_enum").should eq("ENUM('o''clock')")
+    Saci::Record.db_type(:enum, :postgres, ["o'clock"], "t_x_enum").should eq(%("t_x_enum"))
+    expect_raises(ArgumentError, /requires values/) do
+      Saci::Record.db_type(:enum, :sqlite)
+    end
+    expect_raises(ArgumentError, /requires values/) do
+      Saci::Record.db_type(:enum, :postgres, [] of String, "t_x_enum")
+    end
+    expect_raises(ArgumentError, /requires a type name/) do
+      Saci::Record.db_type(:enum, :postgres, ["a"])
+    end
+  end
+
+  it "maps string arrays per adapter" do
+    Saci::Record.db_type(:string_array, :postgres).should eq("TEXT[]")
+    Saci::Record.db_type(:string_array, :mysql).should eq("TEXT")
+    Saci::Record.db_type(:string_array, :sqlite).should eq("TEXT")
+  end
+
+  it "renders timestamp precision per adapter and ignores it on SQLite" do
+    Saci::Record.db_type(:datetime, :postgres, precision: 6).should eq("TIMESTAMP(6)")
+    Saci::Record.db_type(:datetime, :mysql, precision: 6).should eq("DATETIME(6)")
+    Saci::Record.db_type(:datetime, :sqlite, precision: 6).should eq("TEXT")
+    Saci::Record.db_type(:datetime, :postgres, precision: 0).should eq("TIMESTAMP(0)")
+    # No precision: historical rendering is unchanged.
+    Saci::Record.db_type(:datetime, :sqlite).should eq("TEXT")
+    Saci::Record.db_type(:datetime, :postgres).should eq("TIMESTAMP")
+    Saci::Record.db_type(:datetime, :mysql).should eq("DATETIME")
+    expect_raises(ArgumentError, /out of range/) do
+      Saci::Record.db_type(:datetime, :postgres, precision: 7)
+    end
+    expect_raises(ArgumentError, /out of range/) do
+      Saci::Record.db_type(:datetime, :mysql, precision: -1)
+    end
+  end
+
+  it "builds enum, string_array and precision columns in TableDefinition" do
+    t = Saci::Record::TableDefinition.new
+    t.enum :status, values: ["draft", "published"]
+    t.columns.first.logical_type.should eq(:enum)
+    t.columns.first.enum_values.should eq(["draft", "published"])
+    expect_raises(ArgumentError, /must not be empty/) do
+      Saci::Record::TableDefinition.new.enum(:status, [] of String)
+    end
+
+    t = Saci::Record::TableDefinition.new
+    t.string_array :tags
+    t.columns.first.logical_type.should eq(:string_array)
+
+    t = Saci::Record::TableDefinition.new
+    t.datetime :at, precision: 6
+    t.columns.first.precision.should eq(6)
+    expect_raises(ArgumentError, /out of range/) do
+      Saci::Record::TableDefinition.new.datetime(:at, precision: 9)
+    end
+
+    t = Saci::Record::TableDefinition.new
+    t.timestamps precision: 6
+    t.columns.map(&.precision).should eq([6, 6])
+    t = Saci::Record::TableDefinition.new
+    t.timestamps
+    t.columns.map(&.precision).should eq([nil, nil])
+
+    t = Saci::Record::TableDefinition.new
+    t.enum :status, values: ["draft", "published"]
+    t.string_array :tags
+    t.datetime :at, precision: 6
+    t.timestamps precision: 6
+    t.columns.map(&.to_sql(:postgres, "posts")).join(", ").should eq(
+      %("status" "posts_status_enum", "tags" TEXT[], "at" TIMESTAMP(6), "created_at" TIMESTAMP(6) NOT NULL, "updated_at" TIMESTAMP(6) NOT NULL))
+    t.columns.map(&.to_sql(:mysql, "posts")).join(", ").should contain("`status` ENUM('draft','published')")
+    t.columns.map(&.to_sql(:mysql, "posts")).join(", ").should contain("`at` DATETIME(6)")
+    t.columns.map(&.to_sql(:sqlite, "posts")).join(", ").should contain(%("status" TEXT))
+  end
+
+  it "renders idempotent enum type DDL and drops it on rollback" do
+    Saci::Record::Migration.enum_type_name(:posts, :status).should eq("posts_status_enum")
+    Saci::Record::Migration.create_enum_sql(:postgres, :posts, :status, ["draft", "published"]).should eq(
+      %(DO $$ BEGIN CREATE TYPE "posts_status_enum" AS ENUM ('draft', 'published'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;))
+    # No standalone type on MySQL/SQLite (inline ENUM / TEXT instead).
+    Saci::Record::Migration.create_enum_sql(:mysql, :posts, :status, ["a"]).should be_nil
+    Saci::Record::Migration.create_enum_sql(:sqlite, :posts, :status, ["a"]).should be_nil
+    Saci::Record::Migration.drop_enum_sql(:postgres, :posts, :status).should eq(
+      %(DROP TYPE IF EXISTS "posts_status_enum"))
+    Saci::Record::Migration.drop_enum_sql(:mysql, :posts, :status).should be_nil
+    Saci::Record::Migration.drop_enum_sql(:sqlite, :posts, :status).should be_nil
+  end
+
+  it "encodes string arrays per adapter" do
+    Saci::Record.to_db(["a", "b"], :sqlite).should eq(%(["a","b"]))
+    Saci::Record.to_db(["a", "b"], :mysql).should eq(%(["a","b"]))
+    Saci::Record.to_db(["a", "b"], :postgres).should eq(["a", "b"])
+    Saci::Record.to_db(nil, :sqlite).should be_nil
+    Saci::Record.parse_string_array?(%(["x","y"])).should eq(["x", "y"])
+    Saci::Record.parse_string_array?("").should be_nil
+    Saci::Record.parse_string_array?("nope").should be_nil
+    Saci::Record.to_string_array(["a", "b"]).should eq(["a", "b"])
+    Saci::Record.to_string_array(%(["a","b"])).should eq(["a", "b"])
+    Saci::Record.to_string_array(nil).should be_nil
+    Saci::Record.blank?([] of String).should be_true
+    Saci::Record.blank?(["a"]).should be_false
+    Saci::Record.column_default_sql(["a", "b"], :sqlite).should eq(%('["a","b"]'))
+  end
+
+  it "SQLite round-trips enum, string arrays and precision timestamps with rollback" do
+    path = "/tmp/opencode/saci_p2_probe.db"
+    File.delete(path) if File.exists?(path)
+    db = DB.open("sqlite3://#{path}")
+    begin
+      Saci::Record::Migrator.migrate(db, [AdapterProbeEnums, AdapterProbeEnumAdd] of Saci::Record::Migration.class)
+      info = {} of String => String
+      db.query(%(PRAGMA table_info("adapter_probe_articles"))) do |rs|
+        rs.each do
+          rs.read(Int64); name = rs.read(String); info[name] = rs.read(String); rs.read(Int64); rs.read(String?); rs.read(Int64)
+        end
+      end
+      # SQLite stores enums and arrays as TEXT (no DB-level enforcement).
+      info["status"].should eq("TEXT")
+      info["tags"].should eq("TEXT")
+      info["published_at"].should eq("TEXT")
+      info["created_at"].should eq("TEXT")
+      info["audience"].should eq("TEXT")
+      info["labels"].should eq("TEXT")
+
+      # Rollback drops the added columns; arrays need no extra statements.
+      Saci::Record::Migrator.rollback(db, [AdapterProbeEnums, AdapterProbeEnumAdd] of Saci::Record::Migration.class, 1)
+      info = {} of String => String
+      db.query(%(PRAGMA table_info("adapter_probe_articles"))) do |rs|
+        rs.each do
+          rs.read(Int64); name = rs.read(String); info[name] = rs.read(String); rs.read(Int64); rs.read(String?); rs.read(Int64)
+        end
+      end
+      info.has_key?("audience").should be_false
+      info.has_key?("labels").should be_false
+      info.has_key?("status").should be_true
+    ensure
+      db.close
+    end
+    begin
+      # Model round-trips go through the primary database (saved and
+      # restored — registering a named database would leak into the
+      # global registry).
+      had_primary = Saci::Record.configuration_names.includes?("primary")
+      prev = had_primary ? Saci::Record.database("primary") : nil
+      Saci::Record::Base.connection = DB.open("sqlite3://#{path}")
+      row = AdapterProbeArticle.create!(status: "draft", tags: ["crystal", "o'hara, jr."])
+      row.id.should_not be_nil
+      fresh = AdapterProbeArticle.find(row.id)
+      fresh.status.should eq("draft")
+      # JSON encoding round-trips commas, quotes and unicode exactly.
+      fresh.tags.should eq(["crystal", "o'hara, jr."])
+
+      # Change detection on assign: a plain setter replaces the value.
+      row.tags = ["one"]
+      row.save!
+      row.reload.tags.should eq(["one"])
+
+      # Nil and empty arrays are distinct and round-trip.
+      row.update!(tags: nil)
+      row.reload.tags.should be_nil
+      row.update!(tags: [] of String)
+      AdapterProbeArticle.find(row.id).tags.should eq([] of String)
+
+      # Timestamps keep whole-second precision through SQLite (its storage
+      # is RFC3339 text without fractional seconds — precision: is
+      # accepted but ignored there, documented above).
+      at = Time.utc(2024, 5, 1, 12, 30, 45)
+      row.update!(published_at: at)
+      AdapterProbeArticle.find(row.id).published_at.should eq(at)
+
+      # SQLite has no ENUM type: the model-level inclusion validation is
+      # the enforcement there.
+      bad = AdapterProbeArticle.new(status: "bogus", tags: ["a"])
+      bad.valid?.should be_false
+      bad.errors[:status].join.should contain("is not included in the list")
+    ensure
+      Saci::Record.database("primary").close
+      if p = prev
+        Saci::Record::Base.connection = p
+      end
+      File.delete(path) if File.exists?(path)
+    end
+  end
 end
 
 class AdapterProbeM1 < Saci::Record::Migration
@@ -411,3 +607,228 @@ class AdapterProbeRemoveFk < Saci::Record::Migration
     remove_foreign_key :stories, :users
   end
 end
+
+class AdapterProbeEnums < Saci::Record::Migration
+  def change
+    create_table :adapter_probe_articles do |t|
+      t.enum :status, values: ["draft", "published"]
+      t.string_array :tags
+      t.datetime :published_at, precision: 6
+      t.timestamps precision: 6
+    end
+  end
+end
+
+class AdapterProbeEnumAdd < Saci::Record::Migration
+  def change
+    add_column :adapter_probe_articles, :audience, :enum, values: ["free", "paid"]
+    add_column :adapter_probe_articles, :labels, :string_array
+  end
+end
+
+# SQLite enforcement for `t.enum` is model-level (SQLite stores TEXT):
+# the inclusion set mirrors the migration's `values:`. Tests run it
+# against the primary database (saved/restored, never registered — the
+# global registry is asserted exactly by spec/multidb_spec.cr).
+class AdapterProbeArticle < Saci::Record::Base
+  column id : Int64, primary: true
+  column status : String
+  column tags : Array(String)
+  column published_at : Time
+  timestamps
+
+  validates :status, inclusion: {in: ["draft", "published"]}, allow_nil: true
+end
+
+# -- live enum/array/precision (compile-time URL gate; pending otherwise) --
+#
+# Needs real servers (`PG_URL` / `MYSQL_URL` at COMPILE time, like
+# spec/schema_spec.cr). The default `crystal spec` stays driver-free and
+# reports these as pending.
+
+{% if env("PG_URL") %}
+class PgProbeArticle < Saci::Record::Base
+  table "pg_probe_articles"
+  column id : Int64, primary: true
+  column status : String
+  column tags : Array(String)
+  column published_at : Time
+  timestamps
+
+  validates :status, inclusion: {in: ["draft", "published"]}, allow_nil: true
+end
+
+class PgProbeEnums < Saci::Record::Migration
+  def change
+    create_table :pg_probe_articles do |t|
+      t.enum :status, values: ["draft", "published"]
+      t.string_array :tags
+      t.datetime :published_at, precision: 6
+      t.timestamps precision: 6
+    end
+  end
+end
+
+describe "PostgreSQL enum/array/precision live" do
+  it "round-trips enums, native arrays and microsecond timestamps, dropping the type on rollback" do
+    url = ENV["PG_URL"]?
+    next if url.nil?
+    db : DB::Database? = nil
+    begin
+      db = Saci::Record.establish_connection("adapter_spec_pg", url)
+    rescue
+      next
+    end
+    db = db.as(DB::Database)
+    begin
+      ad = Saci::Record.adapter_of(db)
+      tbl = Saci::Record.quote("pg_probe_articles", ad)
+      sm = Saci::Record.quote("schema_migrations", ad)
+      c_name = Saci::Record.quote("name", ad)
+      begin
+        Saci::Record.exec_compat(db, "DROP TABLE IF EXISTS #{tbl}")
+        Saci::Record.exec_compat(db, "DROP TYPE IF EXISTS #{Saci::Record.quote("pg_probe_articles_status_enum", ad)}")
+        Saci::Record.exec_compat(db, "DELETE FROM #{sm} WHERE #{c_name} = ?", ["PgProbeEnums"] of Saci::Record::Value)
+      rescue
+      end
+      Saci::Record::Migrator.migrate(db, [PgProbeEnums] of Saci::Record::Migration.class)
+
+      # Standalone type exists exactly once (the DO block is idempotent:
+      # running the CREATE again is a no-op, so reruns are safe).
+      Saci::Record.exec_compat(db, Saci::Record::Migration.create_enum_sql(ad, :pg_probe_articles, :status, ["draft", "published"]).not_nil!)
+      Saci::Record.scalar_compat(db,
+        "SELECT COUNT(*) FROM pg_type WHERE typname = ?",
+        ["pg_probe_articles_status_enum"] of Saci::Record::Value).should eq(1)
+      Saci::Record.scalar_compat(db,
+        "SELECT datetime_precision FROM information_schema.columns WHERE table_name = ? AND column_name = ?",
+        ["pg_probe_articles", "published_at"] of Saci::Record::Value).should eq(6)
+
+      # PostgreSQL enforces the enum at the DB level (invalid values
+      # reject even past model validations).
+      expect_raises(Exception) do
+        db.exec("INSERT INTO #{tbl} (\"status\") VALUES ($1)", "bogus")
+      end
+
+      Saci::Record.connected_to("adapter_spec_pg") do
+        at = Time.utc(2024, 5, 1, 12, 30, 45, nanosecond: 123456_000)
+        row = PgProbeArticle.create!(status: "published", tags: ["a", "b"], published_at: at)
+        got = PgProbeArticle.find(row.id)
+        got.status.should eq("published")
+        got.tags.should eq(["a", "b"])
+        got.published_at.should eq(at)
+        row.tags = [] of String
+        row.save!
+        PgProbeArticle.find(row.id).tags.should eq([] of String)
+      end
+
+      # Rollback drops the table AND the standalone enum type.
+      Saci::Record::Migrator.rollback(db, [PgProbeEnums] of Saci::Record::Migration.class, 1)
+      Saci::Record.scalar_compat(db,
+        "SELECT COUNT(*) FROM pg_type WHERE typname = ?",
+        ["pg_probe_articles_status_enum"] of Saci::Record::Value).should eq(0)
+      # ... and the migration re-applies cleanly afterwards.
+      Saci::Record::Migrator.migrate(db, [PgProbeEnums] of Saci::Record::Migration.class)
+    ensure
+      begin
+        Saci::Record.exec_compat(db, "DROP TABLE IF EXISTS #{Saci::Record.quote("pg_probe_articles", Saci::Record.adapter_of(db))}")
+        Saci::Record.exec_compat(db, "DROP TYPE IF EXISTS #{Saci::Record.quote("pg_probe_articles_status_enum", Saci::Record.adapter_of(db))}")
+      rescue
+      end
+      db.close
+    end
+  end
+end
+{% else %}
+pending "live PostgreSQL enum/array/precision (set PG_URL at compile time, e.g. postgres://saci:saci@127.0.0.1:55432/saci_test)" do
+  raise "needs PG_URL"
+end
+{% end %}
+
+{% if env("MYSQL_URL") %}
+class MyProbeArticle < Saci::Record::Base
+  table "my_probe_articles"
+  column id : Int64, primary: true
+  column status : String
+  column tags : Array(String)
+  column published_at : Time
+  timestamps
+
+  validates :status, inclusion: {in: ["draft", "published"]}, allow_nil: true
+end
+
+class MyProbeEnums < Saci::Record::Migration
+  def change
+    create_table :my_probe_articles do |t|
+      t.enum :status, values: ["draft", "published"]
+      t.string_array :tags
+      t.datetime :published_at, precision: 6
+      t.timestamps precision: 6
+    end
+  end
+end
+
+describe "MySQL enum/array/precision live" do
+  it "round-trips inline enums, JSON-backed arrays and fractional timestamps" do
+    url = ENV["MYSQL_URL"]?
+    next if url.nil?
+    db : DB::Database? = nil
+    begin
+      db = Saci::Record.establish_connection("adapter_spec_mysql", url)
+    rescue
+      next
+    end
+    db = db.as(DB::Database)
+    begin
+      ad = Saci::Record.adapter_of(db)
+      tbl = Saci::Record.quote("my_probe_articles", ad)
+      sm = Saci::Record.quote("schema_migrations", ad)
+      c_name = Saci::Record.quote("name", ad)
+      begin
+        Saci::Record.exec_compat(db, "DROP TABLE IF EXISTS #{tbl}")
+        Saci::Record.exec_compat(db, "DELETE FROM #{sm} WHERE #{c_name} = ?", ["MyProbeEnums"] of Saci::Record::Value)
+      rescue
+      end
+      Saci::Record::Migrator.migrate(db, [MyProbeEnums] of Saci::Record::Migration.class)
+
+      # ENUM is inline on MySQL; arrays are TEXT (JSON-encoded, like
+      # `:json`, because crystal-mysql cannot decode native JSON).
+      Saci::Record.scalar_compat(db,
+        "SELECT column_type FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?",
+        ["my_probe_articles", "status"] of Saci::Record::Value).should eq("enum('draft','published')")
+      Saci::Record.scalar_compat(db,
+        "SELECT data_type FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?",
+        ["my_probe_articles", "tags"] of Saci::Record::Value).should eq("text")
+      Saci::Record.scalar_compat(db,
+        "SELECT datetime_precision FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?",
+        ["my_probe_articles", "published_at"] of Saci::Record::Value).should eq(6)
+
+      Saci::Record.connected_to("adapter_spec_mysql") do
+        at = Time.utc(2024, 5, 1, 12, 30, 45, nanosecond: 123456_000)
+        row = MyProbeArticle.create!(status: "draft", tags: ["x,y", "z"], published_at: at)
+        got = MyProbeArticle.find(row.id)
+        got.status.should eq("draft")
+        got.tags.should eq(["x,y", "z"])
+        got.published_at.should eq(at)
+      end
+
+      # Rollback drops the table (arrays are plain columns — nothing
+      # extra; enums are inline — no type to drop).
+      Saci::Record::Migrator.rollback(db, [MyProbeEnums] of Saci::Record::Migration.class, 1)
+      expect_raises(Exception) do
+        Saci::Record.exec_compat(db, "SELECT * FROM #{tbl}")
+      end
+      Saci::Record::Migrator.migrate(db, [MyProbeEnums] of Saci::Record::Migration.class)
+    ensure
+      begin
+        Saci::Record.exec_compat(db, "DROP TABLE IF EXISTS #{Saci::Record.quote("my_probe_articles", Saci::Record.adapter_of(db))}")
+      rescue
+      end
+      db.close
+    end
+  end
+end
+{% else %}
+pending "live MySQL enum/array/precision (set MYSQL_URL at compile time, e.g. mysql://saci:saci@127.0.0.1:53306/saci_test)" do
+  raise "needs MYSQL_URL"
+end
+{% end %}

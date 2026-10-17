@@ -27,10 +27,10 @@ module Saci
       if from_creds = credentials_secret
         return from_creds
       end
-      if Saci.env == "production"
+      if Saci.env == "production" || Saci.env == "staging"
         raise MissingSecretInProduction.new(
           "SECRET_KEY_BASE is not set (and no secret_key_base in credentials). " \
-          "Refusing to boot in production with a generated dev secret. " \
+          "Refusing to boot in #{Saci.env} with a generated dev secret. " \
           "Set SECRET_KEY_BASE (e.g. from `saci secret`) and restart.")
       end
       @@mutex.synchronize do

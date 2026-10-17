@@ -68,7 +68,10 @@ module Saci
   #   (`last_insert_id` is unsupported by crystal-pg).
   module Record
     # Every value a column, condition or assignment may carry.
-    alias Value = String | Int32 | Int64 | Float32 | Float64 | Bool | Time | Bytes | Nil
+    # `Array(String)` covers `:string_array` columns (`column tags :
+    # Array(String)`), stored natively as `TEXT[]` on PostgreSQL and as
+    # JSON text on SQLite/MySQL.
+    alias Value = String | Int32 | Int64 | Float32 | Float64 | Bool | Time | Bytes | Array(String) | Nil
 
     # Database adapters, detected from the connection URL scheme
     # (`sqlite3://` → `:sqlite`, `postgres(ql)://` → `:postgres`,
@@ -479,27 +482,54 @@ module Saci
 
     # Converts user input into a DB-safe bind value. SQLite stores `Bool`
     # as `0`/`1` and `Time` as RFC3339 text; PostgreSQL/MySQL bind both
-    # natively through their drivers.
+    # natively through their drivers. `Array(String)` (for `:string_array`
+    # columns) binds natively on PostgreSQL (`TEXT[]`) and is JSON-encoded
+    # to text elsewhere.
     def self.to_db(v : Object, adapter : Adapter = :sqlite) : Value
       case v
       when Nil    then nil
       when Bool   then adapter == :sqlite ? (v ? 1_i64 : 0_i64) : v
       when Time   then adapter == :sqlite ? v.to_rfc3339 : v
       when String, Int32, Int64, Float32, Float64, Bytes then v
+      when Array(String) then adapter == :postgres ? v : v.to_json
       else
         raise ArgumentError.new("Unsupported query value: #{v.inspect} (#{v.class})")
       end
     end
 
     # Rails-like blank? for validation gating (`allow_blank`): nil, false
-    # and empty/whitespace strings (or empty blobs) are blank.
+    # and empty/whitespace strings (or empty arrays/blobs) are blank.
     def self.blank?(v : Value) : Bool
       case v
       when Nil    then true
       when Bool   then !v
       when String then v.strip.empty?
       when Bytes  then v.empty?
+      when Array  then v.empty?
       else             false
+      end
+    end
+
+    # Parses a JSON-encoded string array (the SQLite/MySQL storage for
+    # `:string_array` columns). Blank input → nil; corrupt input → nil.
+    def self.parse_string_array?(s : String) : Array(String)?
+      return nil if s.strip.empty?
+      JSON.parse(s).as_a.map(&.as_s)
+    rescue
+      nil
+    end
+
+    # Coerces a column value into `Array(String)?` (the model mapping for
+    # `column tags : Array(String)`). Native PG arrays pass through;
+    # JSON text (SQLite/MySQL storage) is decoded.
+    def self.to_string_array(v : Value) : Array(String)?
+      case v
+      when Nil           then nil
+      when Array(String) then v
+      when Array         then v.map(&.to_s)
+      when String        then parse_string_array?(v)
+      when Bytes         then parse_string_array?(String.new(v))
+      else                    nil
       end
     end
 
@@ -518,6 +548,8 @@ module Saci
     end
 
     # Renders a column DEFAULT clause value (nil = no default).
+    # `Array(String)` defaults (for `:string_array` columns) are stored as
+    # a quoted JSON string.
     def self.column_default_sql(default : Value, adapter : Adapter = :sqlite) : String?
       case default
       when Nil    then nil
@@ -525,12 +557,18 @@ module Saci
       when Number then default.to_s
       when String then "'#{default.gsub("'", "''")}'"
       when Time   then "'#{default.to_rfc3339}'"
+      when Array(String) then "'#{default.to_json.gsub("'", "''")}'"
       else             nil
       end
     end
 
     # Logical column types (migration DSL) per adapter.
-    def self.db_type(logical : Symbol, adapter : Adapter) : String
+    #
+    # `enum_values`/`enum_type` serve `:enum` columns (PostgreSQL needs the
+    # standalone type name; MySQL renders `ENUM(...)` inline; SQLite stores
+    # `TEXT`). `precision` (0..6) serves `:datetime` (`TIMESTAMP(p)` on
+    # PostgreSQL, `DATETIME(fsp)` on MySQL, ignored on SQLite).
+    def self.db_type(logical : Symbol, adapter : Adapter, enum_values : Array(String)? = nil, enum_type : String? = nil, precision : Int32? = nil) : String
       case logical
       when :string   then "VARCHAR(255)"
       when :text     then "TEXT"
@@ -544,7 +582,38 @@ module Saci
       # content itself is unchanged — String-backed round-trip).
       when :json     then adapter == :postgres ? "JSONB" : "TEXT"
       when :boolean  then adapter == :sqlite ? "INTEGER" : "BOOLEAN"
-      when :datetime then adapter == :sqlite ? "TEXT" : (adapter == :postgres ? "TIMESTAMP" : "DATETIME")
+      when :datetime
+        if p = precision
+          unless 0 <= p <= 6
+            raise ArgumentError.new("datetime precision #{p} is out of range (expected 0..6)")
+          end
+          case adapter
+          when :postgres then "TIMESTAMP(#{p})"
+          when :mysql    then "DATETIME(#{p})"
+          else                "TEXT"
+          end
+        else
+          adapter == :sqlite ? "TEXT" : (adapter == :postgres ? "TIMESTAMP" : "DATETIME")
+        end
+      when :enum
+        vals = enum_values
+        if vals.nil? || vals.empty?
+          raise ArgumentError.new("enum column requires values: [...] (got #{enum_values.inspect})")
+        end
+        case adapter
+        when :postgres
+          if enum_type.nil? || enum_type.empty?
+            raise ArgumentError.new("enum column on PostgreSQL requires a type name (declare it via t.enum inside create_table or add_column with a table)")
+          end
+          quote(enum_type, adapter)
+        when :mysql
+          "ENUM(#{vals.map { |v| "'#{v.gsub("'", "''")}'" }.join(",")})"
+        else
+          "TEXT"
+        end
+      # PostgreSQL stores string arrays natively (`TEXT[]`, bound as a PG
+      # array); elsewhere they are JSON-encoded text (like `:json`).
+      when :string_array then adapter == :postgres ? "TEXT[]" : "TEXT"
       when :serial   then adapter == :postgres ? "BIGSERIAL" : (adapter == :mysql ? "BIGINT" : "INTEGER")
       else                raise ArgumentError.new("Unknown column type #{logical}")
       end
@@ -682,6 +751,18 @@ module Saci
           rs.read(String?)
         end
       when "Bytes"   then rs.read(Bytes?)
+      # `:string_array` (`column tags : Array(String)`): PostgreSQL
+      # decodes `TEXT[]` to a native array; SQLite/MySQL read back the
+      # JSON-encoded text `to_db` wrote.
+      when "Array(String)"
+        case v = rs.read
+        when Nil           then nil
+        when Array(String) then v
+        when Array         then v.map(&.to_s)
+        when String        then parse_string_array?(v)
+        when Bytes         then parse_string_array?(String.new(v))
+        else                    nil
+        end
       else                rs.read(String?)
       end
     end

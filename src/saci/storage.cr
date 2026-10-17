@@ -13,16 +13,27 @@ module Saci
   # # routes:
   # r.get "/files/*key", Saci::Storage::FilesController, :show
   # Saci::Storage.signed_url(key) # => "/files/ab/cd/…?expires=…&sig=…"
+  # Saci::Storage.rotate_signing_key!("new-secret") # old URLs verify till expiry
+  # pub = Saci::Storage.upload(data, filename: "a.png", public: true)
+  # Saci::Storage.public_url(pub) # => "/files/public/ab/cd/…" (unsigned)
   # ```
   module Storage
     class FileNotFound < Exception
     end
 
     # Key format: hex sharded over two levels (`ab/cd/<rest>`).
-    KEY_RE = /\A[0-9a-f\/]+\z/
+    # Public files live under a `public/` key prefix
+    # (`public/ab/cd/<rest>`) and are served without a signature.
+    KEY_RE = /\A(public\/)?[0-9a-f\/]+\z/
+    PUBLIC_PREFIX = "public/"
 
     def self.valid_key?(key : String) : Bool
       !key.empty? && KEY_RE.matches?(key) && !key.includes?("..")
+    end
+
+    # True for keys under the public prefix (`public/...`).
+    def self.public_key?(key : String) : Bool
+      key == "public" || key.starts_with?(PUBLIC_PREFIX)
     end
 
     @@service : DiskService? = nil
@@ -36,8 +47,8 @@ module Saci
       @@service_mutex.synchronize { @@service = service }
     end
 
-    def self.upload(data : Bytes | IO | String, filename : String, content_type : String = "application/octet-stream") : String
-      service.upload(data, filename: filename, content_type: content_type)
+    def self.upload(data : Bytes | IO | String, filename : String, content_type : String = "application/octet-stream", public : Bool? = nil) : String
+      service.upload(data, filename: filename, content_type: content_type, public: public)
     end
 
     def self.download(key : String) : Bytes
@@ -52,16 +63,59 @@ module Saci
       service.exists?(key)
     end
 
+    # Signing keys for expiring URLs. `keys.first` signs new URLs;
+    # every entry verifies old ones, so rotation never invalidates
+    # in-flight URLs before their natural `expires` (grace = natural
+    # expiry, no separate window to configure). Defaults to
+    # `[Secrets.secret_key_base]` when unset.
+    @@signing_keys : Array(String)? = nil
+    @@signing_mutex = Mutex.new
+
+    def self.signing_keys : Array(String)
+      @@signing_mutex.synchronize { @@signing_keys.try(&.dup) || [Secrets.secret_key_base] }
+    end
+
+    def self.signing_keys=(keys : Array(String)) : Nil
+      raise ArgumentError.new("signing_keys needs at least one key") if keys.empty?
+      @@signing_mutex.synchronize { @@signing_keys = keys.dup }
+    end
+
+    # Rotate to `new_secret`: new URLs sign with it, URLs signed with any
+    # previous primary still verify until their natural expiry.
+    # Unknown keys never verify.
+    def self.rotate_signing_key!(new_secret : String) : Nil
+      @@signing_mutex.synchronize do
+        current = @@signing_keys.try(&.dup) || [Secrets.secret_key_base]
+        @@signing_keys = [new_secret] + current
+      end
+    end
+
+    # Drop any rotation overrides (spec isolation).
+    def self.reset_signing_keys! : Nil
+      @@signing_mutex.synchronize { @@signing_keys = nil }
+    end
+
+    private def self.verification_keys : Array(String)
+      @@signing_mutex.synchronize { @@signing_keys.try(&.dup) || [Secrets.secret_key_base] }
+    end
+
     def self.signed_url(key : String, base : String = "/files", expires_in : Time::Span = 5.minutes) : String
       expires = Time.utc.to_unix + expires_in.total_seconds.to_i64
-      sig = OpenSSL::HMAC.hexdigest(:sha256, Secrets.secret_key_base, "#{key}:#{expires}")
+      sig = OpenSSL::HMAC.hexdigest(:sha256, verification_keys.first, "#{key}:#{expires}")
       "#{base}/#{key}?expires=#{expires}&sig=#{sig}"
     end
 
     def self.verified_url?(key : String, expires : Int64, sig : String) : Bool
       return false if Time.utc.to_unix > expires
-      expected = OpenSSL::HMAC.hexdigest(:sha256, Secrets.secret_key_base, "#{key}:#{expires}")
-      Crypto::Subtle.constant_time_compare(expected, sig)
+      verification_keys.any? do |secret|
+        expected = OpenSSL::HMAC.hexdigest(:sha256, secret, "#{key}:#{expires}")
+        Crypto::Subtle.constant_time_compare(expected, sig)
+      end
+    end
+
+    # Stable unsigned URL for a public key (`public/...`). No expiry/sig.
+    def self.public_url(key : String, base : String = "/files") : String
+      "#{base}/#{key}"
     end
 
     struct StoredFile
@@ -75,13 +129,23 @@ module Saci
 
     class DiskService
       getter root : String
+      getter public_mode : Bool
 
-      def initialize(@root : String = "storage")
+      # Per-service default for public files; each `upload` can override
+      # with `public: true/false` (nil inherits the service default).
+      def initialize(@root : String = "storage", public public_mode : Bool = false)
+        @public_mode = public_mode
       end
 
-      def upload(data : Bytes | IO | String, filename : String, content_type : String = "application/octet-stream") : String
+      def public_mode? : Bool
+        @public_mode
+      end
+
+      def upload(data : Bytes | IO | String, filename : String, content_type : String = "application/octet-stream", public : Bool? = nil) : String
+        is_public = public.nil? ? @public_mode : public
         hex = Random::Secure.hex(16)
-        key = "#{hex[0, 2]}/#{hex[2, 2]}/#{hex[4..]}"
+        shard = "#{hex[0, 2]}/#{hex[2, 2]}/#{hex[4..]}"
+        key = is_public ? "#{PUBLIC_PREFIX}#{shard}" : shard
         path = file_path(key)
         Dir.mkdir_p(File.dirname(path))
         case data
@@ -126,6 +190,11 @@ module Saci
         File.exists?(file_path(key))
       end
 
+      # Stable unsigned URL for a public key under this service.
+      def public_url(key : String, base : String = "/files") : String
+        Storage.public_url(key, base: base)
+      end
+
       private def file_path(key : String) : String
         File.join(@root, key)
       end
@@ -139,8 +208,10 @@ module Saci
       end
     end
 
-    # Mount in your router to serve private uploads through expiring signed
-    # URLs (see `Storage.signed_url`):
+    # Mount in your router to serve uploads (see `Storage.signed_url`).
+    # Private keys need an expiring signature; public keys (`public/...`,
+    # see `DiskService#public_mode`) are served unsigned. No directory
+    # listing is ever served — unknown/missing keys are 404.
     #
     # ```
     # r.get "/files/*key", Saci::Storage::FilesController, :show
@@ -148,11 +219,17 @@ module Saci
     class FilesController < Controller
       def show
         key = params["key"]?
-        expires = params["expires"]?.try(&.to_i64?)
-        sig = params["sig"]?
-        unless key && expires && sig && Storage.verified_url?(key, expires, sig)
+        unless key && Storage.valid_key?(key)
           head :not_found
           return
+        end
+        unless Storage.public_key?(key)
+          expires = params["expires"]?.try(&.to_i64?)
+          sig = params["sig"]?
+          unless expires && sig && Storage.verified_url?(key, expires, sig)
+            head :not_found
+            return
+          end
         end
         if stored = Storage.service.locate(key)
           send_file(stored.path, filename: stored.filename, content_type: stored.content_type, disposition: "inline")
