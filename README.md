@@ -546,6 +546,45 @@ end
   the `saci new` production env template is left to the integrator —
   `cli/` is untouched by this change).
 
+## Turbo Frames + Streams (Hotwire, server-side)
+
+```crystal
+turbo_frame_tag("profile") { "<p>Ada</p>" }
+# => <turbo-frame id="profile"><p>Ada</p></turbo-frame>
+turbo_frame_tag("feed", src: "/feed?page=2", loading: "lazy") { "" }
+
+Saci::Turbo.append("msgs", "<p>hi</p>")
+# => <turbo-stream action="append" target="msgs"><template><p>hi</p></template></turbo-stream>
+# (prepend / replace / update / before / after share the shape;
+#  remove carries no <template>: <turbo-stream action="remove" target="m1"></turbo-stream>)
+
+class MsgsController < ApplicationController
+  def create
+    render turbo_stream: Saci::Turbo.append("msgs", "<p>#{h(params["text"]? || "")}</p>")
+    # ...or arrays: render turbo_stream: [Saci::Turbo.append(...), Saci::Turbo.remove(...)]
+    # ...or: render_turbo_stream Saci::Turbo.prepend("msgs", "..."), status: :ok
+  end
+end
+```
+
+- `render turbo_stream:` replies with
+  `Content-Type: text/vnd.turbo-stream.html` (`content_type:` overrides it,
+  reusing the standard `render` override).
+- **Escaping (pinned):** ids/targets/src/loading are escaped; `html`
+  payloads go into `<template>` RAW — Turbo parses template content as
+  HTML, so escaping it would render literal tags. Escape user input
+  yourself with `h()` (as above).
+- **Cable wiring (streams ARE cable streams):** broadcast the rendered
+  element as the message payload —
+  `Saci::Turbo.broadcast_append("room:1", "msgs", "<p>hi</p>")`
+  (all seven actions have `broadcast_*` variants via
+  `Saci::Cable.broadcast`). Subscribe clients to the stream and apply the
+  received HTML with a consumer (e.g. append it to the DOM); Turbo itself
+  comes from the CDN — no JavaScript is bundled:
+  `<script type="module">import * as Turbo from "https://cdn.skypack.dev/@hotwired/turbo";</script>`.
+- Out of scope: morph / page-refresh (`turbo-refresh-method` meta,
+  `turbo:morph` attributes) — plain markup the app emits itself.
+
 ## Multithreading
 
 Crystal runs single-threaded by default. Saci is thread-safe (fiber-keyed
@@ -751,6 +790,57 @@ WelcomeJob.perform_now({user_id: 1})
   (extra runs skip while the slot is held); honored by `:inline`, `:async`
   and `:db` adapters (explicit `perform_now` always runs).
 
+### Job dashboard (MissionControl-lite)
+
+```crystal
+r.get "/saci/jobs", Saci::Job::DashboardController, :index
+r.get "/saci/jobs/dead", Saci::Job::DashboardController, :dead
+r.post "/saci/jobs/dead/:id/retry", Saci::Job::DashboardController, :retry_dead
+r.post "/saci/jobs/dead/:id/drop", Saci::Job::DashboardController, :drop_dead
+```
+
+- `index` shows pending/dead counts, oldest pending age, and per-queue /
+  per-class pending breakdowns (aggregated in Ruby from `saci_jobs` rows —
+  read-only, no new tables). `dead` lists the dead-letter table (class,
+  attempts, error) with Retry/Drop buttons wiring to `Db.retry_dead` /
+  `Db.drop_dead`.
+- Dev-gated like mailer previews: `Saci::Job::Dashboard.enabled` defaults
+  to `Saci.env != "production"` and every action 404s when disabled. No
+  auth is built in — mount behind your own admin gate.
+- Requires the `:db` adapter; any other adapter renders an empty state
+  (never a 500).
+
+## Recurring jobs
+
+```crystal
+Saci::Recurring.every(5.minutes, "expire-ribbons") do
+  ExpireRibbonsJob.perform_later({})
+end
+Saci::Recurring.cron("*/5 * * * *", "refresh-stats") do
+  RefreshStatsJob.perform_later({})
+end
+
+Saci::Recurring.start            # supervised loop, 30s tick default
+Saci::Recurring.start(15.seconds)
+Saci::Recurring.stop
+```
+
+- Registry form is the only API (no `Job::Base` changes): names are unique,
+  blocks should be a single fast `perform_later` (runs inline on the tick).
+- Cron is stdlib-only, 5 fields, UTC everywhere: `*`, `*/n`, ranges,
+  steps, lists, month/DOW names; `0`/`7` both Sunday; dom+DOW restricted
+  means either may match. `L`/`W`/`#`/`?` raise `ArgumentError`, as do
+  impossible dates (Feb 30) and duplicate names.
+- Missed ticks collapse to ONE catch-up run (next due is computed from
+  now); a key already running never overlaps (extra ticks skip); block
+  errors report via `Saci::Job.on_error` without killing the loop.
+- Intervals first fire one interval after registration; cron entries are
+  due for the current minute when it matches.
+- Multi-replica: run `start` on ONE replica, or set
+  `Saci::Recurring.cache_dedup = true` with a shared `RedisStore` Cache so
+  duplicate fires for the same due-minute collapse to one (best-effort
+  under exact-tie races — jobs must stay idempotent).
+
 ## Mailers
 
 ```crystal
@@ -849,6 +939,54 @@ end
   (same URL conventions, windowed numbers with `aria-current`, `""` for a single page),
   `rss_feed(title:, link:, description:, items:)` (render with
   `render xml:`).
+
+## Rich text (ActionText equivalent, stdlib-only)
+
+```crystal
+class Post < Saci::Record::Base
+  column body : String
+  has_rich_text :body          # works on existing text columns — no migration needed
+end
+
+post.body_rich_text.to_s          # sanitized HTML
+post.body_rich_text.to_plain_text # plain text (search index, notifications)
+post.body_rich_text.excerpt(200)  # truncated plain text ("…" when cut)
+post.body_rich_text.blank?        # true when no visible text
+```
+
+```erb
+<!-- sanitized already — <%= %> does NOT escape, so NEVER wrap in h() -->
+<!-- (h() would double-escape and show literal tags; same rule as documented above) -->
+<%= rich_text(@post.body) %>
+<%= form_with("/posts", model: @post, scope: "post") { |f| f.rich_text_area("body") } %>
+```
+
+- Allowlist: `p br strong em a ul ol li code pre blockquote h1-h3` (only
+  tags emitted; `script`/`style`/`iframe`/`img`/event handlers/`style`
+  attributes never survive) and `<a href>` limited to `http://`, `https://`,
+  `mailto:`, `/path`, `#anchor` (`javascript:`/`data:`/entity- and
+  case-tricks drop the href, keep the text). Escape-then-allowlist: input is
+  escaped first, then allowlisted markup is re-emitted — unknown tags render
+  as inert text, never execute.
+- Storage is a plain `String` column holding raw HTML; new fields use
+  `t.text :body` in migrations. The server accepts plain HTML from
+  `rich_text_area` and sanitizes on every READ — never trust input, and
+  never rely on write-time sanitizing (pre-fix or out-of-band rows stay
+  dangerous).
+- `rich_text_area` is a plain `<textarea data-rich-text="true">` (no
+  JavaScript required). Optional Trix enhancement — stdlib-only means the
+  Trix bundle ships via CDN, never vendored:
+
+  ```html
+  <link rel="stylesheet" href="https://unpkg.com/trix@2.0.0/dist/trix.css">
+  <script src="https://unpkg.com/trix@2.0.0/dist/trix.umd.min.js"></script>
+  <script>
+    document.querySelectorAll("textarea[data-rich-text]").forEach((el) => {
+      el.insertAdjacentHTML("afterend", `<trix-editor input="${el.id}"></trix-editor>`);
+      el.hidden = true;
+    });
+  </script>
+  ```
 
 ## HTTP caching
 
@@ -1086,6 +1224,7 @@ src/saci/record/schema.cr     # db:schema:dump/load (schema.rb equivalent)
 src/saci/record/errors.cr     # validation errors
 src/saci/record/inflector.cr  # table-name inflection
 src/saci/cable.cr         # ActionCable-style channels + TestClient
+src/saci/turbo.cr         # Turbo frames + streams (Hotwire, server-side; Cable wiring)
 src/saci/concurrency.cr   # enable_multithreading!
 src/saci/csrf.cr          # double-submit CSRF tokens
 src/saci/secure_headers.cr  # secure response headers
@@ -1118,6 +1257,7 @@ spec/cli_spec.cr        # CLI generator specs (temp dirs, no compilation)
 spec/schema_spec.cr     # schema dump/load round-trips (SQLite + live PG/MySQL when URLs present)
 spec/test_session_spec.cr  # TestSession request specs (ephemeral ports)
 spec/cable_spec.cr      # Cable specs (live two-client broadcast, reject, unsubscribe)
+spec/turbo_spec.cr      # Turbo frames/streams, render content-type, cable payloads
 spec/security_spec.cr   # CSRF/headers/escaping/bcrypt specs
 spec/csp_spec.cr        # CSP default + skip_csp/csp escape hatches
 spec/fts_spec.cr        # FTS5 setup/triggers/ranked search
@@ -1137,6 +1277,7 @@ examples/record_example.cr  # runnable ORM example
 - [x] ORM: models, queries, validations, associations, migrations
 - [x] CLI: new / generate / serve / db:migrate / db:rollback / test / --watch
 - [x] WebSockets (ActionCable-style channels)
+- [x] Turbo Frames + Streams (Hotwire server-side; Cable broadcast wiring)
 - [x] Multithreading (`serve --mt`, fiber-safe state) + localization (I18n)
 - [x] Basic security (CSRF, secure headers, has_secure_password, escaping)
 - [x] Sessions, signed cookies, flash + `saci secret`

@@ -29,6 +29,7 @@ require "./saci/i18n"
 require "./saci/logging"
 require "./saci/job"
 require "./saci/job_db"
+require "./saci/recurring"
 require "./saci/page_cache"
 require "./saci/smtp"
 require "./saci/mailer"
@@ -37,6 +38,8 @@ require "./saci/record/schema_check"
 require "./saci/record/secure_password"
 require "./saci/pagination"
 require "./saci/metrics"
+require "./saci/rich_text"
+require "./saci/turbo"
 
 module Saci
 end
