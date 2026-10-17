@@ -88,7 +88,6 @@ module Saci
 
         def run_validations(errors : Saci::Record::Errors) : Nil
           super
-          __saci_run_validations(errors)
         end
 
         def __saci_before_validation : Nil
@@ -319,7 +318,15 @@ module Saci
       def __saci_run_validations(errors : Errors) : Nil
       end
 
+      # Entry point for `valid?`: the most-derived class resolves the chain
+      # (each subclass's `inherited` hook forwards via `super`, and every
+      # `validates`/`validate` macro appends to `__saci_run_validations`
+      # with `previous_def`). The `__saci_run_validations` call happens
+      # HERE, once — calling it from each subclass hook ran leaf validations
+      # twice whenever a model inherited from an intermediate base class
+      # (e.g. `ApplicationRecord < Saci::Record::Base`).
       def run_validations(errors : Errors) : Nil
+        __saci_run_validations(errors)
       end
 
       # Callback chains (overridden via `previous_def` by the callback

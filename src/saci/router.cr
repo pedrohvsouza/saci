@@ -604,6 +604,12 @@ module Saci
         context.response.status_code = 406
         context.response.content_type = "application/json"
         context.response.print({error: ex.message}.to_json)
+      when RoutingError
+        # Rails renders `ActionController::RoutingError` (and the common
+        # `not_found!` helper built on it) as 404, not 500.
+        context.response.status_code = 404
+        context.response.content_type = "application/json"
+        context.response.print({error: "Not Found"}.to_json)
       else
         render_server_error(context, request, path, ex)
       end

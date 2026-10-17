@@ -1384,3 +1384,32 @@ describe "Saci::Record" do
     expect_raises(Saci::Record::UnknownAttributeError) { OrmShelf.where(id: shelf.id).touch_all(:bogus_col) }
   end
 end
+
+# Regression: models that inherit through an intermediate base class (the
+# common `ApplicationRecord < Saci::Record::Base` pattern) used to run leaf
+# validations twice — `run_validations` called `__saci_run_validations` in
+# every subclass hook AND via `super` from the leaf.
+
+class OrmIntermediateBase < Saci::Record::Base
+end
+
+class OrmIntermediateThing < OrmIntermediateBase
+  table "ory_things"
+  column id : Int64, primary: true
+  column name : String
+  validates :name, presence: true
+  validate { |r| r.errors.add("name", "custom") if (r.name || "").empty? }
+end
+
+describe "validation chains through intermediate base classes" do
+  before_each do
+    Saci::Record.connection.exec("DROP TABLE IF EXISTS ory_things")
+    Saci::Record.connection.exec("CREATE TABLE ory_things (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)")
+  end
+
+  it "runs each validation exactly once" do
+    thing = OrmIntermediateThing.new
+    thing.valid?.should be_false
+    thing.errors["name"].should eq(["can't be blank", "custom"])
+  end
+end

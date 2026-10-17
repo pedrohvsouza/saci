@@ -170,10 +170,12 @@ module Saci
 
     # Registers a before filter. Chained onto the class's own filter chain
     # via `previous_def` (same-type chaining). The filter method itself may
-    # be private, like in Rails.
+    # be private, like in Rails. A filter that renders or redirects halts
+    # the remaining filters of the same controller too (Rails semantics).
     macro before_action(name, only = nil, except = nil)
       def __saci_chain_for_{{@type.name.stringify.gsub(/::/, "_").id}}(action_name : Symbol) : Nil
         previous_def
+        return if performed?
         if Saci::Controller.filter_applies?({{only}}, {{except}}, action_name) && !__saci_own_skip?(:before, {{name}}, action_name)
           {{name.id}}
         end

@@ -112,6 +112,14 @@ class SpecPartsController < Saci::Controller
     render html: render_partial("spec_parts/greet", collection: ["Ada"], as: "name")
   end
 
+  def nested
+    render html: render_partial("spec_parts/outer", value: "Ada")
+  end
+
+  def nested_collection
+    render html: render_partial("spec_parts/comment_box", collection: ["one", "two"])
+  end
+
   def model_form
     story = SpecFormStory.new(title: params["title"]? || "Draft <b>", draft: true, published_on: Time.utc(2026, 5, 1))
     story.errors.add(:title, "can't be blank") if params["err"]? == "1"
@@ -141,6 +149,8 @@ def spec_parts_router : Saci::Router
     r.get "/greet", SpecPartsController, :greet
     r.get "/list", SpecPartsController, :list
     r.get "/aliased", SpecPartsController, :aliased
+    r.get "/nested", SpecPartsController, :nested
+    r.get "/nested-collection", SpecPartsController, :nested_collection
     r.get "/model-form", SpecPartsController, :model_form
     r.get "/md", SpecPartsController, :md
     r.get "/pages", SpecPartsController, :pages
@@ -169,6 +179,21 @@ describe "partials with locals and collections" do
     Saci::TestSession.serve(spec_parts_router) do |app|
       resp = app.get("/aliased")
       resp.body.should contain("<span>Hello, Ada!</span>")
+    end
+  end
+
+  it "renders a partial that renders another partial without clobbering the outer buffer" do
+    Saci::TestSession.serve(spec_parts_router) do |app|
+      resp = app.get("/nested")
+      resp.body.should contain(%(<div class="outer"><span>IN Ada</span>TAIL</div>))
+    end
+  end
+
+  it "renders a collection whose partial renders another partial" do
+    Saci::TestSession.serve(spec_parts_router) do |app|
+      resp = app.get("/nested-collection")
+      resp.body.should contain(%(<div class="comment-box"><div class="comment">one</div>\nBOX-END</div>))
+      resp.body.should contain(%(<div class="comment-box"><div class="comment">two</div>\nBOX-END</div>))
     end
   end
 end

@@ -362,6 +362,8 @@ module Saci
     # overrides it):
     #   render_partial("comments/comment", collection: comments)
     #   render_partial("shared/row", collection: rows, as: "row")
+    # Buffers are block-scoped (`String.build`) so a partial that renders
+    # another partial can never rebind/clobber the caller's buffer.
     macro render_partial(path, **locals)
       {% views_root = system("pwd").strip + "/src/views" %}
       {% if locals.keys.map(&.id.stringify).includes?("collection") %}
@@ -370,21 +372,23 @@ module Saci
         {% singular = base.ends_with?("s") ? base[0...base.size - 1] : base %}
         {% as_name = locals["as".id] %}
         {% local_name = as_name ? as_name.stringify.gsub(/^:/, "").gsub(/^"/, "").gsub(/"$/, "") : singular %}
-        __saci_collection_out = IO::Memory.new
-        ({{locals["collection".id]}}).each do |__saci_item|
-          {{local_name.id}} = __saci_item
-          __saci_collection_io = IO::Memory.new
-          ECR.embed("{{views_root + "/" + path.id.stringify + ".ecr"}}", "__saci_collection_io")
-          __saci_collection_out << __saci_collection_io.to_s
+        String.build do |__saci_collection_out|
+          ({{locals["collection".id]}}).each do |__saci_item|
+            {{local_name.id}} = __saci_item
+            __saci_collection_out << String.build do |__saci_collection_io|
+              ECR.embed("{{views_root + "/" + path.id.stringify + ".ecr"}}", "__saci_collection_io")
+            end
+          end
         end
-        __saci_collection_out.to_s
       {% else %}
         {% for k, v in locals %}
-          {{k.id}} = {{v}}
+          {% unless k.id.stringify == v.stringify %}
+            {{k.id}} = {{v}}
+          {% end %}
         {% end %}
-        __saci_partial_io = IO::Memory.new
-        ECR.embed("{{views_root + "/" + path.id.stringify + ".ecr"}}", "__saci_partial_io")
-        __saci_partial_io.to_s
+        String.build do |__saci_partial_io|
+          ECR.embed("{{views_root + "/" + path.id.stringify + ".ecr"}}", "__saci_partial_io")
+        end
       {% end %}
     end
 

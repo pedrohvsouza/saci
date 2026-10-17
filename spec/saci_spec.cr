@@ -332,6 +332,10 @@ class SpecRescueController < SpecAppController
   def unhandled
     raise "kaboom"
   end
+
+  def not_found_route
+    raise Saci::RoutingError.new("Not Found: widget")
+  end
 end
 
 class SpecChildRescueController < SpecRescueController
@@ -375,6 +379,25 @@ class SpecSkipController < SpecAfterController
 
   def index
     render json: {ok: true}
+  end
+end
+
+# Regression: a before filter that renders/redirects must halt the
+# remaining filters of the same controller too (Rails semantics).
+class SpecHaltController < SpecAppController
+  before_action :first_halts
+  before_action :second_runs
+
+  def index
+    render json: {ok: true}
+  end
+
+  private def first_halts
+    render json: {halted: true}
+  end
+
+  private def second_runs
+    raise "second filter must not run after halt"
   end
 end
 
@@ -446,11 +469,13 @@ def spec_upgrade_router : Saci::Router
     r.get "/rescue-arg", SpecRescueController, :bad_arg
     r.get "/rescue-fine", SpecRescueController, :fine
     r.get "/rescue-unhandled", SpecRescueController, :unhandled
+    r.get "/rescue-not-found", SpecRescueController, :not_found_route
     r.get "/child-explode", SpecChildRescueController, :explode
     r.get "/after", SpecAfterController, :index
     r.get "/after-stopped", SpecAfterController, :stopped
     r.get "/skip", SpecSkipController, :index
     r.get "/skip-stopped", SpecSkipController, :stopped
+    r.get "/halt-filters", SpecHaltController, :index
     r.get "/fmt", SpecFormatController, :show
     r.get "/flex", SpecFormatController, :flexible
     r.get "/strict", SpecFormatController, :strict
@@ -610,6 +635,14 @@ describe "router upgrade integration" do
     end
   end
 
+  it "renders Saci::RoutingError (not_found!) as 404, not 500" do
+    Saci::TestSession.serve(spec_upgrade_router) do |app|
+      resp = app.get("/rescue-not-found")
+      resp.status_code.should eq(404)
+      JSON.parse(resp.body)["error"].should eq("Not Found")
+    end
+  end
+
   it "runs after_action filters (even when halted) and honors skips" do
     Saci::TestSession.serve(spec_upgrade_router) do |app|
       resp = app.get("/after")
@@ -628,6 +661,14 @@ describe "router upgrade integration" do
       resp = app.get("/skip-stopped")
       JSON.parse(resp.body)["halted"].should be_true
       resp.headers["X-After"].should eq("ran")
+    end
+  end
+
+  it "halts the remaining before filters when one renders or redirects" do
+    Saci::TestSession.serve(spec_upgrade_router) do |app|
+      resp = app.get("/halt-filters")
+      resp.status_code.should eq(200)
+      JSON.parse(resp.body)["halted"].should be_true
     end
   end
 
