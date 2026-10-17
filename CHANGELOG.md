@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.4.0 — Scale, snapshots, and roadmap zero
+
+- Metrics endpoint (`Saci::Metrics`: request/status/route/job/cache counters,
+  DB gauges; JSON + Prometheus; mountable controller).
+- Schema snapshots (`db:schema:dump/load`, adapter-aware, byte-stable) +
+  drift check (model registry, `check_schema!`, `db:schema:check`,
+  post-migrate warnings).
+- Redis Cable + throttle stores (vendored RESP2, fail-open, live-verified).
+- `Saci::Cache` + fragment caching (record/collection keys, versions).
+- Migration depth: foreign keys, renames, `change_column`, `references`,
+  PG enums/arrays/precision.
+- CLI: `routes`, `runner`, `console`, `db:seed`, `--pretend`/`--force`,
+  staging scaffold; `Saci.staging?`, staging secret refusal.
+- Mailer previews + RFC 2047 subjects; URL rotation + public-file mode.
+- Production refuses to boot without `SECRET_KEY_BASE`.
+- Live PG/MySQL harness (26 examples, 3 adapter bugs fixed); CI services job.
+- Suite: 542 specs green.
+
 ## 0.3.0 — Rails-closeness shelf + scale
 
 - Auth shelf: `has_secure_token` / `regenerate_x!`, `signed_id` /
