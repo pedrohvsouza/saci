@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.3.0 — Rails-closeness shelf + scale
+
+- Auth shelf: `has_secure_token` / `regenerate_x!`, `signed_id` /
+  `find_signed` (purpose + expiry), `authenticate_by` (no-enumeration,
+  timing parity); controller `login`/`logout`/`current_user`/`logged_in?`,
+  `require_login` (redirect-target saving), `require_no_login`,
+  `allow_unauthenticated_access`, `Saci::Auth.configure`, typed
+  `memoize_current_user`.
+- `Saci::Pagination` (`paginate` + `Page` + `paginate_nav`, clamped pages,
+  per-page cap) and `saci g admin` (namespaced CRUD with search/sort/
+  pagination views, deny-by-default admin gate, real-verb specs).
+- `Saci::Cache` (Memory + Redis stores, namespaces, stampede-grace fetch,
+  typed values) + view fragment caching (`cache` blocks, record/collection
+  keys, `:vN` versions, fail-open).
+- Migration depth: `references`, inline + standalone foreign keys
+  (`on_delete` cascade/nullify/restrict), `rename_table/column`
+  (auto-invert), `change_column` (PG `USING`, MySQL `MODIFY`, honest
+  SQLite error + irreversible rollback).
+- CLI: `routes` (static, no boot), `runner -e/file`, `console` (documented
+  per-line recompile), `db:seed` (+ starter file in `saci new`).
+- Redis Cable + throttle stores (vendored RESP2, zero new deps, fail-open,
+  live-verified two-instance fan-out, `REDIS_URL` scaffold).
+- Fixes: single-run validations via intermediate bases, same-controller
+  filter halt, `RoutingError`→404, partial buffer scoping, PG jsonb reads,
+  MySQL JSON→TEXT mapping + all-default inserts.
+- Suite: 491 specs green (+ live PG/MySQL 26, live Redis gated).
+
 ## 0.2.0 — Lobsters port (Claw)
 
 Framework grew up porting [Lobsters](https://github.com/lobsters/lobsters)
