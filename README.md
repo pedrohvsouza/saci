@@ -460,9 +460,30 @@ end
 - `saci g channel Chat` writes the channel plus a `TestClient`-based spec.
   `Saci::Cable::TestClient` is a synchronous spec client (buffered frames,
   timeouts) — see `examples/cable_example.cr` for a two-client chat demo.
-- Single-process pub/sub (no Redis adapter yet); override the registry per
-  app with `r.cable "/cable", ChatChannel, server: my_server` or
-  `Saci::Cable.server = ...`.
+- Single-process pub/sub by default; for multi-process deploys (no sticky
+  sessions) point at Redis — no shard dependency, the client is a vendored
+  pure-socket RESP2 implementation (`Saci::Cable::RedisWire`, no OpenSSL
+  linkage, so plain builds link unchanged):
+
+  ```crystal
+  Saci::Cable.server = Saci::Cable::RedisServer.new(ENV.fetch("REDIS_URL", "redis://127.0.0.1:6379"))
+  ```
+
+  One Redis channel (default `"saci:cable"`) multiplexes every stream via a
+  `{sender, stream, message}` envelope; each server delivers locally, then
+  publishes (own echoes are skipped by sender id). A background fiber holds
+  the SUBSCRIBE connection and reconnects with backoff (0.1s → 5s),
+  resubscribing automatically (`server.subscribed?` reports the confirmed
+  state; `server.disconnect!` drops the sub connection, `server.close`
+  stops the loop). Degradation is fail-open per broadcast: Redis down drops
+  the remote hop with a STDERR warning while local delivery still happens —
+  broadcasts never raise, and the constructor never touches the network, so
+  a bad URL fails at first broadcast, not at boot. Per-app override still
+  works: `r.cable "/cable", ChatChannel, server: my_server`.
+  Opt-in per deploy with `REDIS_URL` (e.g. export it in production and pick
+  it up with the `ENV.fetch` line above; wiring a commented default into
+  the `saci new` production env template is left to the integrator —
+  `cli/` is untouched by this change).
 
 ## Multithreading
 
@@ -702,8 +723,27 @@ Saci::Throttle.blocklist { |ctx| banned?(ctx) }
 ```
 
 Fixed windows (nil discriminator skips); throttled → 429 + `Retry-After`,
-blocklisted → 403. In-process counters (`reset!`/`clear_counts!` for specs);
-Redis sharding is roadmap.
+blocklisted → 403. Counters live in `Saci::Throttle.store` (default:
+in-process `MemoryStore`; `reset!`/`clear_counts!` for specs). For
+multi-process deploys (same sticky-session caveat as Cable) share the
+windows over Redis — same vendored pure-socket client, no new link
+requirements:
+
+```crystal
+Saci::Throttle.store = Saci::Throttle::RedisStore.new(ENV.fetch("REDIS_URL", "redis://127.0.0.1:6379"))
+```
+
+Each bucket is one key (`saci:throttle:<rule>:<key>:<window>`, prefix
+overridable) bumped by an atomic INCR + conditional-EXPIRE Lua script, so
+concurrent processes never lose expirations; keys rotate every window and
+expire on their own. 429 + `Retry-After` and safelist/blocklist behavior are
+unchanged. `RedisStore#clear` deletes only keys written through that
+instance (never FLUSHDB). Degradation is fail-open: a dead store logs a
+STDERR warning and the request is allowed (an outage must not become a
+self-inflicted site-wide 429); direct `increment` calls raise the explicit
+`Saci::Throttle::RedisDown` (Cable's equivalent: `Saci::Cable::RedisDown`,
+raised from direct client use — broadcasts degrade to local-only instead).
+Prefer fail-closed? Subclass `Store` and raise from your backend.
 
 ## Storage
 
