@@ -99,6 +99,7 @@ saci new blog --db=sqlite            # or --db=postgres|mysql (driver deps + req
 cd blog
 saci generate model Post title:string views:integer published:boolean
 saci generate controller Posts index show
+saci generate admin Post title:string published:boolean  # admin namespace scaffold (search/sort/pagination + specs)
 saci generate migration AddBioToUsers bio:text
 saci generate migration AddIndexToFollows follower_id --unique  # -> add_index
 saci db:migrate [--all]              # --all migrates primary + named DBs
@@ -122,7 +123,10 @@ saci db:seed                         # run db/seed.cr (or db/seeds.cr) in app co
   generator rebuilds `db/migrations.cr` from `db/migrate/*.cr`, so hand-added
   migration files are picked up too. `AddIndex...` names (or `--unique`) emit
   `add_index` instead of `add_column`; `g controller` request specs use real
-  verbs (create->POST, update->PATCH, destroy->DELETE).
+  verbs (create->POST, update->PATCH, destroy->DELETE); `g admin` writes a
+  namespaced `Admin::` controller (search on string columns, sortable
+  headers, `Saci::Pagination.paginate` + `paginate_nav` views, deny-by-default
+  `require_admin`) plus a namespace route hint — reruns overwrite.
 - `serve` execs `crystal run src/<app>.cr` with `PORT`/`HOST` set; anything
   after `--` is forwarded to `crystal` as compiler flags
   (e.g. `--link-flags=...`).
@@ -249,6 +253,7 @@ Post.upsert({id: 1, title: "Hi"})                  # skips validations/callbacks
 Post.update_counter(1, :views)                     # atomic COALESCE + delta
 Post.reset_counters(1, :comments)                  # recount counter_cache
 Post.where(published: true).touch_all              # bump updated_at, no callbacks
+Saci::Pagination.paginate(Post.where(published: true).order(created_at: :desc), page: 1, per_page: 25)
 Saci::Record::FTS.setup(Post, [:title, :body])     # SQLite FTS5 index + triggers
 Post.search_fts("crystal").where(published: true).limit(10).to_a  # rank-ordered
 user.posts.where(published: true).to_a    # has_many returns a chainable Query
@@ -572,6 +577,16 @@ class User < ApplicationRecord
 end
 
 user.authenticate("secret")     # => user or nil
+
+class ApiKey < ApplicationRecord
+  column token : String
+  has_secure_token              # auto-generates on create (never overwrites)
+  # has_secure_token :api_token # named variant (+ regenerate_api_token!)
+end
+
+sid = user.signed_id(purpose: "login", expires_in: 15.minutes)
+User.find_signed(sid, purpose: "login")   # => user or nil (never raises)
+User.authenticate_by(email: "a@b.c", password: "secret") # => user or nil
 ```
 
 - **CSRF** uses the stateless double-submit-cookie pattern: safe methods set
@@ -590,6 +605,39 @@ user.authenticate("secret")     # => user or nil
   validates presence-on-create, confirmation match, and the 72-byte bcrypt
   limit. `Saci::Record.bcrypt_min_cost = true` speeds up specs (like
   `ActiveModel::SecurePassword.min_cost`).
+- **Authentication** (devise-lite): `login(user)` is fixation-safe
+  (`reset_session` first, then stores the id under `session_key`, plus a
+  rolling `session_token` when the record has one — rotating it
+  invalidates old sessions); `logout` resets fully; `current_user`
+  (memoized via `memoize_current_user User`, `nil` when absent) and
+  `logged_in?`; `require_login` (redirects to `login_path`, remembering
+  GET targets in `session[:redirect_to]`) / `require_no_login` filters;
+  `allow_unauthenticated_access only: [...]` opens public actions.
+  Resolve users by overriding `find_current_user(id)` (e.g.
+  `User.find?(id)`) — any class with `id` works — and tune paths/keys via
+  `Saci::Auth.configure`. Note: a finder lambda cannot be assigned through
+  `configure` (Crystal cannot store `Proc(Int64, YourUser?)` in framework
+  state, so `c.user_finder = ...` raises with directions); override the
+  hook or reopen `Saci::Auth.user_finder` instead.
+- **Tokens**: `has_secure_token` (bare fills `token`, or
+  `has_secure_token :api_token`) generates a 24-byte URL-safe random token
+  in `before_validation on: :create`, only when blank — explicit values are
+  kept and updates never overwrite. `regenerate_api_token!` issues a fresh
+  token and saves. Uniqueness is validated at the model level; add a DB
+  unique index too (model validation alone races under concurrency):
+  `add_index :users, :api_token, unique: true`.
+- **Signed IDs**: `record.signed_id(purpose: "login", expires_in: 15.minutes)`
+  returns a tamper-proof string (id + class + purpose + expiry, HMAC-signed
+  with `secret_key_base`); `Model.find_signed(token, purpose:)` returns the
+  record or nil — bad signature, tampering, expiry, wrong purpose,
+  cross-model use and missing rows never raise.
+- **Login**: `Model.authenticate_by(email: "...", password: "...")` finds by
+  the non-password attributes (single query) then `authenticate`s. Unknown
+  login and wrong password both return nil (no user enumeration, matching
+  password-reset conventions); misses still cost one bcrypt digest so the
+  two failures take ~the same time. Missing `password`, no identifying
+  attributes, or unknown finder attributes raise (`ArgumentError` /
+  `UnknownAttributeError`).
 - **XSS**: `h(user_input)` (`HTML.escape`) before interpolating into
   `render html:`; JSON rendering is escaped by construction; all SQL uses
   bound parameters; mass-assignment goes through `assign` (unknown attributes
@@ -734,7 +782,8 @@ end
   `f.error_messages` (`multipart: true` sets the upload encoding).
 - Helpers: `markdown(text)` (XSS-safe minimal: fences, code, bold/italic,
   safe links, headings, paragraphs), `page_numbers(page, total, base)`
-  (`"/stories"` → `/stories/page/N`, `:page` placeholders honored),
+  (`"/stories"` → `/stories/page/N`, `:page` placeholders honored), `Saci::Pagination.paginate_nav(page, base)`
+  (same URL conventions, windowed numbers with `aria-current`, `""` for a single page),
   `rss_feed(title:, link:, description:, items:)` (render with
   `render xml:`).
 

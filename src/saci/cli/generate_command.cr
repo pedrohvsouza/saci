@@ -16,7 +16,7 @@ module Saci
       }
 
       def self.run(args : Array(String)) : Int32
-        kind = args.shift? || raise Error.new("Usage: saci generate KIND NAME [fields...]\nKinds: model, controller, migration, channel, job, mailer, scaffold")
+        kind = args.shift? || raise Error.new("Usage: saci generate KIND NAME [fields...]\nKinds: model, controller, migration, channel, job, mailer, scaffold, admin")
         case kind.downcase
         when "model"      then model(args)
         when "controller" then controller(args)
@@ -25,7 +25,8 @@ module Saci
         when "job"        then job(args)
         when "mailer"     then mailer(args)
         when "scaffold"   then scaffold(args)
-        else                   raise Error.new("Unknown generator '#{kind}'. Kinds: model, controller, migration, channel, job, mailer, scaffold.")
+        when "admin"      then admin(args)
+        else                   raise Error.new("Unknown generator '#{kind}'. Kinds: model, controller, migration, channel, job, mailer, scaffold, admin.")
         end
         0
       end
@@ -550,6 +551,299 @@ module Saci
         puts ""
         puts "Add to your router:"
         puts "  r.resources \"#{table}\", #{plural}Controller"
+      end
+
+      # -- admin -------------------------------------------------------------------
+      # Admin-namespace scaffold (RailsAdmin-flavored minimal): namespaced
+      # controller (search on string columns + sortable headers + pagination
+      # via `Saci::Pagination.paginate`) + namespaced ECR views + request
+      # spec. Routes stay hand-edited by design (hint printed below).
+      # Reruns overwrite like the other generators.
+      def self.admin(args : Array(String)) : Nil
+        raw_name = args.first? || raise Error.new("Usage: saci generate admin Name [field:type ...]")
+        fields = parse_fields(args.size > 1 ? args[1..] : [] of String)
+        class_name = Util.class_name(Util.file_name(raw_name))
+        plural = Record::Inflector.pluralize(class_name)
+        file_base = Util.file_name(plural)
+        table = Record::Inflector.pluralize(Record::Inflector.underscore(class_name))
+        ensure_app_layout!
+
+        Dir.mkdir_p("src/controllers/admin")
+        controller_path = "src/controllers/admin/#{file_base}_controller.cr"
+        File.write(controller_path, admin_controller_source(class_name, plural, table, fields))
+        puts "  create #{controller_path}"
+
+        Dir.mkdir_p("src/views/admin/#{table}")
+        {
+          "index" => admin_index_view(class_name, plural, table, fields),
+          "show"  => admin_show_view(class_name, plural, table, fields),
+          "edit"  => admin_edit_view(class_name, plural, table, fields),
+        }.each do |view, source|
+          path = "src/views/admin/#{table}/#{view}.ecr"
+          File.write(path, source)
+          puts "  create #{path}"
+        end
+
+        Dir.mkdir_p("spec/requests/admin")
+        spec_path = "spec/requests/admin/#{file_base}_controller_spec.cr"
+        File.write(spec_path, admin_spec_source(class_name, plural, table, fields))
+        puts "  create #{spec_path}"
+
+        puts ""
+        puts "Add to your router:"
+        puts "  r.namespace(\"/admin\") do |a|"
+        puts "    a.resources \"#{table}\", Admin::#{plural}Controller"
+        puts "  end"
+      end
+
+      def self.admin_controller_source(class_name : String, plural : String, table : String, fields : Array(Field)) : String
+        string_cols = fields.select { |(_, type)| type == "string" || type == "text" }.map(&.[0])
+        sort_cols = (["id"] + fields.map(&.[0])).uniq
+        search_filter = if string_cols.empty?
+                          ""
+                        else
+                          conds = string_cols.map { |c| "#{c} LIKE ?" }.join(" OR ")
+                          args = string_cols.map { |_| "\"%\#{q}%\"" }.join(", ")
+                          "if q = params[\"q\"]?\n  unless q.empty?\n    query = query.where(\"#{conds}\", #{args})\n  end\nend"
+                        end
+        raw_assignments = fields.map { |(name, type)| admin_assignment(class_name, name, type) }.join("\n")
+        raw_assignments = "# No editable fields — add field:type pairs to the generator call." if raw_assignments.strip.empty?
+        admin_controller_source_body(class_name, plural, table, sort_cols, search_filter, raw_assignments)
+      end
+
+      # Indents every non-blank line of a fragment to the action-body level.
+      # (`String#lines` chomps, so the join restores the newlines.)
+      private def self.indent_body(fragment : String) : String
+        fragment.lines.map { |l| l.strip.empty? ? l : "      " + l }.join("\n")
+      end
+
+      # Body is built from a heredoc with placeholder lines (`__SEARCH__` /
+      # `__ASSIGN__` alone on a line) so multi-line fragments keep their own
+      # indentation (`<<-` forbids column-zero interpolation).
+      private def self.admin_controller_source_body(class_name : String, plural : String, table : String, sort_cols : Array(String), search_filter : String, assignments : String) : String
+        body = <<-CRYSTAL
+        module Admin
+          class #{plural}Controller < ::ApplicationController
+            before_action :require_admin
+
+            def index
+              query = #{class_name}.all
+              __SEARCH__
+              allowed_sorts = [#{sort_cols.map { |c| "\"#{c}\"" }.join(", ")}]
+              sort = params["sort"]? || "id"
+              sort = "id" unless allowed_sorts.includes?(sort)
+              dir = params["dir"]? == "desc" ? :desc : :asc
+              query = query.order(sort, dir)
+              page = params.int("page", 1) || 1
+              @page = Saci::Pagination.paginate(query, page: page, per_page: 25)
+              render_template(:"admin/#{table}/index")
+            end
+
+            def show
+              @record = #{class_name}.find(params["id"])
+              render_template(:"admin/#{table}/show")
+            end
+
+            def edit
+              @record = #{class_name}.find(params["id"])
+              render_template(:"admin/#{table}/edit")
+            end
+
+            def update
+              @record = #{class_name}.find(params["id"])
+              __ASSIGN__
+              if @record.save
+                redirect_to "/admin/#{table}/\#{@record.id}"
+              else
+                render_template(:"admin/#{table}/edit", status: 422)
+              end
+            end
+
+            def destroy
+              record = #{class_name}.find(params["id"])
+              record.destroy
+              redirect_to "/admin/#{table}"
+            end
+
+            private def require_admin
+              # TODO: wire your real admin check here (e.g. `current_user.try(&.admin?)`
+              # or `session[:admin]?`). Deny-by-default: every request without
+              # proof of admin gets a 403 until this method is implemented.
+              unless params["admin"]? == "true"
+                render text: "Forbidden", status: :forbidden
+              end
+            end
+          end
+        end
+        CRYSTAL
+        body = body.gsub(/^ *__SEARCH__$/m, search_filter.empty? ? "" : indent_body(search_filter))
+        body.gsub(/^ *__ASSIGN__$/m, indent_body(assignments))
+      end
+
+      # One assignment line per field for the generated `update` action
+      # (unindented — the caller re-indents every line to the action body).
+      private def self.admin_assignment(class_name : String, name : String, type : String) : String
+        case type
+        when "string", "text"
+          "@record.#{name} = params[\"#{name}\"]? if params.has_key?(\"#{name}\")"
+        when "integer", "bigint"
+          "if v = params[\"#{name}\"]?\n  @record.#{name} = v.to_i64? || @record.#{name}\nend"
+        when "float"
+          "if v = params[\"#{name}\"]?\n  @record.#{name} = v.to_f? || @record.#{name}\nend"
+        when "boolean"
+          "@record.#{name} = params[\"#{name}\"]? == \"true\" if params.has_key?(\"#{name}\")"
+        when "datetime"
+          "if v = params[\"#{name}\"]?\n  @record.#{name} = (Time.parse_iso8601(v) rescue @record.#{name})\nend"
+        else
+          "@record.#{name} = params[\"#{name}\"]? if params.has_key?(\"#{name}\")"
+        end
+      end
+
+      def self.admin_index_view(class_name : String, plural : String, table : String, fields : Array(Field)) : String
+        cols = fields.map(&.[0])
+        headers = (["id"] + cols).map do |c|
+          "    <th><a href=\"/admin/#{table}?sort=#{c}\">#{c.capitalize}</a></th>"
+        end.join("\n")
+        cells = (["id"] + cols).map do |c|
+          "      <td><%= h(record.#{c}.to_s) %></td>"
+        end.join("\n")
+        <<-ECR
+        <h1>#{plural} (admin)</h1>
+        <form action="/admin/#{table}" method="get">
+          <input type="search" name="q" value="<%= h(params["q"]? || "") %>" placeholder="Search...">
+          <button type="submit">Search</button>
+        </form>
+        <table>
+          <thead>
+            <tr>
+        #{headers}
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% @page.records.each do |record| %>
+            <tr>
+        #{cells}
+              <td>
+                <a href="/admin/#{table}/<%= record.id %>">Show</a>
+                <a href="/admin/#{table}/<%= record.id %>/edit">Edit</a>
+              </td>
+            </tr>
+            <% end %>
+          </tbody>
+        </table>
+        <%= Saci::Pagination.paginate_nav(@page, "/admin/#{table}") %>
+        <p><%= @page.total_count %> #{table} total</p>
+        ECR
+      end
+
+      def self.admin_show_view(class_name : String, plural : String, table : String, fields : Array(Field)) : String
+        rows = fields.map do |(name, _)|
+          "  <li><strong>#{name.capitalize}:</strong> <%= h(@record.#{name}.to_s) %></li>"
+        end.join("\n")
+        rows = "  <li>No attributes.</li>" if rows.empty?
+        <<-ECR
+        <h1>#{class_name} #<%= @record.id %> (admin)</h1>
+        <ul>
+        #{rows}
+        </ul>
+        <p>
+          <a href="/admin/#{table}/<%= @record.id %>/edit">Edit</a>
+          <a href="/admin/#{table}">Back to list</a>
+        </p>
+        ECR
+      end
+
+      def self.admin_edit_view(class_name : String, plural : String, table : String, fields : Array(Field)) : String
+        inputs = fields.map do |(name, type)|
+          field = case type
+                  when "boolean"  then %(<label><%= f.check_box("#{name}") %> #{name.capitalize}</label>)
+                  when "datetime" then %(<label>#{name.capitalize} <%= f.date_field("#{name}") %></label>)
+                  else                 %(<label>#{name.capitalize} <%= f.text_field("#{name}") %></label>)
+                  end
+          "    #{field}"
+        end.join("\n")
+        inputs = "    <p>No editable fields.</p>" if inputs.empty?
+        <<-ECR
+        <h1>Edit #{class_name} #<%= @record.id %> (admin)</h1>
+        <%= form_with("/admin/#{table}/<%= @record.id %>", method: "patch", model: @record, scope: "#{table.chomp("s")}") do |f| %>
+          <%= f.error_messages %>
+        #{inputs}
+          <%= f.submit("Update #{class_name}") %>
+        <% end %>
+        <p><a href="/admin/#{table}/<%= @record.id %>">Show</a> <a href="/admin/#{table}">Back to list</a></p>
+        ECR
+      end
+
+      def self.admin_spec_source(class_name : String, plural : String, table : String, fields : Array(Field)) : String
+        sample = sample_args(fields)
+        create_call = sample.empty? ? "#{class_name}.create!" : "#{class_name}.create!(#{sample})"
+        <<-CRYSTAL
+        require "../../spec_helper"
+
+        describe "Admin::#{plural}Controller requests" do
+          router = Saci::Router.new.draw do |r|
+            r.namespace("/admin") do |a|
+              a.resources "#{table}", Admin::#{plural}Controller
+            end
+          end
+
+          before_each do
+            Saci::Record.clean_database!
+          end
+
+          it "returns 403 on index when not admin" do
+            Saci::TestSession.serve(router) do |app|
+              resp = app.get("/admin/#{table}")
+              resp.status_code.should eq(403)
+            end
+          end
+
+          it "serves the admin index with search and sort params" do
+            #{create_call}
+            Saci::TestSession.serve(router) do |app|
+              resp = app.get("/admin/#{table}?admin=true&q=example&sort=id&dir=desc")
+              resp.status_code.should eq(200)
+            end
+          end
+
+          it "returns 403 on show when not admin" do
+            record = #{create_call}
+            Saci::TestSession.serve(router) do |app|
+              resp = app.get("/admin/#{table}/\#{record.id}")
+              resp.status_code.should eq(403)
+            end
+          end
+
+          it "serves show for admins" do
+            record = #{create_call}
+            Saci::TestSession.serve(router) do |app|
+              resp = app.get("/admin/#{table}/\#{record.id}?admin=true")
+              resp.status_code.should eq(200)
+            end
+          end
+
+          it "updates and re-renders edit with 422 on failure" do
+            record = #{create_call}
+            Saci::TestSession.serve(router) do |app|
+              denied = app.patch("/admin/#{table}/\#{record.id}", body: "")
+              denied.status_code.should eq(403)
+              resp = app.patch("/admin/#{table}/\#{record.id}?admin=true", body: "")
+              (resp.status_code == 200 || resp.status_code == 302 || resp.status_code == 422).should be_true
+            end
+          end
+
+          it "destroys for admins and 403s otherwise" do
+            record = #{create_call}
+            Saci::TestSession.serve(router) do |app|
+              denied = app.delete("/admin/#{table}/\#{record.id}")
+              denied.status_code.should eq(403)
+              resp = app.delete("/admin/#{table}/\#{record.id}?admin=true")
+              (resp.status_code == 200 || resp.status_code == 302).should be_true
+            end
+          end
+        end
+        CRYSTAL
       end
 
       private def self.ensure_app_layout! : Nil

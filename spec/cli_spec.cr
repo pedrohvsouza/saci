@@ -391,6 +391,59 @@ describe "saci generate" do
     end
   end
 
+  it "generates an admin scaffold with search, sort and pagination" do
+    with_tmp_app do |dir|
+      Dir.cd(dir) do
+        Saci::CLI::Generate.run(["admin", "Post", "title:string", "published:boolean"])
+        src = File.read("src/controllers/admin/posts_controller.cr")
+        src.should contain("module Admin")
+        src.should contain("class PostsController < ::ApplicationController")
+        src.should contain("before_action :require_admin")
+        src.should contain("params[\"q\"]?")
+        src.should contain("params[\"sort\"]?")
+        src.should contain("Saci::Pagination.paginate(query, page: page, per_page: 25)")
+        src.should contain("params.int(\"page\", 1)")
+        src.should contain("render_template(:\"admin/posts/edit\", status: 422)")
+        src.should contain("redirect_to \"/admin/posts")
+        src.should contain("private def require_admin")
+        src.should contain("TODO")
+        src.should contain("status: :forbidden")
+
+        index = File.read("src/views/admin/posts/index.ecr")
+        index.should contain("name=\"q\"")
+        index.should contain("sort=")
+        index.should contain("Saci::Pagination.paginate_nav(@page,")
+        index.should contain("@page.records")
+        index.should contain("@page.total_count")
+        File.read("src/views/admin/posts/show.ecr").should contain("h(@record.title.to_s)")
+        edit = File.read("src/views/admin/posts/edit.ecr")
+        edit.should contain("form_with")
+        edit.should contain("f.error_messages")
+
+        req = File.read("spec/requests/admin/posts_controller_spec.cr")
+        req.should contain("r.namespace(\"/admin\")")
+        req.should contain("a.resources \"posts\", Admin::PostsController")
+        req.should contain("app.get(\"/admin/posts")
+        req.should contain("app.patch(\"/admin/posts/")
+        req.should contain("app.delete(\"/admin/posts/")
+        req.should contain("eq(403)")
+        req.should contain("q=example")
+        req.should contain("sort=")
+      end
+    end
+  end
+
+  it "overwrites admin files on rerun like the other generators" do
+    with_tmp_app do |dir|
+      Dir.cd(dir) do
+        Saci::CLI::Generate.run(["admin", "Post", "title:string"])
+        File.write("src/controllers/admin/posts_controller.cr", "stale")
+        Saci::CLI::Generate.run(["admin", "Post", "title:string"])
+        File.read("src/controllers/admin/posts_controller.cr").should contain("module Admin")
+      end
+    end
+  end
+
   it "rejects bad input outside an app" do
     dir = File.join("/tmp/opencode", "saci-cli-plain-#{Random.rand(1_000_000)}")
     begin

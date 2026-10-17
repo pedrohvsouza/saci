@@ -8,6 +8,7 @@ require "./record/base"
 require "./record/migration"
 require "./record/schema"
 require "./record/fts"
+require "./record/secure_token"
 
 module Saci
   # ActiveRecord-equivalent ORM (crystal-db: SQLite, PostgreSQL, MySQL).

@@ -19,6 +19,7 @@ require "./saci/crypto"
 require "./saci/credentials"
 require "./saci/cookies"
 require "./saci/session"
+require "./saci/authentication"
 require "./saci/views"
 require "./saci/throttle"
 require "./saci/cache"
@@ -34,6 +35,7 @@ require "./saci/mailer"
 require "./saci/record"
 require "./saci/record/schema_check"
 require "./saci/record/secure_password"
+require "./saci/pagination"
 
 module Saci
 end
