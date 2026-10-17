@@ -143,6 +143,70 @@ class PgLiveDropMe < Saci::Record::Migration
   end
 end
 
+# -- Task B (migration depth): FK / rename / change_column coverage --
+#
+# `PgLiveFkSetup` uses the `create_table` block forms (`t.references` with
+# `foreign_key: true`, `t.foreign_key`); `PgLiveFkAdd` exercises the
+# standalone `add_foreign_key` (ADD CONSTRAINT — PostgreSQL syntax).
+
+class PgLiveFkSetup < Saci::Record::Migration
+  def change
+    create_table :pg_live_fk_owners do |t|
+      t.string :name, null: false
+    end
+    create_table :pg_live_fk_pets do |t|
+      t.string :name
+      t.references :owner, foreign_key: true, to_table: :pg_live_fk_owners, on_delete: :cascade
+    end
+    create_table :pg_live_fk_toys do |t|
+      t.string :name
+      t.bigint :pet_id
+      t.foreign_key :pg_live_fk_pets, column: :pet_id, on_delete: :restrict
+    end
+    create_table :pg_live_fk_chews do |t|
+      t.string :name
+      t.bigint :owner_id
+    end
+  end
+end
+
+class PgLiveFkAdd < Saci::Record::Migration
+  def change
+    add_foreign_key :pg_live_fk_chews, :pg_live_fk_owners, column: :owner_id, on_delete: :nullify
+  end
+end
+
+class PgLiveFkRenames < Saci::Record::Migration
+  def change
+    rename_column :pg_live_fk_pets, :name, :label
+    rename_table :pg_live_fk_chews, :pg_live_fk_treats
+  end
+end
+
+class PgLiveFkChange < Saci::Record::Migration
+  def up
+    change_column :pg_live_fk_owners, :name, :text, null: false
+  end
+
+  def down
+    change_column :pg_live_fk_owners, :name, :string, null: false
+  end
+end
+
+PG_LIVE_FK_MANIFEST = [
+  PgLiveFkSetup,
+  PgLiveFkAdd,
+  PgLiveFkRenames,
+  PgLiveFkChange,
+] of Saci::Record::Migration.class
+
+# Drop order is children-before-parents: RESTRICT FKs reject dropping
+# a referenced table, and the ensure-block drops swallow errors.
+PG_LIVE_FK_TABLES = %w[
+  pg_live_fk_toys pg_live_fk_treats pg_live_fk_chews pg_live_fk_pets
+  pg_live_fk_owners
+]
+
 LIVE_PG_MANIFEST = [
   PgLiveM1,
   PgLiveSchema1,
@@ -227,6 +291,113 @@ describe "PostgreSQL live" do
   it "connects over the postgres adapter" do
     Saci::Record.adapter_for_name("primary").should eq(:postgres)
     Saci::Record.adapter_of(Saci::Record.connection).should eq(:postgres)
+  end
+
+  it "enforces foreign keys, renames, and change_column" do
+    db = Saci::Record.connection
+    ad = Saci::Record.adapter_of(db)
+    owners = Saci::Record.quote("pg_live_fk_owners", ad)
+    pets = Saci::Record.quote("pg_live_fk_pets", ad)
+    chews = Saci::Record.quote("pg_live_fk_chews", ad)
+    treats = Saci::Record.quote("pg_live_fk_treats", ad)
+    c_name = Saci::Record.quote("name", ad)
+    c_label = Saci::Record.quote("label", ad)
+    c_owner = Saci::Record.quote("owner_id", ad)
+    sm = Saci::Record.quote("schema_migrations", ad)
+    # Cleanup-first: a previous interrupted run may leave tables behind
+    # without schema_migrations rows (DDL is not transactional), which
+    # would make `migrate` fail with "already exists".
+    PG_LIVE_FK_TABLES.each do |t|
+      begin
+        Saci::Record.exec_compat(db, "DROP TABLE IF EXISTS #{Saci::Record.quote(t, ad)}")
+      rescue
+      end
+    end
+    PG_LIVE_FK_MANIFEST.each do |m|
+      begin
+        Saci::Record.exec_compat(db,
+          "DELETE FROM #{sm} WHERE #{c_name} = ?", [m.name] of Saci::Record::Value)
+      rescue
+      end
+    end
+    Saci::Record::Migrator.migrate(db, [PgLiveFkSetup] of Saci::Record::Migration.class)
+    begin
+      # Block-form FK (`t.references ... foreign_key: true`) is enforced.
+      expect_raises(Exception) do
+        Saci::Record.exec_compat(db,
+          "INSERT INTO #{pets} (#{c_name}, #{c_owner}) VALUES (?, ?)",
+          ["ghost", 999_999_999] of Saci::Record::Value)
+      end
+      Saci::Record.exec_compat(db,
+        "INSERT INTO #{owners} (#{c_name}) VALUES (?)", ["oda"] of Saci::Record::Value)
+      owner_id = Saci::Record.scalar_compat(db,
+        "SELECT #{Saci::Record.quote("id", ad)} FROM #{owners} WHERE #{c_name} = ?", ["oda"] of Saci::Record::Value).as(Int64)
+      Saci::Record.exec_compat(db,
+        "INSERT INTO #{pets} (#{c_name}, #{c_owner}) VALUES (?, ?)",
+        ["fido", owner_id] of Saci::Record::Value)
+
+      # ON DELETE CASCADE (block form): deleting the owner removes pets.
+      Saci::Record.exec_compat(db, "DELETE FROM #{owners}")
+      Saci::Record.scalar_compat(db, "SELECT COUNT(*) FROM #{pets}").should eq(0)
+
+      # Standalone add_foreign_key (ON DELETE SET NULL) is enforced.
+      Saci::Record::Migrator.migrate(db, [PgLiveFkSetup, PgLiveFkAdd] of Saci::Record::Migration.class)
+      expect_raises(Exception) do
+        Saci::Record.exec_compat(db,
+          "INSERT INTO #{chews} (#{c_name}, #{c_owner}) VALUES (?, ?)",
+          ["ghost-chew", 999_999_999] of Saci::Record::Value)
+      end
+      Saci::Record.exec_compat(db,
+        "INSERT INTO #{owners} (#{c_name}) VALUES (?)", ["oda2"] of Saci::Record::Value)
+      owner2 = Saci::Record.scalar_compat(db,
+        "SELECT #{Saci::Record.quote("id", ad)} FROM #{owners} WHERE #{c_name} = ?", ["oda2"] of Saci::Record::Value).as(Int64)
+      Saci::Record.exec_compat(db,
+        "INSERT INTO #{chews} (#{c_name}, #{c_owner}) VALUES (?, ?)",
+        ["chewy", owner2] of Saci::Record::Value)
+
+      # Renames applied: new column/table names accept writes.
+      Saci::Record::Migrator.migrate(db, [PgLiveFkSetup, PgLiveFkAdd, PgLiveFkRenames] of Saci::Record::Migration.class)
+      Saci::Record.exec_compat(db,
+        "INSERT INTO #{pets} (#{c_label}, #{c_owner}) VALUES (?, ?)",
+        ["renamed", nil] of Saci::Record::Value)
+      Saci::Record.exec_compat(db,
+        "INSERT INTO #{treats} (#{c_name}, #{c_owner}) VALUES (?, ?)",
+        ["treat", owner2] of Saci::Record::Value)
+
+      # change_column kept the column usable (VARCHAR -> TEXT).
+      Saci::Record::Migrator.migrate(db, PG_LIVE_FK_MANIFEST)
+      Saci::Record.exec_compat(db,
+        "INSERT INTO #{owners} (#{c_name}) VALUES (?)", ["second"] of Saci::Record::Value)
+
+      # Rollback inverts change_column (custom down) and renames
+      # (table + column names restored).
+      Saci::Record::Migrator.rollback(db, PG_LIVE_FK_MANIFEST, 2)
+      Saci::Record.exec_compat(db,
+        "INSERT INTO #{owners} (#{c_name}) VALUES (?)", ["third"] of Saci::Record::Value)
+      Saci::Record.exec_compat(db,
+        "INSERT INTO #{chews} (#{c_name}, #{c_owner}) VALUES (?, ?)",
+        ["back", nil] of Saci::Record::Value)
+
+      # Rollback drops the added FK: dangling references now insert fine.
+      Saci::Record::Migrator.rollback(db, PG_LIVE_FK_MANIFEST, 1)
+      Saci::Record.exec_compat(db,
+        "INSERT INTO #{chews} (#{c_name}, #{c_owner}) VALUES (?, ?)",
+        ["dangling", 999_999_999] of Saci::Record::Value)
+    ensure
+      PG_LIVE_FK_TABLES.each do |t|
+        begin
+          Saci::Record.exec_compat(db, "DROP TABLE IF EXISTS #{Saci::Record.quote(t, ad)}")
+        rescue
+        end
+      end
+      PG_LIVE_FK_MANIFEST.each do |m|
+        begin
+          Saci::Record.exec_compat(db,
+            "DELETE FROM #{Saci::Record.quote("schema_migrations", ad)} WHERE #{c_name} = ?", [m.name] of Saci::Record::Value)
+        rescue
+        end
+      end
+    end
   end
 
   it "creates, finds, updates, and destroys" do

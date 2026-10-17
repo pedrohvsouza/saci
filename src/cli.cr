@@ -8,6 +8,7 @@ require "./saci/cli/schema_check_command"
 require "./saci/cli/test_command"
 require "./saci/cli/secret_command"
 require "./saci/cli/credentials_command"
+require "./saci/cli/inspect_command"
 require "./saci/cli/watch"
 require "./saci/cli"
 

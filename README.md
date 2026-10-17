@@ -107,6 +107,10 @@ saci db:schema:dump [--all]          # write db/schema.cr snapshot (all DBs with
 saci db:schema:load                  # recreate schema from db/schema.cr
 saci db:schema:check [--all]         # warn when DB and models disagree
 saci serve --port 3000
+saci routes                          # VERB PATH -> Controller#action (no boot)
+saci runner -e 'puts Post.count'     # or: saci runner script.cr (app context, no boot)
+saci console [-e CODE]               # minimal console (per-line compile; `exit` quits)
+saci db:seed                         # run db/seed.cr (or db/seeds.cr) in app context
 ```
 
 - `new [--db=...]` scaffolds `shard.yml` (path-dependency on the framework source),
@@ -140,6 +144,22 @@ saci serve --port 3000
   `--all` checks primary + all named DBs.
 - Routes support static prefix/suffix params anywhere in a segment:
   `/~:username`, `/@:username` (redirect to `/~%{username}`), `/avatars/:username_size.png`.
+- `routes` statically parses `src/routes.cr` when present, otherwise the
+  `src/<app>.cr` entrypoint (where `saci new` draws routes inline), and
+  prints `VERB PATH -> Controller#action` without booting the server
+  (`resources` expands to the 8 member/collection routes; per-route
+  `constraints:` shows as `[constraints]`; block routes as `(block)`).
+- `runner -e CODE` / `runner FILE [args] [-- crystal flags]` compiles a
+  temp wrapper under `tmp/` (deleted after) that loads models/controllers
+  and connects the DB, then runs the code — the Rails runner equivalent
+  for seeds and ops scripts (server never booted; extra args become ARGV).
+- `console` with no args loops on stdin, compiling and running each line
+  in app context (`exit` quits); with `-e CODE`/FILE it is exactly
+  `runner`. Crystal has no runtime eval, so loop mode recompiles per line
+  (slow but real) and multi-line definitions belong in a file instead.
+- `db:seed` runs `db/seed.cr` (or `db/seeds.cr`) through the same runner
+  mechanism; `saci new` scaffolds a commented `db/seed.cr` starter. With
+  no seed file it prints the conventional template and exits 1.
 
 ## ORM (ActiveRecord equivalent)
 
@@ -273,8 +293,21 @@ Notes:
   `:restrict_with_exception` (`DeleteRestrictionError`); counters polish:
   `update_counter`/`update_counters`/`reset_counters`/`touch_all`.
 - `change`-style migrations roll back automatically (`create_table`,
-  `add_column`, `add_index`); `drop_table`/`remove_column`/`remove_index`
-  inside `change` raise `IrreversibleMigration` on rollback — use `up`/`down`.
+  `add_column`, `add_index`, `add_foreign_key`, `rename_table`,
+  `rename_column`); `drop_table`/`remove_column`/`remove_index`/
+  `remove_foreign_key`/`change_column` inside `change` raise
+  `IrreversibleMigration` on rollback — use `up`/`down`.
+- Foreign keys: `t.references :user, foreign_key: true` (bigint `user_id` +
+  index + `REFERENCES users(id)`; `foreign_key:` defaults to `false` —
+  unlike Rails 5+, Saci never adds a constraint you did not ask for) or
+  `t.foreign_key :users, column: :user_id, on_delete: :cascade` inside
+  `create_table` (the only form SQLite parses — FKs are CREATE-time clauses
+  there, so standalone `add_foreign_key` raises on SQLite and table rebuilds
+  are out of scope). `add_foreign_key :stories, :users, on_delete:
+  :cascade`/`:nullify`/`:restrict` uses the same `ADD CONSTRAINT` syntax on
+  PostgreSQL and MySQL (InnoDB assumed); `rename_table`/`rename_column` work
+  on all three adapters, while `change_column` is PostgreSQL (`ALTER COLUMN
+  TYPE ... USING`) / MySQL (`MODIFY COLUMN`) only.
 - Connection state is module-global (`Saci::Record.connection`): Crystal
   class variables are per-class, so a `@@connection` on the base class would
   be invisible to subclasses.
@@ -712,6 +745,47 @@ File page cache (a `CachePageJob` calls these): `Saci::PageCache.write(path, htm
 / `.read` / `.expire` / `.expire_dir(dir)` under `tmp/page_cache`, with
 write-through `.fetch(path) { render }`.
 
+## General cache (`Rails.cache` equivalent)
+
+```crystal
+Saci::Cache.write("greeting", "hello", expires_in: 60.seconds)
+Saci::Cache.read("greeting")                    # => "hello"
+Saci::Cache.fetch("expensive", expires_in: 5.minutes) { compute }
+Saci::Cache.increment("page-views")
+Saci::Cache.namespace = "v2"                    # key prefix ("v2:...")
+
+# Multi-process deploys share entries over Redis — same vendored
+# pure-socket RESP2 client as Cable/Throttle, no new link requirements:
+Saci::Cache.store = Saci::Cache::RedisStore.new(ENV.fetch("REDIS_URL", "redis://127.0.0.1:6379"))
+```
+
+- The String fast-path (`read`/`write`/`fetch` returning `String`) is the
+  primary API; typed values (`Int64`, `Float64`, `Bool`, `Time`, `Nil`)
+  round-trip through `write` overloads plus `read_value`/`fetch_value`
+  (a stored `Nil` is present — `exist?` is true — and `fetch` treats it
+  as a hit). Values use an explicit type-tagged encoding (`S:`/`I:`/
+  `F:`/`B:`/`T:`/`N:` prefixes, spec-pinned) — no `Marshal`, no
+  deserialization gadgets; keys written by other clients read back as
+  plain Strings. `read` on a non-String entry returns nil (use
+  `read_value`).
+- Backends: `MemoryStore` (default; mutex-guarded, `max_entries: 1000`
+  with LRU eviction, entries purged on read) and `RedisStore(url,
+  prefix: "saci:cache:")` (one key per entry, `SET ... EX` TTLs).
+  `Saci::Cache.reset!` restores the default store (spec isolation).
+- `fetch` memoizes on miss; `MemoryStore#fetch` also takes
+  `race_condition_ttl:` for stampede protection (expired-within-grace
+  serves stale immediately while one background fiber refreshes —
+  concurrent fetchers keep getting stale instead of piling onto the
+  recomputation; past the grace window it recomputes synchronously).
+  `RedisStore` accepts the option for API parity but ignores it
+  (server-side TTLs drop stale values, so there is nothing to serve)
+  and its `increment` is read-modify-write (atomic per instance, not
+  across processes).
+- Fail behavior: `MemoryStore` never fails; `RedisStore` raises
+  `Saci::Cache::RedisDown` on connection failure — rescue to a miss
+  when fail-open is what you want (fragment caching does). `clear`
+  deletes only keys written through that instance (never FLUSHDB).
+
 ## Rate limiting
 
 ```crystal
@@ -854,6 +928,7 @@ src/saci/mailer.cr        # mailers + delivery (+ layouts, reply_to, headers)
 src/saci/smtp.cr          # dependency-free SMTP client (STARTTLS + AUTH)
 src/saci/views.cr         # ECR templates, forms, links, caching, files
 src/saci/throttle.cr      # rate limiting
+src/saci/cache.cr         # general cache (Rails.cache equivalent)
 src/saci/storage.cr       # disk uploads + signed serving
 src/saci/crypto.cr        # vendored AES-256-GCM (see note)
 src/saci/credentials.cr   # encrypted credentials file
@@ -886,6 +961,7 @@ spec/smtp_spec.cr       # SMTP framing/auth/errors against a fake server
 spec/views_spec.cr      # templates, layouts, partials, forms, links
 spec/caching_spec.cr    # etag/last-modified flows, expires_in, records
 spec/throttle_spec.cr   # limits, safelist, blocklist, windows
+spec/cache_spec.cr      # general cache (memory + fake/live redis)
 spec/storage_spec.cr    # disk service, signed URLs, FilesController
 spec/credentials_spec.cr  # AES-GCM, credentials file, CLI commands
 spec/multidb_spec.cr    # named DBs, connects_to, connected_to, tx routing

@@ -31,6 +31,14 @@ module Saci
         SchemaCheck.run(args)
       when "secret"
         Secret.run(args)
+      when "routes"
+        Inspect::Routes.run(args)
+      when "runner"
+        Inspect::Runner.run(args)
+      when "console"
+        Inspect::Console.run(args)
+      when "db:seed"
+        Inspect::Seed.run(args)
       when "credentials:show"
         Credentials.run(args, "show")
       when "credentials:edit"
@@ -89,6 +97,14 @@ module Saci
         "Usage: saci db:schema:check [--all]\n\nWarns when the database and the models disagree (missing tables/columns on either side). Exits 1 when drift is found, 0 when clean. With --all, checks primary + all named DBs."
       when "secret"
         "Usage: saci secret\n\nPrints a random secret for SECRET_KEY_BASE."
+      when "routes"
+        Inspect::Routes.help
+      when "runner"
+        Inspect::Runner.help
+      when "console"
+        Inspect::Console.help
+      when "db:seed"
+        Inspect::Seed.help
       when "credentials:show", "credentials:edit", "credentials:keygen"
         "Usage: saci credentials:show | credentials:edit [EDITOR] | credentials:keygen\n\nShows, edits ($EDITOR) or generates the key for the encrypted credentials file."
       when "test", "t"
@@ -108,6 +124,10 @@ module Saci
           db:schema:dump [--all]      dump the schema to db/schema.cr (all DBs with --all)
           db:schema:load              load db/schema.cr (recreate tables + indexes)
           db:schema:check [--all] warn when DB and models disagree (exit 1 on drift)
+          routes                  print VERB PATH -> Controller#action (no boot)
+          runner -e CODE|FILE     run code/file in app context (no boot)
+          console [-e CODE]       minimal console (per-line compile; `exit` quits)
+          db:seed                 run db/seed.cr (or db/seeds.cr) in app context
           secret                    print a random SECRET_KEY_BASE
           credentials:show         decrypt and print credentials
           credentials:edit         edit credentials in $EDITOR

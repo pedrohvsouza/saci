@@ -30,6 +30,19 @@ module Saci
       end
     end
 
+    # A foreign key declared inside `create_table` (emitted as a table-level
+    # `FOREIGN KEY ... REFERENCES ...` clause so SQLite parses it at
+    # CREATE time; valid on PostgreSQL/MySQL too).
+    struct TableForeignKey
+      getter column : String
+      getter to_table : String
+      getter on_delete : Symbol?
+      getter name : String?
+
+      def initialize(@column, @to_table, @on_delete, @name)
+      end
+    end
+
     # Schema builder yielded to `create_table`.
     #
     # ```
@@ -43,9 +56,13 @@ module Saci
     # ```
     class TableDefinition
       getter columns : Array(ColumnDef)
+      getter foreign_keys : Array(TableForeignKey)
+      getter pending_indexes : Array(String)
 
       def initialize
         @columns = [] of ColumnDef
+        @foreign_keys = [] of TableForeignKey
+        @pending_indexes = [] of String
       end
 
       def string(name : String | Symbol, null : Bool = true, default : Value = nil)
@@ -94,6 +111,35 @@ module Saci
         @columns << ColumnDef.new("updated_at", :datetime, false, nil, false)
       end
 
+      # Rails-like `t.references :user`: a `bigint` `<name>_id` column plus
+      # an optional index and an optional foreign key.
+      #
+      # `foreign_key:` defaults to `false` (explicit, documented): unlike
+      # Rails 5+ (which defaults to true), Saci never adds a constraint you
+      # did not ask for — FKs lock writes and can surprise on large tables.
+      # Pass `foreign_key: true` for `REFERENCES <plural>(id)`, or a Symbol
+      # for a custom target table (`foreign_key: :accounts`). `to_table:`
+      # overrides the target explicitly; `on_delete:` is `:cascade`
+      # (`CASCADE`), `:nullify` (`SET NULL`), `:restrict` (`RESTRICT`) or
+      # `:no_action` (`NO ACTION`). `index:` (default true) creates a plain
+      # index on the `<name>_id` column after `CREATE TABLE`.
+      def references(name : String | Symbol, foreign_key : Bool | Symbol | Nil = false, null : Bool = true, index : Bool = true, to_table : String | Symbol | Nil = nil, on_delete : Symbol? = nil)
+        col = "#{name}_id"
+        add(col, :bigint, null, nil)
+        @pending_indexes << col if index
+        if fk = foreign_key
+          target = to_table ? to_table.to_s : (fk.is_a?(Symbol) ? fk.to_s : Record::Inflector.pluralize(name.to_s))
+          @foreign_keys << TableForeignKey.new(col, target, on_delete, nil)
+        end
+      end
+
+      # Block-form foreign key: `t.foreign_key :users, column: :user_id`.
+      # Works on all three adapters (emitted inside `CREATE TABLE`, which is
+      # the only place SQLite parses FKs). `on_delete:` as in `references`.
+      def foreign_key(to_table : String | Symbol, column : String | Symbol, on_delete : Symbol? = nil, name : String? = nil)
+        @foreign_keys << TableForeignKey.new(column.to_s, to_table.to_s, on_delete, name)
+      end
+
       private def add(name : String | Symbol, logical : Symbol, null : Bool, default : Value)
         @columns << ColumnDef.new(name.to_s, logical, null, default, false)
       end
@@ -115,14 +161,117 @@ module Saci
     # ```
     #
     # Define `change` with reversible operations (`create_table`,
-    # `add_column`, `add_index`) for automatic rollback, or `up`/`down`
-    # for full control. `drop_table`/`remove_column`/`remove_index` inside
-    # `change` make rollback raise `IrreversibleMigration`.
+    # `add_column`, `add_index`, `add_foreign_key`, `rename_table`,
+    # `rename_column`) for automatic rollback, or `up`/`down`
+    # for full control. `drop_table`/`remove_column`/`remove_index`/
+    # `remove_foreign_key`/`change_column` inside `change` raise
+    # `IrreversibleMigration` on rollback (`change_column` and the
+    # removals cannot be inverted without the original definition).
     # NOTE: intentionally not abstract — `Migrator` instantiates migrations
     # through the `Migration.class` metaclass, which abstract classes forbid.
     class Migration
       @inverting : Bool = false
       @inverse_ops : Array(-> Nil) = [] of (-> Nil)
+
+      # -- pure SQL builders (per adapter; no DB needed, spec-covered) -----
+
+      # Default FK constraint name: `fk_<from>_on_<column>`.
+      def self.fk_constraint_name(from_table : String | Symbol, column : String | Symbol) : String
+        "fk_#{from_table}_on_#{column}"
+      end
+
+      # Maps `:cascade`/`:nullify`/`:restrict`/`:no_action` to DDL.
+      def self.on_delete_sql(action : Symbol) : String
+        case action
+        when :cascade   then "CASCADE"
+        when :nullify   then "SET NULL"
+        when :restrict  then "RESTRICT"
+        when :no_action then "NO ACTION"
+        else                 raise ArgumentError.new("Unknown on_delete #{action.inspect} (expected :cascade, :nullify, :restrict or :no_action)")
+        end
+      end
+
+      # Naive singularize for the default FK column (`:users` → `user_id`).
+      def self.fk_default_column(to_table : String | Symbol) : String
+        base = to_table.to_s
+        singular = if base.ends_with?("ies") && base.size > 3
+                     base[0...-3] + "y"
+                   elsif (base.ends_with?("ses") || base.ends_with?("xes") || base.ends_with?("zes") || base.ends_with?("ches") || base.ends_with?("shes")) && base.size > 2
+                     base[0...-2]
+                   elsif base.ends_with?("s") && !base.ends_with?("ss") && base.size > 1
+                     base[0...-1]
+                   else
+                     base
+                   end
+        "#{singular}_id"
+      end
+
+      # `ALTER TABLE ... ADD CONSTRAINT ... FOREIGN KEY ... REFERENCES ...`.
+      # Same syntax on PostgreSQL and MySQL (InnoDB assumed).
+      def self.add_fk_sql(adapter : Adapter, from_table : String | Symbol, to_table : String | Symbol, column : String | Symbol, on_delete : Symbol? = nil, name : String? = nil) : String
+        from, to, col = from_table.to_s, to_table.to_s, column.to_s
+        cname = name || fk_constraint_name(from, col)
+        sql = "ALTER TABLE #{Record.quote(from, adapter)} ADD CONSTRAINT #{Record.quote(cname, adapter)} FOREIGN KEY (#{Record.quote(col, adapter)}) REFERENCES #{Record.quote(to, adapter)} (#{Record.quote("id", adapter)})"
+        sql += " ON DELETE #{on_delete_sql(on_delete)}" if on_delete
+        sql
+      end
+
+      # PostgreSQL drops FKs via `DROP CONSTRAINT`; MySQL via
+      # `DROP FOREIGN KEY` (the backing index, if any, is kept).
+      def self.remove_fk_sql(adapter : Adapter, from_table : String | Symbol, name : String | Symbol) : String
+        from, cname = from_table.to_s, name.to_s
+        if adapter == :mysql
+          "ALTER TABLE #{Record.quote(from, adapter)} DROP FOREIGN KEY #{Record.quote(cname, adapter)}"
+        else
+          "ALTER TABLE #{Record.quote(from, adapter)} DROP CONSTRAINT #{Record.quote(cname, adapter)}"
+        end
+      end
+
+      # Table-level FK clause for inside `CREATE TABLE` (all adapters,
+      # including SQLite which only parses FKs at CREATE time).
+      def self.create_table_fk_sql(adapter : Adapter, from_table : String | Symbol, fk : TableForeignKey) : String
+        cname = fk.name || fk_constraint_name(from_table, fk.column)
+        sql = "CONSTRAINT #{Record.quote(cname, adapter)} FOREIGN KEY (#{Record.quote(fk.column, adapter)}) REFERENCES #{Record.quote(fk.to_table, adapter)} (#{Record.quote("id", adapter)})"
+        if od = fk.on_delete
+          sql += " ON DELETE #{on_delete_sql(od)}"
+        end
+        sql
+      end
+
+      # `ALTER TABLE <old> RENAME TO <new>` (all three adapters).
+      def self.rename_table_sql(adapter : Adapter, old_name : String | Symbol, new_name : String | Symbol) : String
+        "ALTER TABLE #{Record.quote(old_name, adapter)} RENAME TO #{Record.quote(new_name, adapter)}"
+      end
+
+      # `ALTER TABLE <t> RENAME COLUMN <old> TO <new>` (PostgreSQL, MySQL 8+,
+      # and SQLite ≥ 3.25 all support this form).
+      def self.rename_column_sql(adapter : Adapter, table : String | Symbol, old_name : String | Symbol, new_name : String | Symbol) : String
+        "ALTER TABLE #{Record.quote(table, adapter)} RENAME COLUMN #{Record.quote(old_name, adapter)} TO #{Record.quote(new_name, adapter)}"
+      end
+
+      # Per-adapter `change_column` statements (no DB needed).
+      # PostgreSQL: `ALTER COLUMN TYPE ... USING` + null/default adjusts.
+      # MySQL: single `MODIFY COLUMN <full definition>` (InnoDB assumed).
+      # SQLite: raises — SQLite cannot alter a column type in place (a full
+      # table rebuild is out of scope); redefine the table instead.
+      def self.change_column_sqls(adapter : Adapter, table : String | Symbol, column : String | Symbol, type : Symbol, null : Bool = true, default : Value = nil) : Array(String)
+        tbl, col = table.to_s, column.to_s
+        case adapter
+        when :sqlite
+          raise ArgumentError.new("change_column #{tbl}.#{col} is not supported on SQLite (SQLite cannot alter a column type in place; table rebuild is out of scope — recreate the table instead)")
+        when :mysql
+          ["ALTER TABLE #{Record.quote(tbl, adapter)} MODIFY COLUMN #{ColumnDef.new(col, type, null, default, false).to_sql(adapter)}"]
+        else
+          stmts = ["ALTER TABLE #{Record.quote(tbl, adapter)} ALTER COLUMN #{Record.quote(col, adapter)} TYPE #{Record.db_type(type, adapter)} USING #{Record.quote(col, adapter)}::#{Record.db_type(type, adapter)}"]
+          stmts << "ALTER TABLE #{Record.quote(tbl, adapter)} ALTER COLUMN #{Record.quote(col, adapter)} #{null ? "DROP NOT NULL" : "SET NOT NULL"}"
+          if d = Record.column_default_sql(default, adapter)
+            stmts << "ALTER TABLE #{Record.quote(tbl, adapter)} ALTER COLUMN #{Record.quote(col, adapter)} SET DEFAULT #{d}"
+          else
+            stmts << "ALTER TABLE #{Record.quote(tbl, adapter)} ALTER COLUMN #{Record.quote(col, adapter)} DROP DEFAULT"
+          end
+          stmts
+        end
+      end
 
       def initialize(@db : DB::Database | DB::Connection)
       end
@@ -162,7 +311,13 @@ module Saci
         end
         yield t
         cols_sql = t.columns.map(&.to_sql(ad)).join(", ")
-        Record.exec_compat(@db, "CREATE TABLE #{Record.quote(tbl, ad)} (#{cols_sql})")
+        fk_sql = t.foreign_keys.map { |fk| Migration.create_table_fk_sql(ad, tbl, fk) }
+        all_sql = ([cols_sql] + fk_sql).reject(&.empty?).join(", ")
+        Record.exec_compat(@db, "CREATE TABLE #{Record.quote(tbl, ad)} (#{all_sql})")
+        t.pending_indexes.each do |col|
+          index_name = "index_#{tbl}_on_#{col}"
+          Record.exec_compat(@db, "CREATE INDEX #{Record.quote(index_name, ad)} ON #{Record.quote(tbl, ad)} (#{Record.quote(col, ad)})")
+        end
       end
 
       def drop_table(name : String | Symbol) : Nil
@@ -212,6 +367,93 @@ module Saci
         ad = Record.adapter_of(@db)
         drop_sql = ad == :mysql ? "DROP INDEX #{Record.quote(name, ad)} ON #{Record.quote(table, ad)}" : "DROP INDEX #{Record.quote(name, ad)}"
         Record.exec_compat(@db, drop_sql)
+      end
+
+      # Adds a foreign key between existing tables. Same `ADD CONSTRAINT`
+      # syntax on PostgreSQL and MySQL (InnoDB assumed). On SQLite raises:
+      # SQLite parses FOREIGN KEYs at CREATE TABLE time only, so a later
+      # `add_foreign_key` cannot take effect — declare it inside
+      # `create_table` via `t.references ... foreign_key: true` or
+      # `t.foreign_key` instead (a full table rebuild is out of scope).
+      # Auto-inverts on rollback (drops the constraint).
+      def add_foreign_key(from_table : String | Symbol, to_table : String | Symbol, column : String | Symbol | Nil = nil, on_delete : Symbol? = nil, name : String? = nil) : Nil
+        ad = Record.adapter_of(@db)
+        from, to = from_table.to_s, to_table.to_s
+        col = (column || Migration.fk_default_column(to)).to_s
+        cname = name || Migration.fk_constraint_name(from, col)
+        if @inverting
+          drop_sql = Migration.remove_fk_sql(ad, from, cname)
+          @inverse_ops << -> { Record.exec_compat(@db, drop_sql); nil }
+          return
+        end
+        if ad == :sqlite
+          raise ArgumentError.new("add_foreign_key #{from}.#{col} -> #{to} is not supported on SQLite (FOREIGN KEYs are parsed at CREATE TABLE time only; use t.references ... foreign_key: true or t.foreign_key inside create_table — table rebuild is out of scope)")
+        end
+        Record.exec_compat(@db, Migration.add_fk_sql(ad, from, to, col, on_delete, cname))
+      end
+
+      # Drops a foreign key constraint. Resolve by explicit `name:` or by
+      # `column:`/`to_table:` (defaulting to the `fk_<from>_on_<column>`
+      # convention). Raises `IrreversibleMigration` on rollback (the
+      # original `on_delete` is unknown) — use `up`/`down`. On SQLite
+      # raises (nothing to drop: standalone FKs were never creatable).
+      def remove_foreign_key(from_table : String | Symbol, to_table : String | Symbol | Nil = nil, column : String | Symbol | Nil = nil, name : String? = nil) : Nil
+        if @inverting
+          raise IrreversibleMigration.new("Cannot auto-invert remove_foreign_key #{from_table}; define up/down instead of change.")
+        end
+        ad = Record.adapter_of(@db)
+        if ad == :sqlite
+          raise ArgumentError.new("remove_foreign_key #{from_table} is not supported on SQLite (FOREIGN KEYs exist only as CREATE TABLE clauses; table rebuild is out of scope)")
+        end
+        from = from_table.to_s
+        col = (column || (to_table ? Migration.fk_default_column(to_table.to_s) : nil))
+        cname = name || (col ? Migration.fk_constraint_name(from, col) : nil) ||
+          raise ArgumentError.new("remove_foreign_key #{from}: give name: or column:/to_table: so the constraint can be identified")
+        Record.exec_compat(@db, Migration.remove_fk_sql(ad, from, cname))
+      end
+
+      # Renames a table (`ALTER TABLE <old> RENAME TO <new>` on all three
+      # adapters; SQLite supports this since 3.25). Auto-inverts.
+      def rename_table(old_name : String | Symbol, new_name : String | Symbol) : Nil
+        ad = Record.adapter_of(@db)
+        old_s, new_s = old_name.to_s, new_name.to_s
+        if @inverting
+          back = Migration.rename_table_sql(ad, new_s, old_s)
+          @inverse_ops << -> { Record.exec_compat(@db, back); nil }
+          return
+        end
+        Record.exec_compat(@db, Migration.rename_table_sql(ad, old_s, new_s))
+      end
+
+      # Renames a column (`ALTER TABLE <t> RENAME COLUMN <old> TO <new>` on
+      # all three adapters: PostgreSQL, MySQL 8+, SQLite ≥ 3.25).
+      # Auto-inverts.
+      def rename_column(table : String | Symbol, old_name : String | Symbol, new_name : String | Symbol) : Nil
+        ad = Record.adapter_of(@db)
+        tbl, old_s, new_s = table.to_s, old_name.to_s, new_name.to_s
+        if @inverting
+          back = Migration.rename_column_sql(ad, tbl, new_s, old_s)
+          @inverse_ops << -> { Record.exec_compat(@db, back); nil }
+          return
+        end
+        Record.exec_compat(@db, Migration.rename_column_sql(ad, tbl, old_s, new_s))
+      end
+
+      # Changes a column's type/null/default. PostgreSQL uses
+      # `ALTER COLUMN TYPE ... USING <col>::<type>` plus null/default
+      # adjusts; MySQL uses `MODIFY COLUMN <full definition>` (InnoDB
+      # assumed). On SQLite raises (no in-place type change; a table
+      # rebuild is out of scope — recreate the table instead). Does NOT
+      # auto-invert: raises `IrreversibleMigration` on rollback, like
+      # `drop_table` — use `up`/`down`.
+      def change_column(table : String | Symbol, column : String | Symbol, type : Symbol, null : Bool = true, default : Value = nil) : Nil
+        if @inverting
+          raise IrreversibleMigration.new("Cannot auto-invert change_column #{table}.#{column}; define up/down instead of change.")
+        end
+        ad = Record.adapter_of(@db)
+        Migration.change_column_sqls(ad, table, column, type, null, default).each do |sql|
+          Record.exec_compat(@db, sql)
+        end
       end
     end
 

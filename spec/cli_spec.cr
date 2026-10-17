@@ -5,11 +5,13 @@ require "../src/saci/cli/util"
 require "../src/saci/cli/new_command"
 require "../src/saci/cli/generate_command"
 require "../src/saci/cli/serve_command"
+require "../src/saci/cli/inspect_command"
 require "../src/saci/cli/schema_command"
 require "../src/saci/cli/schema_check_command"
 require "../src/saci/cli/test_command"
 require "../src/saci/cli/secret_command"
 require "../src/saci/cli/credentials_command"
+require "../src/saci/cli/inspect_command"
 require "../src/saci/cli"
 
 def with_tmp_app(name : String = "cli_test_app", & : String ->) : Nil
@@ -20,6 +22,14 @@ def with_tmp_app(name : String = "cli_test_app", & : String ->) : Nil
   ensure
     FileUtils.rm_rf(dir)
   end
+end
+
+# Symlink the framework's lib into a fixture app so bare `db`/`sqlite3`
+# requires resolve without a `shards install` (fixtures skip shards).
+# The runner wrapper itself requires the framework via a file-relative path.
+def link_framework_lib! : Nil
+  framework_lib = File.join(Saci::CLI::New::SACI_ROOT, "lib")
+  File.symlink(framework_lib, "lib") unless File.exists?("lib")
 end
 
 describe "Saci::CLI::Util" do
@@ -442,6 +452,186 @@ describe "Saci::CLI dispatch" do
       end
     ensure
       FileUtils.rm_rf(dir)
+    end
+  end
+end
+
+describe "saci new db/seed.cr" do
+  it "scaffolds a conventional starter seed" do
+    with_tmp_app do |dir|
+      seed = File.read(File.join(dir, "db", "seed.cr"))
+      seed.should contain("saci db:seed")
+      seed.should contain("Post.create!")
+    end
+  end
+end
+
+describe "saci routes" do
+  it "falls back to the entrypoint when src/routes.cr is absent" do
+    with_tmp_app(name: "cli_routes_app") do |dir|
+      Dir.cd(dir) do
+        Saci::CLI::Inspect::Routes.locate!("cli_routes_app").should eq("src/cli_routes_app.cr")
+        rows = Saci::CLI::Inspect::Routes.parse(File.read("src/cli_routes_app.cr"))
+        rows.map { |r| "#{r.verb} #{r.path} #{r.target}" }.should contain("GET / HomeController#index")
+        Saci::CLI::Inspect::Routes.run([] of String).should eq(0)
+      end
+    end
+  end
+
+  it "prefers src/routes.cr and expands resources, constraints, namespaces, redirects and blocks" do
+    with_tmp_app(name: "cli_routes_src") do |dir|
+      Dir.cd(dir) do
+        File.write("src/routes.cr", <<-CRYSTAL)
+          router = Saci::Router.new.draw do |r|
+            r.root HomeController, :index
+            r.get "/hello", HomeController, :index
+            r.post "/users", UsersController, :create, constraints: {"id" => /\\d+/}
+            r.get("/ping") { |ctx, params| ctx.response.print("pong") }
+            r.redirect("/u/:username", to: "/~%{username}", status: 301)
+            r.resources "posts", PostsController, only: [:index, :show]
+            r.namespace("/api") do |api|
+              api.get "/hello", HomeController, :index
+            end
+          end
+          CRYSTAL
+        Saci::CLI::Inspect::Routes.locate!("cli_routes_src").should eq("src/routes.cr")
+        rows = Saci::CLI::Inspect::Routes.parse(File.read("src/routes.cr"))
+        lines = rows.map { |r| "#{r.verb} #{r.path} #{r.target}" }
+        lines.should contain("GET / HomeController#index")
+        lines.should contain("GET /hello HomeController#index")
+        lines.should contain("POST /users UsersController#create [constraints]")
+        lines.should contain("GET /ping (block)")
+        lines.should contain("GET /u/:username redirect -> /~%{username}")
+        lines.should contain("GET /posts PostsController#index")
+        lines.should contain("GET /posts/:id PostsController#show")
+        lines.any? { |l| l.includes?("PostsController#create") }.should be_false
+        lines.should contain("GET /api/hello HomeController#index")
+        Saci::CLI.run(["routes"]).should eq(0)
+        Saci::CLI.run(["help", "routes"]).should eq(0)
+      end
+    end
+  end
+
+  it "errors clearly outside an app" do
+    dir = File.join("/tmp/opencode", "saci-cli-noroutes-#{Random.rand(1_000_000)}")
+    begin
+      Dir.mkdir_p(dir)
+      File.write(File.join(dir, "shard.yml"), "name: plainapp\n")
+      Dir.cd(dir) do
+        expect_raises(Saci::CLI::Error, /src\/routes\.cr/) { Saci::CLI::Inspect::Routes.run([] of String) }
+      end
+    ensure
+      FileUtils.rm_rf(dir)
+    end
+  end
+end
+
+describe "saci runner" do
+  it "builds wrappers with app context and verbatim code" do
+    with_tmp_app(name: "cli_runner_src") do |dir|
+      Dir.cd(dir) do
+        src = Saci::CLI::Inspect::Runner.wrapper_source(code_body: "puts \"#{40 + 2} \#{x}\"")
+        src.should contain("Saci::Record.connect")
+        src.should contain("require \"../src/models/*\"")
+        src.should contain("puts \"#{40 + 2} \#{x}\"")
+      end
+    end
+  end
+
+  it "relativizes require paths" do
+    Saci::CLI::Inspect::Runner.relativize("/a/b/tmp", "/a/b/src/x.cr").should eq("../src/x.cr")
+    Saci::CLI::Inspect::Runner.relativize("/a/tmp", "/x/y.cr").should eq("../../x/y.cr")
+  end
+
+  it "rejects bad input" do
+    with_tmp_app(name: "cli_runner_bad") do |dir|
+      Dir.cd(dir) do
+        expect_raises(Saci::CLI::Error) { Saci::CLI::Inspect::Runner.run([] of String) }
+        expect_raises(Saci::CLI::Error) { Saci::CLI::Inspect::Runner.run(["-e", "1", "x.cr"]) }
+        expect_raises(Saci::CLI::Error) { Saci::CLI::Inspect::Runner.run_file("nope.cr") }
+        expect_raises(Saci::CLI::Error) { Saci::CLI::Inspect::Runner.run(["--bogus"]) }
+      end
+    end
+  end
+
+  # Symlink the framework's lib so bare `db`/`sqlite3` requires resolve
+  # without a `shards install` (fixtures skip shards; no network here).
+  # The wrapper itself requires the framework via a file-relative path.
+  it "executes -e code in app context (models loaded, DB connected)" do
+    with_tmp_app(name: "cli_runner_eval") do |dir|
+      Dir.cd(dir) do
+        link_framework_lib!
+        File.write("src/models/widget.cr", "class Widget < ApplicationRecord\n  def self.greet : String\n    \"widget-ok\"\n  end\nend\n")
+        code = "File.write(\"runner_marker.txt\", \"\#{Widget.greet}:\#{Saci::Record.connection.scalar(\"SELECT 1\")}\")"
+        Saci::CLI::Inspect::Runner.run_code(code).should eq(0)
+        File.read("runner_marker.txt").should eq("widget-ok:1")
+      end
+    end
+  end
+
+  it "executes a file in app context" do
+    with_tmp_app(name: "cli_runner_file") do |dir|
+      Dir.cd(dir) do
+        link_framework_lib!
+        File.write("ops_script.cr", "File.write(\"file_marker.txt\", \"file-ok\")\n")
+        Saci::CLI::Inspect::Runner.run_file("ops_script.cr").should eq(0)
+        File.read("file_marker.txt").should eq("file-ok")
+        Saci::CLI.run(["help", "runner"]).should eq(0)
+      end
+    end
+  end
+end
+
+describe "saci db:seed" do
+  it "prefers db/seed.cr over db/seeds.cr" do
+    with_tmp_app(name: "cli_seed_order") do |dir|
+      Dir.cd(dir) do
+        File.write("db/seeds.cr", "puts 1\n")
+        Saci::CLI::Inspect::Seed.resolve.should eq("db/seed.cr")
+        File.delete("db/seed.cr")
+        Saci::CLI::Inspect::Seed.resolve.should eq("db/seeds.cr")
+        File.delete("db/seeds.cr")
+        Saci::CLI::Inspect::Seed.resolve.should be_nil
+      end
+    end
+  end
+
+  it "prints the conventional template and exits 1 when no seed exists" do
+    with_tmp_app(name: "cli_seed_missing") do |dir|
+      Dir.cd(dir) do
+        File.delete("db/seed.cr")
+        Saci::CLI::Inspect::Seed.run([] of String).should eq(1)
+        Saci::CLI.run(["help", "db:seed"]).should eq(0)
+      end
+    end
+  end
+
+  it "runs the seed file in app context" do
+    with_tmp_app(name: "cli_seed_run") do |dir|
+      Dir.cd(dir) do
+        File.symlink(File.join(Saci::CLI::New::SACI_ROOT, "lib"), "lib") unless File.exists?("lib")
+        File.write("db/seed.cr", "File.write(\"seed_marker.txt\", \"seeded\")\n")
+        Saci::CLI::Inspect::Seed.run([] of String).should eq(0)
+        File.read("seed_marker.txt").should eq("seeded")
+      end
+    end
+  end
+end
+
+describe "saci console" do
+  it "quits the loop on exit without compiling" do
+    Saci::CLI::Inspect::Console.run([] of String, IO::Memory.new("exit\n")).should eq(0)
+    Saci::CLI::Inspect::Console.run([] of String, IO::Memory.new("  \nquit\n")).should eq(0)
+    Saci::CLI.run(["help", "console"]).should eq(0)
+  end
+
+  it "runs -e code like runner" do
+    with_tmp_app(name: "cli_console_eval") do |dir|
+      Dir.cd(dir) do
+        File.symlink(File.join(Saci::CLI::New::SACI_ROOT, "lib"), "lib") unless File.exists?("lib")
+        Saci::CLI::Inspect::Console.run(["-e", "File.write(\"console_marker.txt\", \"console-ok\")"]).should eq(0)
+        File.read("console_marker.txt").should eq("console-ok")
+      end
     end
   end
 end

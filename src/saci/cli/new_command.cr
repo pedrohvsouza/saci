@@ -72,6 +72,7 @@ module Saci
         write(File.join(dir, "src", "models", "application_record.cr"), application_record)
         write(File.join(dir, "db", "migrations.cr"), Generate.manifest_source([] of String, [] of String))
         write(File.join(dir, "db", "migrate.cr"), migrate_runner(name, db))
+        write(File.join(dir, "db", "seed.cr"), seed_file)
         Dir.mkdir_p(File.join(dir, "config"))
         Dir.cd(dir) do
           File.write("config/master.key", Saci::Credentials.generate_key + "\n")
@@ -367,6 +368,22 @@ module Saci
         else
           abort "Unknown action \#{action} (expected up|down|schema:check)"
         end
+        CRYSTAL
+      end
+
+      # Conventional seed starter (kept in sync with CLI::Inspect::Seed.template).
+      # Run with: saci db:seed
+      def self.seed_file : String
+        <<-CRYSTAL
+        # db/seed.cr — conventional seed file.
+        # Run with: saci db:seed
+        # (Same app context as `saci runner`: models are loaded and the
+        # database is connected; the web server is never booted.)
+        #
+        # Example:
+        # post = Post.create!(title: "Hello")
+        # puts "Seeded: \#{post.inspect}"
+        puts "No seeds defined yet — edit db/seed.cr."
         CRYSTAL
       end
 
