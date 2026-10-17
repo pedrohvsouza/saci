@@ -715,6 +715,16 @@ end
 - `render_partial("comments/comment", comment: c)` passes locals;
   `render_partial("comments/comment", collection: list)` renders once per
   item (variable inferred from the partial name, `as:` overrides it).
+- `cache("sidebar") { render_partial("shared/sidebar") }` fragment-caches
+  template output in `Saci::Cache` (miss renders + stores, hit returns the
+  stored HTML, `expires_in:` TTLs, fail-open when the store is down). Keys:
+  `cache_key(record)` (`table/id-updated_at`, same etag logic as `stale?`),
+  `cache_key(records)` (count + max `updated_at`),
+  `cache_key("name", version: 2)` (`"name:v2"`). Russian-doll: nest `cache`
+  calls (inner hits are reused inside outer misses); bust outer entries with
+  `Saci::Cache.delete` or a version bump — an inner delete alone does not
+  expire an outer entry, so embed the inner key in the outer key
+  (`cache("page/#{cache_key(@post)}")`) to couple them.
 - `form_with(url) { |f| f.text_field("name") + f.submit }` builds escaped
   forms with `_method` override + CSRF token; `link_to("Delete", url,
   method: :delete)` renders a self-contained mini-form (works with the
@@ -959,6 +969,7 @@ spec/logging_spec.cr    # filtering, tags, request lines/ids
 spec/mailers_spec.cr    # building, adapters, deliver_later round-trip
 spec/smtp_spec.cr       # SMTP framing/auth/errors against a fake server
 spec/views_spec.cr      # templates, layouts, partials, forms, links
+spec/fragment_spec.cr   # fragment caching (cache/cache_key, russian-doll)
 spec/caching_spec.cr    # etag/last-modified flows, expires_in, records
 spec/throttle_spec.cr   # limits, safelist, blocklist, windows
 spec/cache_spec.cr      # general cache (memory + fake/live redis)

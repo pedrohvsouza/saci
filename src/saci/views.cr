@@ -143,6 +143,117 @@ module Saci
         io << "</channel>\n</rss>\n"
       end
     end
+
+    # -- Fragment caching (Rails `<% cache %>` equivalent) --------------------
+    #
+    # ```
+    # # In an ECR template (controller instance context):
+    # <%= cache(cache_key(@post)) { render_partial("posts/post", post: @post) } %>
+    # <%= cache("sidebar", expires_in: 5.minutes) { render_partial("shared/sidebar") } %>
+    # ```
+    #
+    # Miss renders the block and stores the String in `Saci::Cache`; hit
+    # returns the stored String without running the block. Fail-open: a
+    # `Saci::Cache::RedisDown` on read renders uncached (and on write serves
+    # the rendered fragment without storing it), so a cache outage never
+    # breaks pages. The block runs at most once per call.
+    #
+    # Russian-doll invalidation: nest `cache` calls for inner/outer fragments.
+    # An inner hit is reused when the outer misses (the outer re-renders
+    # around it). Deleting an inner key does NOT expire an outer entry that
+    # already embedded the old inner HTML — bust the outer entry explicitly
+    # (`Saci::Cache.delete(outer_key)`), bump `version:`, or couple the keys
+    # by embedding the inner key in the outer one
+    # (`cache("page/#{cache_key(@post)}") { ... }`), so touching the record
+    # changes the outer key too.
+    def self.cache(key, expires_in : Time::Span? = nil, version : Int? = nil, &block : -> String) : String
+      full = expand_fragment_key(key, version)
+      begin
+        if hit = Cache.read(full)
+          return hit
+        end
+      rescue Cache::RedisDown
+        return block.call
+      end
+      rendered = block.call
+      begin
+        Cache.write(full, rendered, expires_in)
+      rescue Cache::RedisDown
+        # Fail-open: serve the rendered fragment without storing it.
+      end
+      rendered
+    end
+
+    # Plain keys pass through (`"sidebar"`); `version:` appends a `:vN`
+    # suffix (`cache_key("sidebar", version: 2) # => "sidebar:v2"`), so a
+    # deploy-time bump expires the entry without a `delete`.
+    def self.cache_key(key : String, version : Int? = nil) : String
+      version ? "#{key}:v#{version}" : key
+    end
+
+    def self.cache_key(key : Symbol, version : Int? = nil) : String
+      cache_key(key.to_s, version: version)
+    end
+
+    # Record key (`table/id-updated_at`), mirroring the `stale?(record)` etag
+    # logic: touching the record (bumps `updated_at`) changes the key.
+    # Records without an `updated_at` value key as `table/id`.
+    def self.cache_key(record : Record::Base, version : Int? = nil) : String
+      pk = record.class.primary_key_name
+      id_value = record.__saci_get_attr(pk)
+      updated = record.__saci_get_attr("updated_at")
+      base = updated.is_a?(Time) ? "#{record.class.table_name}/#{id_value}-#{updated.to_unix}" : "#{record.class.table_name}/#{id_value}"
+      version ? "#{base}:v#{version}" : base
+    end
+
+    # Collection key (table/count + max `updated_at`, same second resolution
+    # as record keys): adding/removing rows or touching any row changes it.
+    # Empty collections key as `"collection/empty"`.
+    def self.cache_key(collection : Array, version : Int? = nil) : String
+      count = collection.size
+      if count == 0
+        base = "collection/empty"
+      else
+        table = "collection"
+        max_stamp = 0_i64
+        has_stamp = false
+        collection.each do |item|
+          if item.is_a?(Record::Base)
+            table = item.class.table_name
+            updated = item.__saci_get_attr("updated_at")
+            if updated.is_a?(Time)
+              ts = updated.to_unix
+              max_stamp = ts if !has_stamp || ts > max_stamp
+              has_stamp = true
+            end
+          end
+        end
+        base = has_stamp ? "#{table}/collection-#{count}-#{max_stamp}" : "#{table}/collection-#{count}"
+      end
+      version ? "#{base}:v#{version}" : base
+    end
+
+    # Normalizes anything `cache` accepts into a store key: Strings/Symbols
+    # pass through, records use `cache_key(record)`, all-record Arrays use
+    # the aggregate `cache_key(collection)`, and mixed Arrays join per-part
+    # keys (`["v1", post]` → `"v1/posts/5-123"`). `version:` appends `:vN`.
+    def self.expand_fragment_key(key, version : Int? = nil) : String
+      base = case key
+             when String, Symbol
+               key.to_s
+             when Record::Base
+               cache_key(key)
+             when Array
+               if key.all? { |part| part.is_a?(Record::Base) }
+                 cache_key(key)
+               else
+                 key.map { |part| part.is_a?(Record::Base) ? cache_key(part) : part.to_s }.join("/")
+               end
+             else
+               key.to_s
+             end
+      version ? "#{base}:v#{version}" : base
+    end
   end
 
   # Form builder used by `Controller#form_with` (plain string building —
@@ -431,6 +542,34 @@ module Saci
     # RSS 2.0 feed string — render it with `render xml:`.
     def rss_feed(*, title : String, link : String, description : String, items : Array(Views::RSSItem)) : String
       Views.rss_feed(title: title, link: link, description: description, items: items)
+    end
+
+    # Fragment-caches a template section (see `Saci::Views.cache`): hit
+    # returns the stored HTML, miss renders the block and stores it
+    # (`expires_in:` TTLs, fail-open when the store is down). Composes with
+    # `render_partial` (locals and collections alike):
+    #   <%= cache(cache_key(@post)) { render_partial("posts/post", post: @post) } %>
+    def cache(key, expires_in : Time::Span? = nil, version : Int? = nil, &block : -> String) : String
+      Views.cache(key, expires_in, version, &block)
+    end
+
+    # Key helpers for `cache` (see `Saci::Views.cache_key`): plain
+    # Strings/Symbols, records (`table/id-updated_at`) and collections
+    # (count + max `updated_at`), each with optional `version:` (`:vN`).
+    def cache_key(key : String, version : Int? = nil) : String
+      Views.cache_key(key, version: version)
+    end
+
+    def cache_key(key : Symbol, version : Int? = nil) : String
+      Views.cache_key(key, version: version)
+    end
+
+    def cache_key(record : Saci::Record::Base, version : Int? = nil) : String
+      Views.cache_key(record, version: version)
+    end
+
+    def cache_key(collection : Array, version : Int? = nil) : String
+      Views.cache_key(collection, version: version)
     end
 
     # Streams a file as a download (or inline).
