@@ -668,6 +668,34 @@ Every request logs `Completed 200 in 3.2ms | GET /posts | params={...} |
 [req-id]` at info level with filtered params, and carries an `X-Request-Id`
 (request header honored when present, generated otherwise).
 
+## Metrics
+
+```crystal
+r.get "/metrics", Saci::Metrics::Controller, :index
+```
+
+In-process counters (mutex-guarded, no dependencies): request totals +
+per-status buckets, per-route (`Controller#action`) counts with average
+durations, job ok/failed counts, cache hits/misses, plus best-effort DB
+gauges (durable-queue pending/dead rows, database size — SQLite file
+bytes, `pg_database_size`, summed MySQL table bytes; `nil` when
+unavailable). JSON by default, Prometheus text exposition on
+`?format=prom` or `Accept: text/plain`
+(`saci_requests_total`, `saci_request_duration_ms_sum`,
+`saci_jobs_failed_total`, `saci_cache_hits_total`, …).
+
+```crystal
+Saci::Metrics.track_request("Posts#index", 200, 3.2)  # ~free no-op when disabled
+Saci::Metrics.enabled = false   # pause tracking (default true)
+Saci::Metrics.reset!            # blank slate (spec isolation)
+Saci::Job.on_error { |_, _| Saci::Metrics.job_failed! }  # decoupled job wiring
+```
+
+Request tracking is explicit (wire `track_request` from an
+`after_action` — see `Saci::Metrics` docs), as are job/cache hooks
+(`job_ok!`, `cache_hit!`/`cache_miss!`): the framework stays decoupled.
+No auth is built in — mount behind your own admin gate.
+
 ## Background jobs
 
 ```crystal
@@ -983,6 +1011,7 @@ src/saci/job.cr           # background jobs (+ limits_concurrency)
 src/saci/page_cache.cr  # file page cache (CachePageJob-friendly)
 src/saci/job_db.cr        # durable DB-backed queue (:db adapter)
 src/saci/logging.cr       # logger, tags, filtering, request lines
+src/saci/metrics.cr       # in-process metrics + /metrics endpoint (JSON/Prometheus)
 src/saci/mailer.cr        # mailers + delivery (+ layouts, reply_to, headers)
 src/saci/smtp.cr          # dependency-free SMTP client (STARTTLS + AUTH)
 src/saci/views.cr         # ECR templates, forms, links, caching, files
@@ -1015,6 +1044,7 @@ spec/adapters_spec.cr   # PG/MySQL SQL generation (no servers needed)
 spec/jobs_spec.cr       # job adapters, retry/discard, test recording
 spec/jobs_db_spec.cr    # durable :db adapter (persist, drain, dead letters)
 spec/logging_spec.cr    # filtering, tags, request lines/ids
+spec/metrics_spec.cr    # counters, JSON/Prometheus shapes, endpoint mount
 spec/mailers_spec.cr    # building, adapters, deliver_later round-trip
 spec/smtp_spec.cr       # SMTP framing/auth/errors against a fake server
 spec/views_spec.cr      # templates, layouts, partials, forms, links

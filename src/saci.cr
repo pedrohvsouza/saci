@@ -36,6 +36,7 @@ require "./saci/record"
 require "./saci/record/schema_check"
 require "./saci/record/secure_password"
 require "./saci/pagination"
+require "./saci/metrics"
 
 module Saci
 end
