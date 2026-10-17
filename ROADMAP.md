@@ -90,18 +90,20 @@ green plain and with `-Dexecution_context`.
 - [x] **Multi-window throttles** (`Throttle.multi`, `throttle_login`,
   429 + `Retry-After`).
 - [x] **Page-cache writer** (`Saci::PageCache`: write/read/expire/fetch).
-- [ ] **P1 — Cable Redis adapter. [M]** Pub/sub is single-process;
-  multi-replica deploys need sticky sessions today (documented). Done when:
-  two processes on one Redis fan out in a spec.
-- [ ] **P1 — Distributed throttle store. [S/M]** Counters are in-process;
-  same replica caveat as Cable. Redis- or DB-backed buckets.
-- [ ] **P1 — Metrics endpoint. [M]** Request counts, job stats, DB sizes
-  (or Prometheus format). Claw has JSON stat caches to feed it.
-- [ ] **P1 — Signed-URL expiry strategy for public assets. [S]** Needs
-  rotation story or public-file mode.
-- [ ] **P2 — Mailer previews + subject encoding. [S]** Layouts/reply_to/
-  threading done; in-app preview route + non-ASCII subject encoding remain.
-- [ ] **P2 — PG column depth. [S]** Enums, arrays, native timestamp precision.
+- [x] **Cable Redis adapter.** `Cable::RedisServer` (multiplexed channel,
+  resubscribing SUBSCRIBE fiber); two instances fan out in specs.
+- [x] **Distributed throttle store.** `Throttle::RedisStore` (atomic
+  INCR+EXPIRE Lua) behind a `Store` abstraction; fail-open documented.
+- [x] **Metrics endpoint.** `Saci::Metrics` (request/status/route/job/cache
+  counters, DB gauges) + mountable controller (JSON + Prometheus).
+- [x] **Signed-URL rotation + public-file mode.** Multi-key verification
+  (grace = natural expiry) + `public/` prefix served unsigned, traversal
+  still rejected.
+- [x] **Mailer previews + subject encoding.** Preview registry +
+  mountable controller (dev-gated) + RFC 2047 encoded-word subjects.
+- [x] **PG column depth.** `t.enum` (native PG ENUM / MySQL ENUM / SQLite
+  TEXT+inclusion), string arrays (PG `TEXT[]` / MySQL+SQLite JSON TEXT),
+  timestamp/datetime precision (PG/MySQL; SQLite ignores, documented).
 
 ## CLI (`saci`)
 
@@ -111,8 +113,9 @@ green plain and with `-Dexecution_context`.
 - [x] `saci new --db=postgres|mysql|sqlite` picker.
 - [x] Request specs generate real verbs (POST/PATCH/DELETE).
 - [x] CI workflow (plain + `-Dexecution_context`).
-- [ ] **P2 — Generator dry-run + conflict handling. [S]** `--pretend` and
-  overwrite prompts; today generators silently overwrite.
+- [x] **Generator dry-run + conflict handling.** `--pretend` (capped
+  previews, writes nothing), overwrite y/n/a/q prompts, identical-skip,
+  `--force`, non-TTY never blocks.
 
 ## Validation apps
 
@@ -126,19 +129,18 @@ green plain and with `-Dexecution_context`.
   dogfood seed + live verification (one live-found 500→400 fix).
 - [ ] **P1 — Verify the Docker image. [S]** Claw's Dockerfile + Caddyfile +
   logrotate ship; build + boot + migrate where the daemon allows.
-- [ ] **P2 — Staging env + seed variants. [S]** Claw has `db/seed.cr`;
-  no `APP_ENV=staging` config yet.
+- [x] **Staging env.** `config/environments/staging.cr` scaffold
+  (production + info logs + request lines), glob requires, `Saci.staging?`,
+  secret refusal + no-detailed-exceptions by default in staging.
 
-## Next (ordered)
+## Next
 
-1. **P0 — Live PG/MySQL verification.** Docker is available; compose PG 16 +
-   MySQL 8, run the shared suite behind flags. Closes the last correctness
-   unknown in the framework.
-2. **P1 — Distributed Cable + throttle** (Redis adapters). Unblocks
-   multi-replica deploys; the documented sticky-session caveat goes away.
-3. **P1 — Metrics endpoint.** Small, feeds from existing stat caches.
-4. **P2 — CLI `--pretend`/conflicts, mailer previews/subject encoding,
-   PG enums/arrays, signed-URL rotation, staging env.**
+The roadmap is closed — every P0/P1/P2 is done. Live verification stands at
+542 framework specs (+ 26 live PG/MySQL), 357→383 Claw specs, two live boots,
+a kill -9 drill, a seeded dogfood pass, and an N+1 audit. Remaining work is
+user-side (real `docker build`, Claw's first push) or new product bets
+(ActionText equivalent, job dashboard, framework cron, Turbo story —
+each standalone; say which).
 
 ## Done this round — 0.2.0 Lobsters port + audit + release
 
