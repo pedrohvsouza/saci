@@ -313,4 +313,30 @@ describe "Saci::Secrets" do
       ENV.delete("SECRET_KEY_BASE")
     end
   end
+
+  it "refuses to boot production secrets without SECRET_KEY_BASE" do
+    old_env = ENV["APP_ENV"]?
+    old_secret = ENV["SECRET_KEY_BASE"]?
+    begin
+      ENV.delete("SECRET_KEY_BASE")
+      Saci::Secrets.reset_secret_key_base!
+      # Credentials are absent in the framework repo, so lookup falls through.
+      ENV["APP_ENV"] = "production"
+      expect_raises(Saci::Secrets::MissingSecretInProduction, /SECRET_KEY_BASE/) do
+        Saci::Secrets.secret_key_base
+      end
+    ensure
+      if old_env
+        ENV["APP_ENV"] = old_env
+      else
+        ENV.delete("APP_ENV")
+      end
+      if old_secret
+        ENV["SECRET_KEY_BASE"] = old_secret
+      else
+        ENV.delete("SECRET_KEY_BASE")
+      end
+      Saci::Secrets.reset_secret_key_base!
+    end
+  end
 end

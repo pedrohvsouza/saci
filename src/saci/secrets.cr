@@ -11,8 +11,12 @@ module Saci
   # Application secret + signed values. The secret comes from
   # `SECRET_KEY_BASE`; without it, a random dev secret is generated once and
   # persisted to `tmp/.dev_secret` (never commit it — add `tmp/` to
-  # `.gitignore`; production MUST set `SECRET_KEY_BASE`).
+  # `.gitignore`). In production there is no fallback: booting without a
+  # secret raises instead of silently running with an insecure default.
   module Secrets
+    class MissingSecretInProduction < Exception
+    end
+
     @@secret : String? = nil
     @@mutex = Mutex.new
 
@@ -22,6 +26,12 @@ module Saci
       end
       if from_creds = credentials_secret
         return from_creds
+      end
+      if Saci.env == "production"
+        raise MissingSecretInProduction.new(
+          "SECRET_KEY_BASE is not set (and no secret_key_base in credentials). " \
+          "Refusing to boot in production with a generated dev secret. " \
+          "Set SECRET_KEY_BASE (e.g. from `saci secret`) and restart.")
       end
       @@mutex.synchronize do
         @@secret ||= begin
