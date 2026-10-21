@@ -34,11 +34,19 @@ module Saci
   module RichText
     # Tags that survive sanitizing. Everything else (script, style, iframe,
     # table, img, div, span, headings h4+, ...) is escaped as literal text,
-    # never emitted.
-    ALLOWED_TAGS = %w(p br strong em a ul ol li code pre blockquote h1 h2 h3)
+    # never emitted. Action Text attachment tags are allowed with a strict
+    # attribute allowlist (see `ATTACHMENT_ATTRIBUTES`).
+    ALLOWED_TAGS = %w(p br strong em a ul ol li code pre blockquote h1 h2 h3 action-text-attachment)
 
     # Tags that render without a closing tag.
     VOID_TAGS = %w(br)
+
+    # `<action-text-attachment>` tag name (Trix Action Text embed).
+    ATTACHMENT_TAG = "action-text-attachment"
+
+    # Attributes preserved on `<action-text-attachment>`: the signed
+    # global id plus display metadata. Everything else is dropped.
+    ATTACHMENT_ATTRIBUTES = %w(sgid content-type filename filesize width height previewable presentation)
 
     # `<a href>` allowlist: http/https/mailto plus site-local `/path` and
     # `#anchor` links. Anything else (javascript:, data:, vbscript:,
@@ -48,15 +56,16 @@ module Saci
 
     # Matches one tag-or-comment delimiter for the split-based tokenizer.
     # Attribute values are quote-aware so a `>` inside `href="..."` never
-    # splits a tag in half.
-    TAG_PART_RE = /\A(<!--.*?-->|<\/?[a-zA-Z0-9]+(?:\s+(?:[^<>"']|"[^"]*"|'[^']*')*)?\s*\/?>|<[^<>]*>?)\z/m
+    # splits a tag in half. Tag names may contain `-` (custom elements
+    # such as `action-text-attachment`).
+    TAG_PART_RE = /\A(<!--.*?-->|<\/?[a-zA-Z][a-zA-Z0-9-]*(?:\s+(?:[^<>"']|"[^"]*"|'[^']*')*)?\s*\/?>|<[^<>]*>?)\z/m
 
     # Sanitizes `raw` HTML with an escape-then-allowlist pass: the input is
     # split into text/tag pieces, text is HTML-escaped, and only allowlisted
     # tags with safe attributes are re-emitted. `nil` renders as `""`.
     def self.sanitize(raw : String?) : String
       return "" if raw.nil? || raw.empty?
-      raw.split(/(<!--.*?-->|<\/?[a-zA-Z0-9]+(?:\s+(?:[^<>"']|"[^"]*"|'[^']*')*)?\s*\/?>|<[^<>]*>?)/m).map do |piece|
+      raw.split(/(<!--.*?-->|<\/?[a-zA-Z][a-zA-Z0-9-]*(?:\s+(?:[^<>"']|"[^"]*"|'[^']*')*)?\s*\/?>|<[^<>]*>?)/m).map do |piece|
         if piece.match(TAG_PART_RE)
           sanitize_tag(piece)
         else
@@ -66,11 +75,28 @@ module Saci
     end
 
     # Plain-text extraction for search indexes, notifications and excerpts:
+    # Action Text attachment blocks (including their captions) are removed,
     # tags become spaces, entities decode, whitespace collapses.
     def self.plain_text(raw : String?) : String
       return "" if raw.nil? || raw.empty?
-      text = raw.gsub(/<!--.*?-->/m, " ").gsub(/<[^>]*>?/, " ")
+      text = raw.gsub(/<action-text-attachment\b[^>]*>.*?<\/action-text-attachment\s*>/m, " ")
+      text = text.gsub(/<action-text-attachment\b[^>]*\/?>/m, " ")
+      text = text.gsub(/<!--.*?-->/m, " ").gsub(/<[^>]*>?/, " ")
       decode_entities(text).gsub(/\s+/, " ").strip
+    end
+
+    # Parses the attributes of one start tag into lowercase keys. Values
+    # are entity-decoded; callers that re-emit HTML must escape them.
+    def self.tag_attributes(tag : String) : Hash(String, String)
+      attrs = {} of String => String
+      m = tag.match(/\A<\s*([a-zA-Z][a-zA-Z0-9-]*)((?:\s+(?:[^<>"']|"[^"]*"|'[^']*')*)?)\s*\/?>\z/m)
+      return attrs unless m
+      raw = m[2]? || ""
+      raw.scan(/([a-zA-Z][a-zA-Z0-9_:-]*)\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))/) do |am|
+        value = am[3]? || am[4]? || am[5]? || ""
+        attrs[am[1].downcase] = HTML.unescape(value)
+      end
+      attrs
     end
 
     # Truncates `text` to `length` characters, appending `omission` when cut.
@@ -127,14 +153,17 @@ module Saci
     # as visible text).
     private def self.sanitize_tag(tag : String) : String
       return "" if tag.starts_with?("<!--")
-      if m = tag.match(/\A<\/\s*([a-zA-Z0-9]+)\s*>\z/)
+      if m = tag.match(/\A<\/\s*([a-zA-Z][a-zA-Z0-9-]*)\s*>\z/)
         name = m[1].downcase
         return "</#{name}>" if ALLOWED_TAGS.includes?(name) && !VOID_TAGS.includes?(name)
         return HTML.escape(tag)
       end
-      if m = tag.match(/\A<\s*([a-zA-Z0-9]+)((?:\s+(?:[^<>"']|"[^"]*"|'[^']*')*)?)\s*\/?>\z/m)
+      if m = tag.match(/\A<\s*([a-zA-Z][a-zA-Z0-9-]*)((?:\s+(?:[^<>"']|"[^"]*"|'[^']*')*)?)\s*\/?>\z/m)
         name = m[1].downcase
         return HTML.escape(tag) unless ALLOWED_TAGS.includes?(name)
+        if name == ATTACHMENT_TAG
+          return sanitize_attachment_tag(tag)
+        end
         if name == "a"
           if hm = (m[2]? || "").match(/href\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/i)
             href = hm[1]
@@ -149,6 +178,24 @@ module Saci
         return "<#{name}>"
       end
       HTML.escape(tag)
+    end
+
+    # Re-emits `<action-text-attachment>` with only the safe attribute
+    # allowlist. Values are entity-decoded then escaped, so an attribute
+    # can never break out of its quotes.
+    private def self.sanitize_attachment_tag(tag : String) : String
+      attrs = tag_attributes(tag)
+      self_closing = tag.rstrip.ends_with?("/>")
+      rendered = String.build do |io|
+        io << '<' << ATTACHMENT_TAG
+        ATTACHMENT_ATTRIBUTES.each do |name|
+          if value = attrs[name]?
+            io << ' ' << name << "=\"" << HTML.escape(value) << '"'
+          end
+        end
+        io << '>'
+      end
+      self_closing ? "#{rendered}</#{ATTACHMENT_TAG}>" : rendered
     end
 
     # True when `value` is an allowed link target. The value is
@@ -263,3 +310,5 @@ module Saci
     end
   end
 end
+
+require "./action_text"
