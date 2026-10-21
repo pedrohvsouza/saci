@@ -1023,9 +1023,14 @@ describe "Saci::Record" do
     owner.orm_profile.not_nil!.bio.should eq("inc bio")
 
     expect_raises(ArgumentError) { OrmPost.includes(:bogus) }
-    expect_raises(ArgumentError) do
-      OrmPost.where("title LIKE 'inc-%'").includes(:orm_tags).to_a
-    end
+    # G187: has_many :through is now preloadable (batched); the old
+    # "cannot preload through" raise is gone.
+    tagged_post = OrmPost.find_by(title: "inc-1").not_nil!
+    inc_tag = OrmTag.create!(tag: "inc-through")
+    OrmTagging.create!(orm_post_id: tagged_post.id, orm_tag_id: inc_tag.id)
+    preloaded = OrmPost.where(title: "inc-1").includes(:orm_tags).to_a
+    preloaded.first.__saci_assoc_cache.has_key?("orm_tags").should be_true
+    preloaded.first.orm_tags.map(&.tag).should eq(["inc-through"])
   end
 
   it "supports upsert, update_columns and touch" do

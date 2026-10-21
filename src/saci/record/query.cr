@@ -21,6 +21,21 @@ module Saci
       def initialize(@klass : T.class, @conditions : Array(String) = [] of String, @params : Array(Value) = [] of Value, @order : Array(String) = [] of String, @limit : Int32? = nil, @offset : Int32? = nil, @select_cols : Array(String)? = nil, @distinct_flag : Bool = false, @joins : Array(String) = [] of String, @group_cols : Array(String) = [] of String, @includes : Array(String) = [] of String, @nested_includes : Hash(String, Array(String)) = {} of String => Array(String), @records : Array(T)? = nil, @none_flag : Bool = false, @having : Array(String) = [] of String, @from_clause : String? = nil, @annotations : Array(String) = [] of String, @readonly_flag : Bool = false, @lock_clause : String? = nil, @references : Array(String) = [] of String, @having_params : Array(Value) = [] of Value)
       end
 
+      # Owner wiring for association scopes (`author.posts.build(...)`,
+      # `author.posts.create(...)`, autosave registration — G240). Kept as
+      # instance state (not constructor parameters) so the long positional
+      # initializer stays source-compatible.
+      @__saci_owner : Saci::Record::Base? = nil
+      @__saci_owner_fk : String? = nil
+      @__saci_owner_assoc : String? = nil
+
+      # HABTM collection proxy wiring (G33): lets `article.tags << tag` and
+      # `article.tags.delete(tag)` operate on the join table directly.
+      @__saci_habtm_owner : Saci::Record::Base? = nil
+      @__saci_habtm_table : String? = nil
+      @__saci_habtm_fk : String? = nil
+      @__saci_habtm_afk : String? = nil
+
       # Adapter of the model's database (resolved per call so
       # `connected_to` switches and transactions behave).
       private def adapter : Adapter
@@ -284,8 +299,9 @@ module Saci
       end
 
       # `includes(:user, :posts)` — preloads `belongs_to` / `has_many` /
-      # `has_one` in one extra query each (kills N+1). Unknown association
-      # names raise immediately; `has_many :through` raises at execution.
+      # `has_one` / through / HABTM associations in batched extra queries
+      # (kills N+1; through chains use one query per level). Unknown
+      # association names raise immediately.
       # Nested form `includes(story: :user)` preloads two levels:
       # top-level assocs first, then the nested assoc on each preloaded
       # record (grouped by concrete class, so polymorphic parents work).
@@ -1044,6 +1060,127 @@ module Saci
         self
       end
 
+      # Wires this scope to its owner association (called by has_many
+      # getters). Used by `build`/`create` and autosave registration.
+      def __saci_with_owner(owner : Saci::Record::Base, fk : String, assoc : String) : Query(T)
+        @__saci_owner = owner
+        @__saci_owner_fk = fk
+        @__saci_owner_assoc = assoc
+        self
+      end
+
+      # HABTM join-table wiring (G33).
+      def __saci_with_habtm(owner : Saci::Record::Base, table : String, fk : String, afk : String) : Query(T)
+        @__saci_habtm_owner = owner
+        @__saci_habtm_table = table
+        @__saci_habtm_fk = fk
+        @__saci_habtm_afk = afk
+        self
+      end
+
+      # `article.tags << tag` — inserts one join row (idempotent) when this
+      # query came from a `has_and_belongs_to_many` getter.
+      def <<(record : T) : T
+        owner = @__saci_habtm_owner
+        table = @__saci_habtm_table
+        fk = @__saci_habtm_fk
+        afk = @__saci_habtm_afk
+        if owner.nil? || table.nil? || fk.nil? || afk.nil?
+          raise ArgumentError.new("<< is only available on has_and_belongs_to_many associations")
+        end
+        owner_pk = owner.__saci_get_attr(owner.class.__saci_primary_key)
+        target_pk = record.__saci_get_attr(@klass.__saci_primary_key)
+        raise RecordNotSaved.new("Cannot add to a HABTM association on an unsaved owner") if owner_pk.nil?
+        raise RecordNotSaved.new("Cannot add an unsaved #{@klass} to a HABTM association") if target_pk.nil?
+        ad = adapter
+        tbl = Record.quote(table, ad)
+        fkq = Record.quote(fk, ad)
+        afkq = Record.quote(afk, ad)
+        count = Record.scalar_compat(@klass.connection,
+          "SELECT COUNT(*) FROM " + tbl + " WHERE " + fkq + " = ? AND " + afkq + " = ?",
+          [Record.to_db(owner_pk, ad), Record.to_db(target_pk, ad)] of Value)
+        unless count.as(Int64) > 0
+          Record.exec_compat(@klass.connection,
+            "INSERT INTO " + tbl + " (" + fkq + ", " + afkq + ") VALUES (?, ?)",
+            [Record.to_db(owner_pk, ad), Record.to_db(target_pk, ad)] of Value)
+        end
+        record
+      end
+
+      # `article.tags.delete(tag)` — removes the join row for `tag`.
+      def delete(record : T) : T
+        owner = @__saci_habtm_owner
+        table = @__saci_habtm_table
+        fk = @__saci_habtm_fk
+        afk = @__saci_habtm_afk
+        if owner.nil? || table.nil? || fk.nil? || afk.nil?
+          raise ArgumentError.new("delete is only available on has_and_belongs_to_many associations")
+        end
+        owner_pk = owner.__saci_get_attr(owner.class.__saci_primary_key)
+        target_pk = record.__saci_get_attr(@klass.__saci_primary_key)
+        if !owner_pk.nil? && !target_pk.nil?
+          ad = adapter
+          Record.exec_compat(@klass.connection,
+            "DELETE FROM " + Record.quote(table, ad) +
+            " WHERE " + Record.quote(fk, ad) + " = ?" +
+            " AND " + Record.quote(afk, ad) + " = ?",
+            [Record.to_db(owner_pk, ad), Record.to_db(target_pk, ad)] of Value)
+        end
+        record
+      end
+
+      # `author.posts.build(title: "x")` — new child with the owner's
+      # foreign key applied when the owner is persisted. With
+      # `autosave: true` the child is registered and saved with the owner.
+      def build : T
+        obj = @klass.new
+        __saci_apply_owner(obj)
+        obj
+      end
+
+      def build(attrs : NamedTuple) : T
+        obj = @klass.new(attrs)
+        __saci_apply_owner(obj)
+        obj
+      end
+
+      def build(**attrs : Object) : T
+        obj = @klass.new(attrs)
+        __saci_apply_owner(obj)
+        obj
+      end
+
+      # `author.posts.create(title: "x")` — builds and persists immediately.
+      # Requires a persisted owner (the child needs its foreign key).
+      def create(attrs : NamedTuple) : T
+        obj = build(attrs)
+        obj.save!
+        obj
+      end
+
+      def create(**attrs : Object) : T
+        create(attrs)
+      end
+
+      private def __saci_apply_owner(obj : T) : Nil
+        if owner = @__saci_owner
+          pk = owner.__saci_get_attr(owner.class.__saci_primary_key)
+          if (fk = @__saci_owner_fk) && !pk.nil?
+            obj.__saci_set_attr(fk, pk)
+          end
+          if assoc = @__saci_owner_assoc
+            owner.__saci_autosave_register(assoc, obj.as(Saci::Record::Base))
+          end
+        end
+      end
+
+      # Rendered SELECT (without executing it). `ad` defaults to the model's
+      # adapter; passing another adapter is how the suite pins
+      # PostgreSQL/MySQL SQL strings without a live server (G21).
+      def to_sql(ad : Adapter = adapter) : String
+        select_sql(ad)
+      end
+
       # Group columns for `GroupedQuery` (empty on plain queries).
       def __saci_group_cols : Array(String)
         @group_cols.dup
@@ -1217,12 +1354,16 @@ module Saci
         @from_clause || Record.quote(@klass.table_name, ad)
       end
 
-      # `FOR UPDATE` is emitted on PostgreSQL only; SQLite has no row locks
-      # and MySQL is a documented no-op here.
+      # `FOR UPDATE` is emitted on PostgreSQL/MySQL; SQLite has no row locks
+      # (documented no-op fallback, G21).
       private def lock_sql(ad : Adapter) : String
         clause = @lock_clause
         return "" if clause.nil?
-        ad == :postgres ? " #{clause}" : ""
+        if emitted = Record.locking_clause(ad, clause)
+          " #{emitted}"
+        else
+          ""
+        end
       end
 
       private def select_sql(ad : Adapter) : String
@@ -1354,8 +1495,8 @@ module Saci
     # underlying grouped relation (`where` / `order` / `to_a` / ...).
     #
     # ```
-    # Post.group(:published).count        # => {true => 2, false => 1}
-    # Post.group(:published).sum(:views)  # => {true => 550.0, ...}
+    # Post.group(:published).count       # => {true => 2, false => 1}
+    # Post.group(:published).sum(:views) # => {true => 550.0, ...}
     # ```
     class GroupedQuery(T)
       include Enumerable(T)
