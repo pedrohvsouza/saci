@@ -6,17 +6,35 @@ module Saci
   # (`params["id"]`), while bracketed keys (`story[title]`, `tags[]`) and JSON
   # bodies build a nested tree (`params.require(:story).permit(...)`).
   class Params
+    # Raised by `expect!` (Rails 8.1). It subclasses `ParameterMissing` so the
+    # built-in router still renders a 400; use it when code wants to
+    # distinguish "developer expectation failed" from a plain missing param.
+    class ExpectedParameterMissing < ParameterMissing
+    end
+
     # A file sent as `multipart/form-data` (`params.file("avatar")`).
     #
-    # The body is kept as a String (bytes preserved; text operations assume
-    # UTF-8) with a `bytes` accessor for binary downloads.
+    # The body is kept in memory as a String (bytes preserved; text
+    # operations assume UTF-8) with a `bytes` accessor for binary downloads.
+    # The Rails-ish API is intentionally covered: `original_filename`,
+    # `content_type`, `headers`, `tempfile` (an `IO::Memory` over the body),
+    # `read`, `size`, `rewind`.
     struct UploadedFile
       getter name : String
       getter filename : String
       getter content_type : String
       getter body : String
+      getter headers : HTTP::Headers
 
-      def initialize(@name : String, @filename : String, @body : String, @content_type : String = "application/octet-stream")
+      @io : IO::Memory
+
+      def initialize(@name : String, @filename : String, @body : String, @content_type : String = "application/octet-stream", @headers : HTTP::Headers = HTTP::Headers.new)
+        @io = IO::Memory.new(@body)
+      end
+
+      # Rails calls this `original_filename`.
+      def original_filename : String
+        @filename
       end
 
       def bytes : Bytes
@@ -27,8 +45,24 @@ module Saci
         @body.bytesize
       end
 
+      # Reads from the current cursor (like `File#read`). Call `rewind`
+      # before reading again.
       def read : String
-        @body
+        @io.gets_to_end
+      end
+
+      def rewind : Nil
+        @io.rewind
+      end
+
+      # In-memory stand-in for Rails' Tempfile. The cursor is shared with
+      # `read`/`rewind`.
+      def tempfile : IO::Memory
+        @io
+      end
+
+      def to_s(io : IO) : Nil
+        io << @filename
       end
     end
 
@@ -155,6 +189,83 @@ module Saci
       end
     end
 
+    # Compile-time-ish description of a `params.expect` filter. Built from
+    # the shapes Crystal can express at the call site:
+    # * `:attr` / `[:a, :b]` — required keys under a hash (empty array means
+    #   "permit an array of scalars")
+    # * `[[:a, :b]]` — array of hashes with those keys
+    # * `{a: [:b]}` / `{"a" => [:b]}` — nested hash
+    class ExpectShape
+      enum Kind
+        Scalar
+        ScalarArray
+        Hash
+        Array
+      end
+
+      getter kind : Kind
+      getter children : Hash(String, ExpectShape)
+      getter element : ExpectShape?
+
+      def initialize(@kind : Kind, @children : Hash(String, ExpectShape) = {} of String => ExpectShape, @element : ExpectShape? = nil)
+      end
+
+      def self.scalar : ExpectShape
+        new(Kind::Scalar)
+      end
+
+      def self.scalar_array : ExpectShape
+        new(Kind::ScalarArray)
+      end
+
+      def self.hash(children : Hash(String, ExpectShape)) : ExpectShape
+        new(Kind::Hash, children)
+      end
+
+      def self.array(element : ExpectShape) : ExpectShape
+        new(Kind::Array, element: element)
+      end
+    end
+
+    # Builds an expectation tree from the argument shapes accepted by
+    # `expect`. See `ExpectShape`.
+    def self.shape_for(value : Array(Symbol)) : ExpectShape
+      return ExpectShape.scalar_array if value.empty?
+      children = {} of String => ExpectShape
+      value.each { |key| children[key.to_s] = ExpectShape.scalar }
+      ExpectShape.hash(children)
+    end
+
+    def self.shape_for(value : Array(Array(Symbol))) : ExpectShape
+      first = value.first? || ([] of Symbol)
+      ExpectShape.array(shape_for(first))
+    end
+
+    def self.shape_for(value : NamedTuple) : ExpectShape
+      children = {} of String => ExpectShape
+      value.each { |key, child| children[key.to_s] = shape_for(child) }
+      ExpectShape.hash(children)
+    end
+
+    def self.shape_for(value : Hash) : ExpectShape
+      children = {} of String => ExpectShape
+      value.each { |key, child| children[key.to_s] = shape_for(child) }
+      ExpectShape.hash(children)
+    end
+
+    def self.shape_for(value : Array) : ExpectShape
+      return ExpectShape.scalar_array if value.empty?
+      ExpectShape.array(shape_for(value.first))
+    end
+
+    def self.shape_for(value : Symbol) : ExpectShape
+      ExpectShape.scalar
+    end
+
+    def self.shape_for(value) : ExpectShape
+      raise ArgumentError.new("unsupported params.expect filter: #{value.inspect}")
+    end
+
     getter values : Hash(String, String)
     getter data : Hash(String, JSON::Any)
     getter files : Hash(String, UploadedFile)
@@ -201,7 +312,8 @@ module Saci
                 if fn = part.filename
                   files[fname] = UploadedFile.new(
                     fname, fn, part.body.gets_to_end,
-                    part.headers["Content-Type"]? || "application/octet-stream"
+                    part.headers["Content-Type"]? || "application/octet-stream",
+                    part.headers
                   )
                   assign_nested(data, fname, fn)
                 else
@@ -284,6 +396,123 @@ module Saci
       @values.select { |k, _| allowed.includes?(k) }
     end
 
+    # Rails 8 `params.expect`: requires and permits in one step. Filters must
+    # be positional scalars and/or keyword shapes (see `ExpectShape`):
+    #
+    # ```
+    # user = params.expect(user: [:name, :email])      # required hash keys
+    # id = params.expect(:id)                          # required scalar
+    # tags = params.expect(tags: [] of Symbol)         # array of scalars
+    # rows = params.expect(rows: [[:name, :email]])    # array of hashes
+    # tree = params.expect(user: {address: [:street]}) # nested hash
+    # ```
+    #
+    # Raises `ParameterMissing` (400 through the router) when a required
+    # value/type is missing. With a single filter the permitted value is
+    # returned directly; with several, a `JSON::Any` array (Rails returns an
+    # array of values too).
+    def expect(**expectations) : JSON::Any
+      expect_impl([] of String, expectations, bang: false)
+    end
+
+    def expect(*filters : String | Symbol, **expectations) : JSON::Any
+      expect_impl(filters.map(&.to_s).to_a, expectations, bang: false)
+    end
+
+    # Same as `expect`, but raises `ExpectedParameterMissing` (still a
+    # `ParameterMissing` subclass) so callers/middleware can distinguish it.
+    def expect!(**expectations) : JSON::Any
+      expect_impl([] of String, expectations, bang: true)
+    end
+
+    def expect!(*filters : String | Symbol, **expectations) : JSON::Any
+      expect_impl(filters.map(&.to_s).to_a, expectations, bang: true)
+    end
+
+    # Wraps this params hash under `root` (Rails `wrap_parameters`). Used by
+    # `Controller.wrap_parameters`; existing keys are kept for backwards
+    # compatibility, matching Rails' nested "user" key behavior.
+    def wrap!(root : String, include_keys : Array(String) = [] of String, exclude_keys : Array(String) = [] of String) : Nil
+      return if root.empty? || @data.has_key?(root)
+      wrapped = {} of String => JSON::Any
+      @data.each do |key, value|
+        next if WRAP_PARAMETER_EXCLUDES.includes?(key)
+        next unless include_keys.empty? || include_keys.includes?(key)
+        next if exclude_keys.includes?(key)
+        wrapped[key] = value
+      end
+      return if wrapped.empty?
+      any = JSON::Any.new(wrapped)
+      @data[root] = any
+      @values[root] = any.to_json
+    end
+
+    WRAP_PARAMETER_EXCLUDES = ["controller", "action", "format", "_method", "authenticity_token"]
+
+    private def expect_impl(filters : Array(String), expectations, bang : Bool) : JSON::Any
+      values = [] of JSON::Any
+      filters.each do |key|
+        values << expect_scalar_filter(key, bang)
+      end
+      expectations.each do |name, shape|
+        key = name.to_s
+        shape_node = self.class.shape_for(shape)
+        any = @data[key]?
+        raise_expect(key, bang) if any.nil?
+        values << filter_expect(any, shape_node, key, bang)
+      end
+      raise ArgumentError.new("params.expect requires at least one filter") if values.empty?
+      values.size == 1 ? values.first : JSON::Any.new(values)
+    end
+
+    private def expect_scalar_filter(key : String, bang : Bool) : JSON::Any
+      any = @data[key]?
+      raise_expect(key, bang) if any.nil?
+      text = self.class.scalar_string(any)
+      raise_expect(key, bang) if text.nil? || text.empty?
+      any
+    end
+
+    private def filter_expect(node : JSON::Any, shape : ExpectShape, path : String, bang : Bool) : JSON::Any
+      case shape.kind
+      when .scalar?
+        if self.class.scalar_string(node).nil?
+          raise_expect(path, bang)
+        end
+        node
+      when .scalar_array?
+        arr = node.as_a?
+        raise_expect(path, bang) if arr.nil?
+        JSON::Any.new(arr.select { |element| !self.class.scalar_string(element).nil? })
+      when .hash?
+        hash = node.as_h?
+        raise_expect(path, bang) if hash.nil?
+        permitted = {} of String => JSON::Any
+        shape.children.each do |key, child|
+          value = hash[key]?
+          raise_expect("#{path}.#{key}", bang) if value.nil?
+          permitted[key] = filter_expect(value, child, "#{path}.#{key}", bang)
+        end
+        JSON::Any.new(permitted)
+      when .array?
+        arr = node.as_a?
+        raise_expect(path, bang) if arr.nil?
+        element_shape = shape.element || ExpectShape.scalar
+        JSON::Any.new(arr.map { |element| filter_expect(element, element_shape, path, bang) })
+      else
+        node
+      end
+    end
+
+    private def raise_expect(path : String, bang : Bool) : NoReturn
+      message = "param is missing or of an incompatible type: #{path}"
+      if bang
+        raise ExpectedParameterMissing.new(message)
+      else
+        raise ParameterMissing.new(message)
+      end
+    end
+
     # Walk the nested tree (`params.dig(:story, :title)`). Returns nil when
     # any level is missing (or not a hash).
     def dig(*keys : String | Symbol) : JSON::Any?
@@ -321,6 +550,12 @@ module Saci
       @files[key.to_s]?
     end
 
+    # Required-file counterpart used with `expect`-style controller code:
+    # raises `ParameterMissing` (400) when the upload is absent.
+    def expect_file(key : String | Symbol) : UploadedFile
+      @files[key.to_s]? || raise ParameterMissing.new("file param is missing: #{key}")
+    end
+
     def int(key : String | Symbol, default : Int32? = nil) : Int32?
       raw = @values[key.to_s]?
       return default if raw.nil?
@@ -356,11 +591,11 @@ module Saci
     # Scalar as String, or nil for hashes/arrays. JSON null counts as scalar.
     def self.scalar_string(any : JSON::Any) : String?
       case r = any.raw
-      when String          then r
-      when Nil             then ""
-      when Int64, Float64  then r.to_s
-      when Bool            then r.to_s
-      else                      nil
+      when String         then r
+      when Nil            then ""
+      when Int64, Float64 then r.to_s
+      when Bool           then r.to_s
+      else                     nil
       end
     end
 
