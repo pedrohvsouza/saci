@@ -395,7 +395,7 @@ describe "Saci::Cache DB store selection" do
       cache.namespace.should eq("named")
     ensure
       Saci::Cache.reset!
-      db.close
+      Saci::Record.remove_connection(name)
       ["", "-wal", "-shm"].each { |suffix| File.delete?("#{path}#{suffix}") }
     end
   end

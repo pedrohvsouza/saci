@@ -19,6 +19,25 @@ require "./cli/ci_command"
 require "./cli/app_update_command"
 require "./cli/watch"
 
+require "./cli/util"
+require "./cli/new_command"
+require "./cli/generate_command"
+require "./cli/destroy_command"
+require "./cli/serve_command"
+require "./cli/schema_command"
+require "./cli/schema_check_command"
+require "./cli/test_command"
+require "./cli/secret_command"
+require "./cli/credentials_command"
+require "./cli/inspect_command"
+require "./cli/task_command"
+require "./cli/db_task_command"
+require "./cli/info_command"
+require "./cli/ci_command"
+require "./cli/app_update_command"
+require "./cli/importmap_command"
+require "./cli/watch"
+
 module Saci
   # Command-line interface (`saci new/generate/serve/db:migrate/...`).
   module CLI
@@ -79,6 +98,17 @@ module Saci
         TaskCommand.run(["list"] + args)
       when "task:run"
         TaskCommand.run(["run"] + args)
+      when "importmap", "importmap:help"
+        puts ImportmapCommand.help
+        0
+      when "importmap:install"
+        ImportmapCommand.run(["install"] + args)
+      when "importmap:json"
+        ImportmapCommand.run(["json"] + args)
+      when "importmap:pin"
+        ImportmapCommand.run(["pin"] + args)
+      when "importmap:pin_all_from"
+        ImportmapCommand.run(["pin_all_from"] + args)
       when "ci"
         CICommand.run(args)
       when "app:update"
@@ -270,6 +300,7 @@ module Saci
           db:create|drop            create/drop databases (drop refuses production)
           db:seed                   run db/seed.cr (or db/seeds.cr) in app context
           ci                        run config/ci.cr local CI steps
+          importmap:install|json    write/inspect the import map (pin, pin_all_from)
           app:update                copy missing scaffold files (--force to overwrite)
           routes [--expanded] [--grep PATTERN]
           about|stats|notes|middleware|initializers|dbconsole

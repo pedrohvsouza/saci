@@ -564,6 +564,9 @@ describe "saci ci" do
   it "prints a template and exits 1 without config/ci.cr" do
     with_extras_app(name: "ci_missing") do |dir|
       Dir.cd(dir) do
+        # `saci new` now generates config/ci.cr; this example covers the
+        # missing-file path.
+        File.delete("config/ci.cr") if File.exists?("config/ci.cr")
         Saci::CLI::CICommand.locate.should be_nil
         Saci::CLI.run(["ci"]).should eq(1)
         Saci::CLI::CICommand.template.should contain("Saci::CI.step")

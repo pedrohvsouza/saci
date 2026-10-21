@@ -259,6 +259,19 @@ module Saci
       @@databases_mutex.synchronize { @@databases.keys }
     end
 
+    # Unregisters a named database and closes it. The default `"primary"`
+    # connection is left alone (use `connection=` to replace it).
+    def self.remove_connection(name : String) : Nil
+      return if name == "primary"
+      db = @@databases_mutex.synchronize { @@databases.delete(name) }
+      @@database_urls_mutex.synchronize { @@database_urls.delete(name) }
+      begin
+        db.try(&.close)
+      rescue
+        # Already closed — harmless.
+      end
+    end
+
     def self.connection=(db : DB::Database) : Nil
       @@connection = db
       apply_sqlite_tuning(db) if adapter_for_name("primary") == :sqlite

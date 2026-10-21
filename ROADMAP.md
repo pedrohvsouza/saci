@@ -6,7 +6,7 @@ Effort: **S** < half day, **M** 1–3 days, **L** a week+. Anything marked [x]
 was proven by specs and/or live traffic.
 
 Validation: **Forem Lite** (`../forem_lite`, 87 specs) and **Claw**
-(`../claw`, a Lobsters port, 357 specs). Framework suite: **1183 specs**,
+(`../claw`, a Lobsters port, 357 specs). Framework suite: **1312 specs**,
 green plain and with `-Dexecution_context`.
 
 ## Milestones
@@ -137,13 +137,12 @@ green plain and with `-Dexecution_context`.
 
 The roadmap is closed and the 2026-10-21 Rails gap close-out wave landed the
 P0/P1 backbone plus most P2 depth (see [CHANGELOG.md](CHANGELOG.md)). Live
-verification stands at **1183 framework specs** (+ 26 live PG/MySQL, Redis
+verification stands at **1312 framework specs** (+ 26 live PG/MySQL, Redis
 gated), green plain and under `-Dexecution_context`, with the framework CLI
 building as a standalone binary. Remaining work is structural (autoloading,
-in-process reload, a real REPL/debugger — G1–G3/G207–G214), large ecosystem
-surfaces (GraphQL G301, spreadsheet/PDF G308, GIS G309, Kamal/Thruster
-G165–G166, importmap/Stimulus/Turbo Drive G70–G72), live-cloud verification
-(S3 G84, image variants G86), and P3 polish.
+in-process reload, a real REPL/debugger — G1–G3/G207–G214), GIS (G309),
+live-cloud verification (S3 G84, image variants G86), a real Thruster proxy
+(config/docs landed), and P3 polish.
 
 ## Done this round — 0.2.0 Lobsters port + audit + release
 

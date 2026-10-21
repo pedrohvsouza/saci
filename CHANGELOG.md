@@ -3,7 +3,7 @@
 ## Unreleased — Rails gap close-out wave (2026-10-21)
 
 A 19-workstream implementation wave against `RAILS_GAP_ANALYSIS.md`. Framework
-suite: **1183 specs, 0 failures** (from 590), plain and
+suite: **1312 specs, 0 failures** (from 590), plain and
 `-Dexecution_context`.
 
 - **P0**: fixed `saci new --db=postgres|mysql` invalid `shard.yml` (D1);
@@ -24,7 +24,11 @@ suite: **1183 specs, 0 failures** (from 590), plain and
   ordinals/`explain`, `define_finders`, MySQL dialect helpers; model enum
   (`model_enum`), validator objects, `length: {is:}`, dynamic inclusion,
   timestamps honoring explicit assignment, `update_attribute`/`update_column`/
-  `increment!`/`decrement!`/`toggle!`/`destroy!`.
+  `increment!`/`decrement!`/`toggle!`/`destroy!`; nested attributes
+  (`accepts_nested_attributes_for`), pessimistic (`lock!`/`with_lock`/
+  isolation transactions) and optimistic (`lock_version`/`StaleObjectError`)
+  locking, `no_touching`, `has_one :through`, through-association preloading
+  (including polymorphic sources), autosave associations, and HABTM.
 - **Migrations**: `execute`/`reversible`/`change_table`/`revert`/
   `disable_ddl_transaction!`; `change_column_null/default`, `remove_columns`,
   `add_reference`, join tables, timestamps; idempotent DDL; concurrent
@@ -37,7 +41,9 @@ suite: **1183 specs, 0 failures** (from 590), plain and
   body:/file:/template:/action:/partial:` + `render_to_string`, parameter
   wrapping, `params.expect`, `rate_limit`, request host/subdomain helpers,
   `UploadedFile` API, `rescue_responses`.
-- **Views/assets**: manifest+digest asset pipeline, asset tag helpers,
+- **Views/assets/frontend**: manifest+digest asset pipeline, importmap
+  (`Saci::Importmap` + CLI), Turbo Drive and a minimal Stimulus loader
+  (vendored JS), PWA manifest/service worker, asset tag helpers,
   `tag`/`content_tag`/`button_to`/`div_for`, `content_for`/`capture`,
   form tag/option/collection helpers, number/date/time/text/sanitize
   helpers, `link_to_if`/`mail_to`/`phone_to`, `dom_id`/`dom_class`, cache
@@ -63,6 +69,14 @@ suite: **1183 specs, 0 failures** (from 590), plain and
   models + `has_one_attached`/`has_many_attached`, mirror/S3-signing service,
   direct uploads, metadata analysis, variants/previews interface, Action
   Text attachables.
+- **Deploy/config**: `config/database.yml` + `Saci::ConfigFile` ENV
+  interpolation, per-env `cache/queue/cable/recurring/storage/server` YAML,
+  `ServerConfig`, graceful SIGTERM/SIGINT shutdown, Kamal 2 (`config/deploy.yml`,
+  `.kamal/secrets`, `bin/kamal`), Thruster docs/wrapper, `--devcontainer`,
+  environment doctor, generated `config/ci.cr`.
+- **Data/API extras**: XLSX/PDF/CSV generation (`Saci::Office`, controller
+  `send_xlsx`/`send_pdf`/`send_csv`); GraphQL schema/type DSL, parser,
+  executor, mutations, introspection, batching, HTTP `/graphql` + GraphiQL.
 - **Testing/support/auth**: fixtures, factories, transactional tests,
   mailer/job/cable assertions, time travel, `assert_changes`/`_difference`/
   `_queries`, `assert_select`, test DB lifecycle, parallel worker helper;
@@ -80,9 +94,8 @@ suite: **1183 specs, 0 failures** (from 590), plain and
   `credentials:fetch`; local CI DSL; `app:update`.
 
 Still structural/out of scope: true autoloading/code reloading/REPL debugger
-(G1–G3, G207–G214), GraphQL server (G301), spreadsheet/PDF (G308), GIS
-(G309), Kamal/Thruster (G165–G166), importmap/Stimulus/Turbo Drive
-(G70–G72), live S3/variant processing (G84/G86), and P3 polish.
+(G1–G3, G207–G214), GIS (G309), live S3/variant processing (G84/G86), a real
+Thruster proxy (config/docs only), and P3 polish.
 
 ## 0.4.0 — Scale, snapshots, and roadmap zero
 

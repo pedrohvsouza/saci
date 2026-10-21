@@ -9,7 +9,7 @@ ORM (SQLite/PostgreSQL/MySQL), CLI, Cable, I18n, security, jobs, mailers,
 views, caching, throttle, storage, credentials, multidb, FTS5, page-cache,
 Action Mailbox, middleware/CORS, named routes, exact decimals, test shelf —
 proven by two validation apps: Forem Lite (87 specs) and Claw, a Lobsters
-port (357 specs). Framework suite: **1183 specs**, green plain and under
+port (357 specs). Framework suite: **1312 specs**, green plain and under
 `-Dexecution_context`.
 
 ## Rails gap close-out (2026-10)
@@ -44,13 +44,21 @@ The 19-workstream wave tracked by `RAILS_GAP_ANALYSIS.md` landed:
   time travel, `assert_select`, test DB lifecycle; time zones/durations,
   core extensions, I18n depth, notifications, structured logging; JWT/TOTP/
   password resets; serializers/audit/policy/search.
+- **Frontend/API/data**: importmap, minimal Turbo Drive + Stimulus, PWA
+  assets; GraphQL (schema/parser/executor/mutations/introspection/GraphiQL/
+  batching); XLSX/PDF/CSV generation; Solid Cache DB store.
+- **Deploy/config**: `config/database.yml` + per-env cache/queue/cable/
+  storage/server YAML, graceful shutdown, Kamal 2 + Thruster templates,
+  devcontainer, environment doctor.
+- **ORM depth**: nested attributes, pessimistic/optimistic locking,
+  `has_one :through`, through preloading, autosave, HABTM.
 - **CLI/scaffold**: Rails-like `bin/*`, Dockerfile, CI, public error pages,
   test tree; destroy/auth/task/resource generators; `db:*` task surface;
   diagnostics; local CI; `app:update`.
 
-See [CHANGELOG.md](CHANGELOG.md) for the per-gap list. Structural gaps
-(autoloading/reload/REPL debugger, GraphQL, PDF/XLSX, GIS, Kamal) are
-documented in `RAILS_GAP_ANALYSIS.md`.
+See [CHANGELOG.md](CHANGELOG.md) for the per-gap list. Remaining gaps
+(autoloading/reload/REPL debugger, GIS, live S3/variants, a real Thruster
+proxy) are documented in `RAILS_GAP_ANALYSIS.md`.
 
 ## Requirements
 

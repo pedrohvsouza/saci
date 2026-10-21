@@ -18,6 +18,7 @@ require "./saci/cli/db_task_command"
 require "./saci/cli/info_command"
 require "./saci/cli/ci_command"
 require "./saci/cli/app_update_command"
+require "./saci/cli/importmap_command"
 require "./saci/cli/watch"
 require "./saci/cli"
 
