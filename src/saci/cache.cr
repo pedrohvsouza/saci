@@ -5,13 +5,21 @@ module Saci
   #
   # ```
   # Saci::Cache.write("greeting", "hello", expires_in: 60.seconds)
-  # Saci::Cache.read("greeting")                    # => "hello"
+  # Saci::Cache.read("greeting") # => "hello"
   # Saci::Cache.fetch("expensive", expires_in: 5.minutes) { compute }
   #
   # # Multi-process deploys share entries over Redis — same vendored
   # # pure-socket RESP2 client as Cable/Throttle, no new link requirements:
   # Saci::Cache.store = Saci::Cache::RedisStore.new(ENV.fetch("REDIS_URL", "redis://127.0.0.1:6379"))
+  #
+  # # …or keep entries in the database (no Redis service at all):
+  # Saci::Cache.use_database!(Saci::Record.connection)
+  # Saci::Cache.store = Saci::Cache::DbStore.new(url: "sqlite3://./db/cache.db")
   # ```
+  #
+  # `Saci::Cache::DbStore` (G145/G163) is defined in `cache_db.cr`, which
+  # this file requires at the bottom so the default in-process build keeps
+  # working unchanged.
   #
   # The String fast-path (`read`/`write`/`fetch` with `String`) is the
   # primary API and the frozen contract another track (fragment caching)
@@ -49,6 +57,13 @@ module Saci
       abstract def exist?(key : String) : Bool
       abstract def clear : Nil
       abstract def increment(key : String, by : Int = 1) : Int64
+
+      # Counter decrement (implemented in terms of `increment` unless a
+      # store has a native atomic decrement).
+      def decrement(key : String, by : Int = 1) : Int64
+        increment(key, -by)
+      end
+
       abstract def fetch(key : String, expires_in : Time::Span? = nil, &block : -> String) : String
       abstract def fetch_value(key : String, expires_in : Time::Span? = nil, &block : -> Value) : Value
 
@@ -97,6 +112,46 @@ module Saci
         return nil if expires_in.nil?
         secs = expires_in.total_seconds.to_i
         secs < 1 ? 1 : secs.to_i32
+      end
+
+      # -- multi-key helpers ---------------------------------------------
+      #
+      # Correct default implementations for every store; `DbStore` overrides
+      # `read_multi`/`delete_multi` with a single SQL statement. Missing
+      # keys are absent from the result; a key whose stored value is `nil`
+      # is present with a `nil` value.
+
+      def read_multi(keys : Enumerable(String)) : Hash(String, Value)
+        result = {} of String => Value
+        keys.each do |key|
+          result[key] = read_value(key) if exist?(key)
+        end
+        result
+      end
+
+      def write_multi(values : Hash(String, T), expires_in : Time::Span? = nil) : Bool forall T
+        values.each { |key, value| write(key, value, expires_in) }
+        true
+      end
+
+      # Returns the number of keys removed.
+      def delete_multi(keys : Enumerable(String)) : Int64
+        count = 0_i64
+        keys.each { |key| count += 1 if delete(key) }
+        count
+      end
+
+      # Reads every key, computes misses through the block, writes them
+      # back and returns the complete key → value map.
+      def fetch_multi(keys : Enumerable(String), expires_in : Time::Span? = nil, &block : String -> Value) : Hash(String, Value)
+        found = read_multi(keys)
+        keys.each do |key|
+          next if found.has_key?(key)
+          value = block.call(key)
+          write(key, value, expires_in)
+          found[key] = value
+        end
+        found
       end
     end
 
@@ -597,6 +652,10 @@ module Saci
       store.increment(key, by)
     end
 
+    def self.decrement(key : String, by : Int = 1) : Int64
+      store.decrement(key, by)
+    end
+
     def self.fetch(key : String, expires_in : Time::Span? = nil, &block : -> String) : String
       store.fetch(key, expires_in) { block.call }
     end
@@ -606,3 +665,9 @@ module Saci
     end
   end
 end
+
+# DB-backed store + store-selection helpers (`store = :db`,
+# `use_database!`, `DbStore`). Kept in a separate file; requiring it here
+# means the default `require "saci"` build exposes the full cache API with
+# MemoryStore still the default.
+require "./cache_db"
