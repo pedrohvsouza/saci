@@ -1,3 +1,24 @@
+require "./tasks"
+require "./ci"
+require "./db_tasks"
+require "./cli/util"
+require "./cli/new_command"
+require "./cli/generate_command"
+require "./cli/destroy_command"
+require "./cli/serve_command"
+require "./cli/schema_command"
+require "./cli/schema_check_command"
+require "./cli/test_command"
+require "./cli/secret_command"
+require "./cli/credentials_command"
+require "./cli/inspect_command"
+require "./cli/task_command"
+require "./cli/db_task_command"
+require "./cli/info_command"
+require "./cli/ci_command"
+require "./cli/app_update_command"
+require "./cli/watch"
+
 module Saci
   # Command-line interface (`saci new/generate/serve/db:migrate/...`).
   module CLI
@@ -15,10 +36,19 @@ module Saci
         New.run(args)
       when "generate", "g"
         Generate.run(args)
+      when "destroy"
+        Destroy.run(args)
       when "serve", "server", "s"
         Serve.run(args)
       when "test", "t"
         Test.run(args)
+      when "db"
+        if args.empty? || args == ["-h"] || args == ["--help"]
+          puts Db.help
+          0
+        else
+          raise Error.new("Unknown db task '#{args.first}'. See `saci help db`.")
+        end
       when "db:migrate", "db:migrate:up"
         Db.run(args, "up")
       when "db:rollback", "db:migrate:down"
@@ -29,6 +59,10 @@ module Saci
         Schema.run(args, "load")
       when "db:schema:check"
         SchemaCheck.run(args)
+      when "db:prepare", "db:setup", "db:reset", "db:version", "db:migrate:status",
+           "db:fixtures:load", "db:seed:replant", "db:schema:cache:dump",
+           "db:test:prepare", "db:create", "db:drop"
+        Db.run_action(cmd.not_nil!.sub("db:", ""), args)
       when "secret"
         Secret.run(args)
       when "routes"
@@ -39,12 +73,48 @@ module Saci
         Inspect::Console.run(args)
       when "db:seed"
         Inspect::Seed.run(args)
+      when "task", "tasks", "rake"
+        TaskCommand.run(args)
+      when "task:list"
+        TaskCommand.run(["list"] + args)
+      when "task:run"
+        TaskCommand.run(["run"] + args)
+      when "ci"
+        CICommand.run(args)
+      when "app:update"
+        AppUpdate.run(args)
+      when "about"
+        Info.about(args)
+      when "stats"
+        Info.stats(args)
+      when "notes"
+        Info.notes(args)
+      when "middleware"
+        Info.middleware(args)
+      when "initializers"
+        Info.initializers(args)
+      when "initializers:run"
+        Info.initializers_run(args)
+      when "dbconsole"
+        Info.dbconsole(args)
+      when "dev:cache"
+        Info.dev_cache(args)
+      when "log:clear"
+        Info.log_clear(args)
+      when "tmp:clear"
+        Info.tmp_clear(args)
+      when "time:zones", "time:zones:all"
+        Info.time_zones(args)
+      when "restart"
+        Info.restart(args)
       when "credentials:show"
         Credentials.run(args, "show")
       when "credentials:edit"
         Credentials.run(args, "edit")
       when "credentials:keygen"
         Credentials.run(args, "keygen")
+      when "credentials:fetch"
+        Credentials.run(args, "fetch")
       else
         STDERR.puts "Unknown command '#{cmd}'.\n"
         puts help_text(nil)
@@ -58,30 +128,42 @@ module Saci
     def self.help_text(topic : String?) : String
       case topic
       when "new"
-        "Usage: saci new APP_NAME [--db=sqlite|postgres|mysql] [--saci-path PATH] [--skip-shards] [--skip-git]\n\nGenerates a runnable app skeleton in ./APP_NAME (--db picks driver deps + require lines + URL defaults)."
+        "Usage: saci new APP_NAME [--db=sqlite|postgres|mysql] [--saci-path PATH] [--skip-shards] [--skip-git]\n\nGenerates a runnable app skeleton in ./APP_NAME (--db picks driver deps + require lines + URL defaults).\nCustom app templates (`--template`) are not supported; use `saci new` then `saci app:update` for existing apps."
       when "generate", "g"
         <<-HELP
         Usage:
-          saci generate model NAME [field:type ...]
-          saci generate controller NAME [action ...]
-          saci generate migration NAME [field:type ...] [--unique]
-          saci generate channel NAME
-          saci generate job NAME
-          saci generate mailer NAME
-          saci generate scaffold NAME [field:type ...]
+          saci generate KIND NAME [args...] [--pretend] [--force] [--no-spec]
+
+        Kinds:
+          model NAME [field:type ...]          model + migration + spec
+          controller NAME [action ...]         controller + request spec
+          migration NAME [field:type ...]      migration (AddXToY, AddIndex...)
+          scaffold NAME [field:type ...]       model + controller + migration + specs
+          scaffold_controller NAME [field:type ...] controller + ECR views (existing model)
+          resource NAME [field:type ...]       model + migration + JSON controller + route helper
+          admin NAME [field:type ...]          namespaced admin scaffold (search/sort/pages)
+          channel NAME                         cable channel (+ spec)
+          job NAME                             job (+ spec)
+          mailer NAME                          mailer (+ spec)
+          authentication [USER]                sessions + password reset + User model/migration
+          task NAME                            lib/tasks/<name>.cr (reports:daily -> subdirs)
+          helper NAME                          src/helpers/<name>_helper.cr
+          test NAME                            spec/models/<name>_test.cr skeleton
+          integration_test NAME                spec/integration/<name>_test.cr skeleton
+          benchmark NAME                       benchmarks/<name>_benchmark.cr
+          application_record                   src/models/application_record.cr
 
         Field types: string, text, integer, bigint, float, boolean, datetime.
         Migration names: AddXToY emits add_column; AddIndex... (or --unique) emits add_index.
-        Request specs use real verbs (create->POST, update->PATCH, destroy->DELETE).
+        Flags: --pretend prints would-be writes; --force overwrites without prompting;
+        --no-spec/--no-test, --no-migration, --no-model, --no-controller, --no-views,
+        --no-route, --no-mailer skip those artifacts.
         Examples:
           saci g model Post title:string views:integer published:boolean
-          saci g controller Posts index show
-          saci g migration AddBioToUsers bio:text
-          saci g migration AddIndexToFollows follower_id --unique
-          saci g channel Chat
-          saci g job Welcome
-          saci g mailer User
           saci g scaffold Post title:string
+          saci g resource Post title:string
+          saci g authentication
+          saci g task reports:daily
         HELP
       when "serve", "server", "s"
         "Usage: saci serve [--port N] [--host H] [--release] [--watch] [--watch-interval SECS] [--mt] [--workers N] [-- extra crystal args]\n\nRuns src/<app>.cr with crystal run (PORT/HOST env are set for the app). With --watch, rebuilds and restarts on file changes. With --mt, compiles with multithreading (-Dexecution_context) and enables it at boot via SACI_MT."
@@ -107,6 +189,59 @@ module Saci
         Inspect::Seed.help
       when "credentials:show", "credentials:edit", "credentials:keygen"
         "Usage: saci credentials:show | credentials:edit [EDITOR] | credentials:keygen\n\nShows, edits ($EDITOR) or generates the key for the encrypted credentials file."
+      when "credentials:fetch"
+        "Usage: saci credentials:fetch KEY [--to PATH|--write PATH]\n\nPrints (or writes) a (dotted) key from encrypted credentials. Exits 1 when the key is missing."
+      when "destroy"
+        <<-HELP
+        Usage: saci destroy KIND NAME [--pretend] [--force]
+
+        Removes the files a generator created:
+          destroy model Post            destroy controller Posts
+          destroy migration AddBioToUsers
+          destroy scaffold Post         destroy resource Post
+          destroy scaffold_controller Posts
+          destroy channel Chat          destroy job Welcome
+          destroy mailer User           destroy authentication
+          destroy helper Posts          destroy task reports:daily
+          destroy test Post             destroy integration_test Posts
+          destroy benchmark Post        destroy application_record
+
+        Modified files prompt before removal; --force removes without prompting;
+        --pretend prints the plan only. Empty component directories are pruned,
+        directories with unrelated files are kept, and db/migrations.cr is rebuilt.
+        HELP
+      when "task", "tasks", "task:list", "task:run", "rake"
+        TaskCommand.help
+      when "ci"
+        CICommand.help
+      when "app:update"
+        AppUpdate.help
+      when "db", "db:prepare", "db:setup", "db:reset", "db:version", "db:migrate:status",
+           "db:fixtures:load", "db:seed:replant", "db:schema:cache:dump",
+           "db:test:prepare", "db:create", "db:drop"
+        Db.help
+      when "about"
+        "Usage: saci about\n\nPrints Saci/Crystal versions plus the app name, environment and database URL."
+      when "stats"
+        "Usage: saci stats\n\nPrints file/line counts per source directory (Rails `stats` equivalent)."
+      when "notes"
+        "Usage: saci notes\n\nLists TODO/FIXME/OPTIMIZE notes in src/, spec/, config/, db/ and lib/."
+      when "middleware"
+        "Usage: saci middleware\n\nLists the HTTP handler chain (websocket handler + Saci::Handler)."
+      when "initializers", "initializers:run"
+        "Usage: saci initializers | saci initializers:run NAME|all\n\nLists config/initializers/*.cr, or runs them in app context."
+      when "dbconsole"
+        "Usage: saci dbconsole [--open] [--all]\n\nPrints the database connection URL; --open launches sqlite3 for SQLite databases."
+      when "dev:cache"
+        "Usage: saci dev:cache [--on|--off]\n\nToggles tmp/caching-dev.txt (development cache flag)."
+      when "log:clear"
+        "Usage: saci log:clear\n\nTruncates every log/*.log file."
+      when "tmp:clear"
+        "Usage: saci tmp:clear\n\nClears tmp/cache, tmp/pids, tmp/sockets and stale tmp files."
+      when "time:zones", "time:zones:all"
+        "Usage: saci time:zones [--local]\n\nLists available time zones (from tzdata, or a compact fallback list)."
+      when "restart"
+        "Usage: saci restart\n\nTouches tmp/restart.txt so watchers/process managers restart the app."
       when "test", "t"
         "Usage: saci test [spec files/options] [-- crystal compiler flags]\n\nRuns the app's spec suite (crystal spec). Uses the test database via APP_ENV=test."
       else
@@ -116,22 +251,30 @@ module Saci
         Usage: saci COMMAND [args]
 
           new APP_NAME              generate a new app skeleton (--db=sqlite|postgres|mysql)
-          generate (g) KIND ...     generate a model, controller or migration
+          generate (g) KIND ...     generate models, controllers, scaffolds, tasks, ...
+          destroy KIND NAME ...     remove generator output (see `saci help destroy`)
           serve (s)                 run the app (see `saci help serve`)
           test (t)                  run the spec suite (see `saci help test`)
-          db:migrate [--all]        run pending migrations (all DBs with --all)
-          db:rollback [STEPS] [--all] roll back migrations
-          db:schema:dump [--all]      dump the schema to db/schema.cr (all DBs with --all)
-          db:schema:load              load db/schema.cr (recreate tables + indexes)
-          db:schema:check [--all] warn when DB and models disagree (exit 1 on drift)
-          routes                  print VERB PATH -> Controller#action (no boot)
-          runner -e CODE|FILE     run code/file in app context (no boot)
-          console [-e CODE]       minimal console (per-line compile; `exit` quits)
-          db:seed                 run db/seed.cr (or db/seeds.cr) in app context
+          task:list / task NAME     list/run lib/tasks/*.cr user tasks
+          runner -e CODE|FILE       run code/file in app context (no boot)
+          console [-e CODE]         minimal console (per-line compile; `exit` quits)
+          db:migrate|rollback       run/roll back migrations (--all for every DB)
+          db:prepare|setup|reset    create/migrate/seed/reset databases
+          db:version|migrate:status migration bookkeeping
+          db:fixtures:load          load spec/fixtures or test/fixtures YAML
+          db:seed:replant           truncate tables, then run db/seed.cr
+          db:schema:dump|load|check db/schema.cr snapshot commands
+          db:schema:cache:dump      write db/schema_cache.yml
+          db:test:prepare           create + prepare the test database
+          db:create|drop            create/drop databases (drop refuses production)
+          db:seed                   run db/seed.cr (or db/seeds.cr) in app context
+          ci                        run config/ci.cr local CI steps
+          app:update                copy missing scaffold files (--force to overwrite)
+          routes [--expanded] [--grep PATTERN]
+          about|stats|notes|middleware|initializers|dbconsole
+          dev:cache|log:clear|tmp:clear|time:zones|restart
           secret                    print a random SECRET_KEY_BASE
-          credentials:show         decrypt and print credentials
-          credentials:edit         edit credentials in $EDITOR
-          credentials:keygen       generate config/master.key
+          credentials:show|edit|keygen|fetch KEY
           version                   print the version
           help [COMMAND]            show this help or command help
         HELP

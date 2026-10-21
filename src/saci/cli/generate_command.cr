@@ -23,6 +23,7 @@ module Saci
       @@pretend : Bool = false
       @@force : Bool = false
       @@overwrite_all : Bool = false
+      @@skips : Set(String) = Set(String).new
       @@input : IO = STDIN
       @@output : IO = STDOUT
       @@error : IO = STDERR
@@ -36,6 +37,29 @@ module Saci
 
       def self.force? : Bool
         @@force
+      end
+
+      # Flag setters for commands that share the writer but are not
+      # `generate` generators (`destroy`, `app:update`).
+      def self.pretend=(value : Bool) : Nil
+        @@pretend = value
+      end
+
+      def self.force=(value : Bool) : Nil
+        @@force = value
+      end
+
+      def self.reset_flags! : Nil
+        @@pretend = false
+        @@force = false
+        @@overwrite_all = false
+        @@skips.clear
+      end
+
+      # `--no-spec`, `--no-migration`, `--no-views`, ... are stored as
+      # symbols and honored by the individual generators.
+      def self.skip?(feature : Symbol) : Bool
+        @@skips.includes?(feature.to_s)
       end
 
       # Prompt answers are read from here instead of STDIN directly so specs
@@ -59,9 +83,46 @@ module Saci
         @@error = io
       end
 
+      def self.error : IO
+        @@error
+      end
+
       def self.reset_output! : Nil
         @@output = STDOUT
         @@error = STDERR
+      end
+
+      # Public status line / raw output for sibling commands that reuse the
+      # generator writer (`destroy`, `app:update`, `task`, `ci`). Keeping
+      # one output object lets specs capture everything.
+      def self.log(message : String = "") : Nil
+        @@output.puts(message)
+      end
+
+      def self.log_line(message : String = "") : Nil
+        @@output.puts(message)
+      end
+
+      def self.log_raw(message : String) : Nil
+        @@output.print(message)
+      end
+
+      # Reads one y/n/a/q answer (used by destroy / app:update prompts too).
+      # Never hangs CI: a TTY blocks for the user, while piped input honors
+      # a piped answer and treats EOF as "no".
+      def self.confirm(question : String) : Symbol
+        input = @@input
+        if input.is_a?(IO::FileDescriptor) && input.tty?
+          print question
+        end
+        answer = input.gets
+        return :no if answer.nil?
+        case answer.strip.downcase
+        when "y", "yes"  then :yes
+        when "a", "all"  then :all
+        when "q", "quit" then :quit
+        else                  :no
+        end
       end
 
       # Shadows top-level `puts`/`print` inside this module's methods so
@@ -169,28 +230,51 @@ module Saci
       end
 
       def self.run(args : Array(String)) : Int32
-        @@pretend = args.includes?("--pretend")
-        @@force = args.includes?("--force")
-        @@overwrite_all = false
-        rest = args.reject { |a| a == "--pretend" || a == "--force" }
-        kind = rest.shift? || raise Error.new("Usage: saci generate KIND NAME [fields...]\nKinds: model, controller, migration, channel, job, mailer, scaffold, admin")
+        rest = [] of String
+        args.each do |a|
+          case a
+          when "--pretend"
+            @@pretend = true
+          when "--force"
+            @@force = true
+          when .starts_with?("--no-")
+            @@skips << a[5..].gsub('-', '_')
+          else
+            rest << a
+          end
+        end
+        kind = rest.shift? || raise Error.new("Usage: saci generate KIND NAME [fields...]\nKinds: #{GENERATOR_KINDS.join(", ")}")
         case kind.downcase
-        when "model"      then model(rest)
-        when "controller" then controller(rest)
-        when "migration"  then migration(rest)
-        when "channel"    then channel(rest)
-        when "job"        then job(rest)
-        when "mailer"     then mailer(rest)
-        when "scaffold"   then scaffold(rest)
-        when "admin"      then admin(rest)
-        else                   raise Error.new("Unknown generator '#{kind}'. Kinds: model, controller, migration, channel, job, mailer, scaffold, admin.")
+        when "model"                           then model(rest)
+        when "controller"                      then controller(rest)
+        when "migration"                       then migration(rest)
+        when "channel"                         then channel(rest)
+        when "job"                             then job(rest)
+        when "mailer"                          then mailer(rest)
+        when "scaffold"                        then scaffold(rest)
+        when "admin"                           then admin(rest)
+        when "authentication", "auth"          then authentication(rest)
+        when "task"                            then task(rest)
+        when "helper"                          then helper(rest)
+        when "test"                            then model_test(rest)
+        when "integration_test", "system_test" then integration_test(rest)
+        when "resource"                        then resource(rest)
+        when "scaffold_controller"             then scaffold_controller(rest)
+        when "benchmark"                       then benchmark(rest)
+        when "application_record"              then application_record(rest)
+        else                                        raise Error.new("Unknown generator '#{kind}'. Kinds: #{GENERATOR_KINDS.join(", ")}.")
         end
         0
       ensure
-        @@pretend = false
-        @@force = false
-        @@overwrite_all = false
+        reset_flags!
       end
+
+      GENERATOR_KINDS = [
+        "model", "controller", "migration", "channel", "job", "mailer",
+        "scaffold", "admin", "authentication", "task", "helper", "test",
+        "integration_test", "resource", "scaffold_controller", "benchmark",
+        "application_record",
+      ]
 
       # -- fields ------------------------------------------------------------
 
@@ -215,13 +299,17 @@ module Saci
 
         write_file("src/models/#{Util.file_name(class_name)}.cr", model_source(class_name, fields))
 
-        spec_path = "spec/models/#{Util.file_name(class_name)}_spec.cr"
-        Dir.mkdir_p("spec/models")
-        write_file(spec_path, model_spec_source(class_name, fields))
+        unless skip?(:spec) || skip?(:test)
+          spec_path = "spec/models/#{Util.file_name(class_name)}_spec.cr"
+          Dir.mkdir_p("spec/models")
+          write_file(spec_path, model_spec_source(class_name, fields))
+        end
 
         table = Record::Inflector.pluralize(Record::Inflector.underscore(class_name))
         migration_name = "Create#{Record::Inflector.pluralize(class_name)}"
-        create_migration_file(migration_name, create_table_source(migration_name, table, fields))
+        unless skip?(:migration)
+          create_migration_file(migration_name, create_table_source(migration_name, table, fields))
+        end
         puts "Add routes to your router, e.g.:"
         puts "  r.resources \"#{table}\", #{Record::Inflector.pluralize(class_name)}Controller"
       end
@@ -291,9 +379,11 @@ module Saci
         path = "src/controllers/#{Util.file_name(class_name)}.cr"
         write_file(path, controller_source(class_name, actions))
 
-        spec_path = "spec/requests/#{Util.file_name(class_name)}_spec.cr"
-        Dir.mkdir_p("spec/requests")
-        write_file(spec_path, controller_spec_source(base, class_name, actions))
+        unless skip?(:spec) || skip?(:test)
+          spec_path = "spec/requests/#{Util.file_name(class_name)}_spec.cr"
+          Dir.mkdir_p("spec/requests")
+          write_file(spec_path, controller_spec_source(base, class_name, actions))
+        end
 
         puts "Add routes to your router, e.g.:"
         actions.each do |a|
@@ -559,9 +649,11 @@ module Saci
         path = "src/channels/#{Util.file_name(class_name)}.cr"
         write_file(path, channel_source(class_name))
 
-        Dir.mkdir_p("spec/channels")
-        spec_path = "spec/channels/#{Util.file_name(class_name)}_spec.cr"
-        write_file(spec_path, channel_spec_source(class_name))
+        unless skip?(:spec) || skip?(:test)
+          Dir.mkdir_p("spec/channels")
+          spec_path = "spec/channels/#{Util.file_name(class_name)}_spec.cr"
+          write_file(spec_path, channel_spec_source(class_name))
+        end
 
         puts "Mount it in your router, e.g.:"
         puts "  r.cable \"/cable\", #{class_name}"
@@ -615,9 +707,11 @@ module Saci
         path = "src/jobs/#{Util.file_name(class_name)}.cr"
         write_file(path, job_source(class_name))
 
-        Dir.mkdir_p("spec/jobs")
-        spec_path = "spec/jobs/#{Util.file_name(class_name)}_spec.cr"
-        write_file(spec_path, job_spec_source(class_name))
+        unless skip?(:spec) || skip?(:test)
+          Dir.mkdir_p("spec/jobs")
+          spec_path = "spec/jobs/#{Util.file_name(class_name)}_spec.cr"
+          write_file(spec_path, job_spec_source(class_name))
+        end
       end
 
       def self.job_source(class_name : String) : String
@@ -655,9 +749,11 @@ module Saci
         path = "src/mailers/#{Util.file_name(class_name)}.cr"
         write_file(path, mailer_source(class_name))
 
-        Dir.mkdir_p("spec/mailers")
-        spec_path = "spec/mailers/#{Util.file_name(class_name)}_spec.cr"
-        write_file(spec_path, mailer_spec_source(class_name))
+        unless skip?(:spec) || skip?(:test)
+          Dir.mkdir_p("spec/mailers")
+          spec_path = "spec/mailers/#{Util.file_name(class_name)}_spec.cr"
+          write_file(spec_path, mailer_spec_source(class_name))
+        end
       end
 
       def self.mailer_source(class_name : String) : String
@@ -701,8 +797,8 @@ module Saci
         plural = Record::Inflector.pluralize(class_name)
         table = Record::Inflector.pluralize(Record::Inflector.underscore(class_name))
 
-        model([class_name] + fields)
-        controller([plural, "index", "show", "create", "update", "destroy"])
+        model([class_name] + fields) unless skip?(:model)
+        controller([plural, "index", "show", "create", "update", "destroy"]) unless skip?(:controller)
 
         puts ""
         puts "Add to your router:"
@@ -728,19 +824,23 @@ module Saci
         controller_path = "src/controllers/admin/#{file_base}_controller.cr"
         write_file(controller_path, admin_controller_source(class_name, plural, table, fields))
 
-        Dir.mkdir_p("src/views/admin/#{table}")
-        {
-          "index" => admin_index_view(class_name, plural, table, fields),
-          "show"  => admin_show_view(class_name, plural, table, fields),
-          "edit"  => admin_edit_view(class_name, plural, table, fields),
-        }.each do |view, source|
-          path = "src/views/admin/#{table}/#{view}.ecr"
-          write_file(path, source)
+        unless skip?(:views)
+          Dir.mkdir_p("src/views/admin/#{table}")
+          {
+            "index" => admin_index_view(class_name, plural, table, fields),
+            "show"  => admin_show_view(class_name, plural, table, fields),
+            "edit"  => admin_edit_view(class_name, plural, table, fields),
+          }.each do |view, source|
+            path = "src/views/admin/#{table}/#{view}.ecr"
+            write_file(path, source)
+          end
         end
 
-        Dir.mkdir_p("spec/requests/admin")
-        spec_path = "spec/requests/admin/#{file_base}_controller_spec.cr"
-        write_file(spec_path, admin_spec_source(class_name, plural, table, fields))
+        unless skip?(:spec) || skip?(:test)
+          Dir.mkdir_p("spec/requests/admin")
+          spec_path = "spec/requests/admin/#{file_base}_controller_spec.cr"
+          write_file(spec_path, admin_spec_source(class_name, plural, table, fields))
+        end
 
         puts ""
         puts "Add to your router:"
@@ -997,6 +1097,875 @@ module Saci
           end
         end
         CRYSTAL
+      end
+
+      # -- tasks / helpers / tests / benchmarks (G116/G118) ------------------
+
+      # `saci generate task reports:daily` -> lib/tasks/reports/daily.cr.
+      # Namespaced names use subdirectories, matching Rails' task layout.
+      def self.task(args : Array(String)) : Nil
+        raw = args.shift? || raise Error.new("Usage: saci generate task NAME (e.g. reports:daily)")
+        ensure_app!
+        segments = raw.split(":").map(&.strip)
+        segments.each do |segment|
+          unless /\A[a-z][a-z0-9_]*\z/.matches?(segment)
+            raise Error.new("Bad task name '#{raw}'. Use lowercase words separated by ':' (e.g. reports:daily).")
+          end
+        end
+        path = (["lib", "tasks"] + segments).join("/") + ".cr"
+        write_file(path, task_source(raw))
+        puts "Run it with:"
+        puts "  saci task #{raw}"
+      end
+
+      def self.task_source(name : String) : String
+        <<-CRYSTAL
+        # Task: #{name}
+        # Run with: saci task #{name}
+        # (Models are loaded and the database is connected; the server is not booted.)
+        task "#{name}", "TODO: describe #{name}" do
+          # Your task code here. Example:
+          # puts "Posts: \#{Post.all.to_a.size}"
+        end
+        CRYSTAL
+      end
+
+      # `saci generate helper Posts` -> src/helpers/posts_helper.cr.
+      # Saci has no autoloading: require the file and `include PostsHelper`
+      # in the controller(s) that need it.
+      def self.helper(args : Array(String)) : Nil
+        raw = args.shift? || raise Error.new("Usage: saci generate helper NAME")
+        ensure_app!
+        base = Util.class_name(Util.file_name(raw.sub(/Helper$/i, "")))
+        module_name = "#{base}Helper"
+        file = Util.file_name(module_name)
+        path = "src/helpers/#{file}.cr"
+        write_file(path, helper_source(module_name, Util.file_name(base)))
+        unless skip?(:spec) || skip?(:test)
+          Dir.mkdir_p("spec/helpers")
+          write_file("spec/helpers/#{file}_spec.cr", helper_spec_source(module_name, Util.file_name(base)))
+        end
+        puts "Use it with:"
+        puts "  require \"./helpers/#{file}\""
+        puts "  include #{module_name}"
+      end
+
+      def self.helper_source(module_name : String, base : String) : String
+        <<-CRYSTAL
+        module #{module_name}
+          def #{base}_label(value : String) : String
+            "#{module_name}: \#{value}"
+          end
+        end
+        CRYSTAL
+      end
+
+      def self.helper_spec_source(module_name : String, base : String) : String
+        <<-CRYSTAL
+        require "../spec_helper"
+        require "../../src/helpers/#{Util.file_name(module_name)}"
+
+        class #{module_name}Host
+          include #{module_name}
+        end
+
+        describe #{module_name} do
+          it "#{base}_label prefixes the value" do
+            #{module_name}Host.new.#{base}_label("x").should contain("x")
+          end
+        end
+        CRYSTAL
+      end
+
+      # `saci generate test Post` -> spec/models/post_test.cr (Rails test
+      # generator layout; Saci specs remain `crystal spec`).
+      def self.model_test(args : Array(String)) : Nil
+        raw = args.shift? || raise Error.new("Usage: saci generate test NAME")
+        ensure_app!
+        class_name = Util.class_name(Util.file_name(raw))
+        file = Util.file_name(class_name)
+        path = "spec/models/#{file}_test.cr"
+        write_file(path, <<-CRYSTAL)
+        require "../spec_helper"
+
+        describe "#{class_name} model" do
+          it "is pending" do
+            pending "add #{class_name} model tests"
+          end
+        end
+        CRYSTAL
+        puts "Run with: saci test #{path}"
+      end
+
+      # `saci generate integration_test Posts` -> spec/integration/posts_test.cr.
+      def self.integration_test(args : Array(String)) : Nil
+        raw = args.shift? || raise Error.new("Usage: saci generate integration_test NAME")
+        ensure_app!
+        base = Util.file_name(raw)
+        class_name = Util.class_name(base)
+        path = "spec/integration/#{base}_test.cr"
+        write_file(path, <<-CRYSTAL)
+        require "../spec_helper"
+
+        describe "#{class_name} integration" do
+          it "exercises the endpoint" do
+            # Wire your real route here, then replace `pending` with requests:
+            #   router = Saci::Router.new.draw do |r|
+            #     r.get "/#{base}", #{class_name}Controller, :index
+            #   end
+            #   Saci::TestSession.serve(router) do |app|
+            #     app.get("/#{base}").status_code.should eq(200)
+            #   end
+            pending "add #{class_name} integration requests"
+          end
+        end
+        CRYSTAL
+        puts "Run with: saci test #{path}"
+      end
+
+      # `saci generate benchmark Post#import` -> benchmarks/post_benchmark.cr
+      # (kept outside spec/ so `crystal spec` does not run it).
+      def self.benchmark(args : Array(String)) : Nil
+        raw = args.shift? || raise Error.new("Usage: saci generate benchmark NAME")
+        ensure_app!
+        base = Util.file_name(raw.gsub("#", "_").gsub("::", "_"))
+        path = "benchmarks/#{base}_benchmark.cr"
+        write_file(path, <<-CRYSTAL)
+        require "benchmark"
+
+        # Run with: crystal run --release #{path}
+        Benchmark.ips do |x|
+          x.report("#{raw}") do
+            # Replace with the operation under test (e.g. Post.all.to_a).
+            1 + 1
+          end
+        end
+        CRYSTAL
+        puts "Run with: crystal run --release #{path}"
+      end
+
+      # `saci generate application_record` — useful after deleting the
+      # scaffold file or adding a database to an existing project.
+      def self.application_record(args : Array(String)) : Nil
+        unless args.empty?
+          raise Error.new("Usage: saci generate application_record (no NAME)")
+        end
+        ensure_app!
+        write_file("src/models/application_record.cr", New.application_record)
+      end
+
+      # -- resource ----------------------------------------------------------
+
+      def self.resource(args : Array(String)) : Nil
+        raw = args.shift? || raise Error.new("Usage: saci generate resource Name [field:type ...]")
+        class_name = model_class_name(raw)
+        plural = Record::Inflector.pluralize(class_name)
+        table = Record::Inflector.pluralize(Record::Inflector.underscore(class_name))
+        fields = parse_fields(args)
+        ensure_app_layout!
+
+        model([class_name] + args) unless skip?(:model)
+        unless skip?(:controller)
+          file_base = Util.file_name(plural)
+          write_file("src/controllers/#{file_base}_controller.cr",
+            resource_controller_source(class_name, plural, table, fields))
+          unless skip?(:spec) || skip?(:test)
+            Dir.mkdir_p("spec/requests")
+            write_file("spec/requests/#{file_base}_controller_spec.cr",
+              resource_spec_source(class_name, plural, table, fields))
+          end
+        end
+        unless skip?(:route)
+          route_file = "src/routes/#{Util.file_name(plural)}_routes.cr"
+          write_file(route_file, resource_route_source(plural, table))
+          puts "Require and call the route helper from your router:"
+          puts "  require \"./routes/#{Util.file_name(plural)}_routes\""
+          puts "  Routes.draw_#{table}(r)"
+        end
+      end
+
+      def self.resource_controller_source(class_name : String, plural : String, table : String, fields : Array(Field)) : String
+        json = json_record_expr("record", fields)
+        create_assigns = fields.map { |(name, type)| assignment_line("record", name, type) }.join("\n    ")
+        update_assigns = fields.map { |(name, type)| assignment_line("record", name, type) }.join("\n    ")
+        <<-CRYSTAL
+        class #{plural}Controller < ApplicationController
+          def index
+            render json: #{class_name}.all.to_a.map { |record| #{json} }
+          end
+
+          def show
+            record = #{class_name}.find(params["id"])
+            render json: #{json}
+          rescue Saci::Record::RecordNotFound
+            render json: {error: "Not found"}, status: :not_found
+          end
+
+          def create
+            record = #{class_name}.new
+            #{create_assigns}
+            if record.save
+              render json: #{json}, status: :created
+            else
+              render json: {errors: record.errors.full_messages}, status: :unprocessable_entity
+            end
+          end
+
+          def update
+            record = #{class_name}.find(params["id"])
+            #{update_assigns}
+            if record.save
+              render json: #{json}
+            else
+              render json: {errors: record.errors.full_messages}, status: :unprocessable_entity
+            end
+          rescue Saci::Record::RecordNotFound
+            render json: {error: "Not found"}, status: :not_found
+          end
+
+          def destroy
+            #{class_name}.find(params["id"]).destroy
+            head :no_content
+          rescue Saci::Record::RecordNotFound
+            render json: {error: "Not found"}, status: :not_found
+          end
+        end
+        CRYSTAL
+      end
+
+      # Hash literal for the JSON resource controller (kept explicit:
+      # Saci::Record::Base has no implicit `to_json`).
+      def self.json_record_expr(var : String, fields : Array(Field)) : String
+        parts = ["\"id\" => #{var}.id"] + fields.map { |(name, _)| "\"#{name}\" => #{var}.#{name}" }
+        "{#{parts.join(", ")}}"
+      end
+
+      def self.assignment_line(record : String, name : String, type : String) : String
+        case type
+        when "string", "text"
+          "#{record}.#{name} = params[\"#{name}\"]? if params.has_key?(\"#{name}\")"
+        when "integer", "bigint"
+          "if v = params[\"#{name}\"]?\n      #{record}.#{name} = v.to_i64? || #{record}.#{name}\n    end"
+        when "float"
+          "if v = params[\"#{name}\"]?\n      #{record}.#{name} = v.to_f? || #{record}.#{name}\n    end"
+        when "boolean"
+          "#{record}.#{name} = params[\"#{name}\"]? == \"true\" if params.has_key?(\"#{name}\")"
+        when "datetime"
+          "if v = params[\"#{name}\"]?\n      #{record}.#{name} = (Time.parse_iso8601(v) rescue #{record}.#{name})\n    end"
+        else
+          "#{record}.#{name} = params[\"#{name}\"]? if params.has_key?(\"#{name}\")"
+        end
+      end
+
+      def self.resource_route_source(plural : String, table : String) : String
+        <<-CRYSTAL
+        # Generated by `saci generate resource #{plural}`.
+        # Require this file and call it from your router:
+        #   require "./routes/#{Util.file_name(plural)}_routes"
+        #   Routes.draw_#{table}(r)
+        module Routes
+          def self.draw_#{table}(r : Saci::Router) : Nil
+            r.resources "#{table}", #{plural}Controller
+          end
+        end
+        CRYSTAL
+      end
+
+      def self.resource_spec_source(class_name : String, plural : String, table : String, fields : Array(Field)) : String
+        sample = sample_args(fields)
+        create_call = sample.empty? ? "#{class_name}.create!" : "#{class_name}.create!(#{sample})"
+        <<-CRYSTAL
+        require "../spec_helper"
+
+        describe "#{plural}Controller resource requests" do
+          router = Saci::Router.new.draw do |r|
+            r.resources "#{table}", #{plural}Controller
+          end
+
+          before_each do
+            Saci::Record.clean_database!
+          end
+
+          it "lists records" do
+            #{create_call}
+            Saci::TestSession.serve(router) do |app|
+              resp = app.get("/#{table}")
+              resp.status_code.should eq(200)
+              resp.body.should contain("\\"id\\"")
+            end
+          end
+
+          it "returns 404 for a missing record" do
+            Saci::TestSession.serve(router) do |app|
+              resp = app.get("/#{table}/999999")
+              resp.status_code.should eq(404)
+            end
+          end
+        end
+        CRYSTAL
+      end
+
+      # -- scaffold_controller ----------------------------------------------
+
+      # `saci generate scaffold_controller Posts title:string` — controller
+      # + ECR views for an existing model (no model/migration/routes).
+      # Fields are optional: when omitted they are read from
+      # src/models/<model>.cr.
+      def self.scaffold_controller(args : Array(String)) : Nil
+        raw = args.shift? || raise Error.new("Usage: saci generate scaffold_controller NAME [field:type ...]")
+        class_name = model_class_name(raw)
+        plural = Record::Inflector.pluralize(class_name)
+        table = Record::Inflector.pluralize(Record::Inflector.underscore(class_name))
+        var = Util.file_name(class_name)
+        fields = args.empty? ? fields_for_model(class_name) : parse_fields(args)
+        ensure_app_layout!
+
+        file_base = Util.file_name(plural)
+        write_file("src/controllers/#{file_base}_controller.cr",
+          scaffold_controller_source(class_name, plural, table, var, fields))
+
+        unless skip?(:views)
+          Dir.mkdir_p("src/views/#{table}")
+          {
+            "index" => scaffold_index_view(class_name, plural, table, fields),
+            "show"  => scaffold_show_view(class_name, plural, table, var, fields),
+            "new"   => scaffold_new_view(class_name, plural, table, var, fields),
+            "edit"  => scaffold_edit_view(class_name, plural, table, var, fields),
+          }.each do |view, source|
+            write_file("src/views/#{table}/#{view}.ecr", source)
+          end
+        end
+
+        unless skip?(:spec) || skip?(:test)
+          Dir.mkdir_p("spec/requests")
+          write_file("spec/requests/#{file_base}_controller_spec.cr",
+            scaffold_controller_spec_source(class_name, plural, table, fields))
+        end
+
+        puts ""
+        puts "Add to your router:"
+        puts "  r.resources \"#{table}\", #{plural}Controller"
+      end
+
+      # Class name for generators that take a model name which may be
+      # spelled plural (`scaffold_controller Posts`): when the singular
+      # model file exists, use it; otherwise treat the name as singular.
+      def self.model_class_name(raw : String) : String
+        base = Util.file_name(raw)
+        if base.ends_with?("s") && File.exists?("src/models/#{base[0...-1]}.cr")
+          return Util.class_name(base[0...-1])
+        end
+        Util.class_name(base)
+      end
+
+      # Reads `column name : Type` lines from an existing model file.
+      def self.fields_for_model(class_name : String) : Array(Field)
+        path = "src/models/#{Util.file_name(class_name)}.cr"
+        return [] of Field unless File.exists?(path)
+        source = File.read(path)
+        fields = [] of Field
+        source.scan(/(?m)^\s*column\s+([a-z][a-z0-9_]*)\s*:\s*([A-Za-z0-9_]+)/) do |m|
+          name = m[1]
+          next if name == "id"
+          type = case m[2]
+                 when "String"             then "string"
+                 when "Int32", "Int64"     then "integer"
+                 when "Float32", "Float64" then "float"
+                 when "Bool"               then "boolean"
+                 when "Time"               then "datetime"
+                 else                           "string"
+                 end
+          fields << {name, type}
+        end
+        fields
+      end
+
+      def self.scaffold_controller_source(class_name : String, plural : String, table : String, var : String, fields : Array(Field)) : String
+        assigns_create = fields.map { |(name, type)| assignment_line("@#{var}", name, type) }.join("\n    ")
+        assigns_update = fields.map { |(name, type)| assignment_line("@#{var}", name, type) }.join("\n    ")
+        <<-CRYSTAL
+        class #{plural}Controller < ApplicationController
+          def index
+            @#{table} = #{class_name}.all.to_a
+            render_template :index
+          end
+
+          def show
+            @#{var} = #{class_name}.find(params["id"])
+            render_template :show
+          rescue Saci::Record::RecordNotFound
+            render text: "Not found", status: :not_found
+          end
+
+          def new
+            @#{var} = #{class_name}.new
+            render_template :new
+          end
+
+          def create
+            @#{var} = #{class_name}.new
+            #{assigns_create}
+            if @#{var}.save
+              redirect_to "/#{table}/\#{@#{var}.id}"
+            else
+              render_template :new, status: 422
+            end
+          end
+
+          def edit
+            @#{var} = #{class_name}.find(params["id"])
+            render_template :edit
+          rescue Saci::Record::RecordNotFound
+            render text: "Not found", status: :not_found
+          end
+
+          def update
+            @#{var} = #{class_name}.find(params["id"])
+            #{assigns_update}
+            if @#{var}.save
+              redirect_to "/#{table}/\#{@#{var}.id}"
+            else
+              render_template :edit, status: 422
+            end
+          rescue Saci::Record::RecordNotFound
+            render text: "Not found", status: :not_found
+          end
+
+          def destroy
+            #{class_name}.find(params["id"]).destroy
+            redirect_to "/#{table}"
+          rescue Saci::Record::RecordNotFound
+            render text: "Not found", status: :not_found
+          end
+        end
+        CRYSTAL
+      end
+
+      def self.scaffold_index_view(class_name : String, plural : String, table : String, fields : Array(Field)) : String
+        headers = (["id"] + fields.map(&.[0])).map { |c| "      <th>#{c.capitalize}</th>" }.join("\n")
+        cells = (["id"] + fields.map(&.[0])).map do |c|
+          "        <td><%= h(#{c == "id" ? "record.id" : "record.#{c}"}.to_s) %></td>"
+        end.join("\n")
+        <<-ECR
+        <h1>#{plural}</h1>
+        <p><a href="/#{table}/new">New #{class_name}</a></p>
+        <table>
+          <thead>
+            <tr>
+        #{headers}
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% @#{table}.each do |record| %>
+              <tr>
+        #{cells}
+                <td>
+                  <a href="/#{table}/<%= record.id %>">Show</a>
+                  <a href="/#{table}/<%= record.id %>/edit">Edit</a>
+                </td>
+              </tr>
+            <% end %>
+          </tbody>
+        </table>
+        ECR
+      end
+
+      def self.scaffold_show_view(class_name : String, plural : String, table : String, var : String, fields : Array(Field)) : String
+        rows = fields.map { |(name, _)| "  <li><strong>#{name.capitalize}:</strong> <%= h(@#{var}.#{name}.to_s) %></li>" }.join("\n")
+        rows = "  <li>No attributes yet.</li>" if rows.empty?
+        <<-ECR
+        <h1>#{class_name} #<%= @#{var}.id %></h1>
+        <ul>
+        #{rows}
+        </ul>
+        <p>
+          <a href="/#{table}/<%= @#{var}.id %>/edit">Edit</a>
+          <a href="/#{table}">Back to list</a>
+        </p>
+        ECR
+      end
+
+      def self.scaffold_new_view(class_name : String, plural : String, table : String, var : String, fields : Array(Field)) : String
+        inputs = fields.map { |(name, type)| scaffold_form_input(type, name) }.join("\n")
+        inputs = "  <p>No editable fields.</p>" if inputs.empty?
+        <<-ECR
+        <h1>New #{class_name}</h1>
+        <%= form_with("/#{table}", model: @#{var}) do |f| %>
+          <%= f.error_messages %>
+        #{inputs}
+          <%= f.submit("Create #{class_name}") %>
+        <% end %>
+        <p><a href="/#{table}">Back to list</a></p>
+        ECR
+      end
+
+      def self.scaffold_edit_view(class_name : String, plural : String, table : String, var : String, fields : Array(Field)) : String
+        inputs = fields.map { |(name, type)| scaffold_form_input(type, name) }.join("\n")
+        inputs = "  <p>No editable fields.</p>" if inputs.empty?
+        <<-ECR
+        <h1>Edit #{class_name} #<%= @#{var}.id %></h1>
+        <%= form_with("/#{table}/<%= @#{var}.id %>", method: "patch", model: @#{var}) do |f| %>
+          <%= f.error_messages %>
+        #{inputs}
+          <%= f.submit("Update #{class_name}") %>
+        <% end %>
+        <p><a href="/#{table}/<%= @#{var}.id %>">Show</a> <a href="/#{table}">Back to list</a></p>
+        ECR
+      end
+
+      private def self.scaffold_form_input(type : String, name : String) : String
+        case type
+        when "text"
+          %(  <label>#{name.capitalize} <%= f.textarea("#{name}") %></label>)
+        when "boolean"
+          %(  <label><%= f.check_box("#{name}") %> #{name.capitalize}</label>)
+        when "datetime"
+          %(  <label>#{name.capitalize} <%= f.date_field("#{name}") %></label>)
+        else
+          %(  <label>#{name.capitalize} <%= f.text_field("#{name}") %></label>)
+        end
+      end
+
+      def self.scaffold_controller_spec_source(class_name : String, plural : String, table : String, fields : Array(Field)) : String
+        sample = sample_args(fields)
+        create_call = sample.empty? ? "#{class_name}.create!" : "#{class_name}.create!(#{sample})"
+        <<-CRYSTAL
+        require "../spec_helper"
+
+        describe "#{plural}Controller scaffold requests" do
+          router = Saci::Router.new.draw do |r|
+            r.resources "#{table}", #{plural}Controller
+          end
+
+          before_each do
+            Saci::Record.clean_database!
+          end
+
+          it "serves the index" do
+            #{create_call}
+            Saci::TestSession.serve(router) do |app|
+              resp = app.get("/#{table}")
+              resp.status_code.should eq(200)
+              resp.body.should contain("#{plural}")
+            end
+          end
+
+          it "renders the new form" do
+            Saci::TestSession.serve(router) do |app|
+              resp = app.get("/#{table}/new")
+              resp.status_code.should eq(200)
+            end
+          end
+        end
+        CRYSTAL
+      end
+
+      # -- authentication (G117) --------------------------------------------
+
+      # Generates a complete session/password-reset stack around
+      # `Saci::Authentication` (Saci::Auth + Controller helpers):
+      # User model + migration, ApplicationController wiring, sessions,
+      # signed-id password resets, mailer, views and a request spec.
+      def self.authentication(args : Array(String)) : Nil
+        user_class = args.empty? ? "User" : Util.class_name(Util.file_name(args.shift))
+        ensure_app_layout!
+
+        unless skip?(:model)
+          write_file("src/models/#{Util.file_name(user_class)}.cr", auth_user_source(user_class))
+        end
+        unless skip?(:migration)
+          create_migration_file("Create#{Record::Inflector.pluralize(user_class)}",
+            auth_migration_source(Record::Inflector.pluralize(Record::Inflector.underscore(user_class))))
+        end
+
+        write_file("src/controllers/authentication.cr", auth_module_source(user_class))
+        write_file("src/controllers/sessions_controller.cr", auth_sessions_source(user_class))
+        write_file("src/controllers/passwords_controller.cr", auth_passwords_source(user_class))
+        unless skip?(:mailer)
+          write_file("src/mailers/password_mailer.cr", auth_mailer_source)
+        end
+        unless skip?(:views)
+          write_file("src/views/sessions/new.ecr", auth_login_view)
+          write_file("src/views/passwords/new.ecr", auth_forgot_view)
+          write_file("src/views/passwords/create.ecr", auth_sent_view)
+          write_file("src/views/passwords/edit.ecr", auth_reset_view)
+        end
+        unless skip?(:spec) || skip?(:test)
+          Dir.mkdir_p("spec/requests")
+          write_file("spec/requests/sessions_controller_spec.cr", auth_spec_source(user_class))
+        end
+
+        wire_application_controller!
+        puts ""
+        puts "Add these routes to your router:"
+        puts "  r.get \"/login\", SessionsController, :new"
+        puts "  r.post \"/login\", SessionsController, :create"
+        puts "  r.delete \"/logout\", SessionsController, :destroy"
+        puts "  r.get \"/passwords/new\", PasswordsController, :new"
+        puts "  r.post \"/passwords\", PasswordsController, :create"
+        puts "  r.get \"/passwords/:token/edit\", PasswordsController, :edit"
+        puts "  r.patch \"/passwords/:token\", PasswordsController, :update"
+        puts "Set Saci::Auth.configure login_path / already_logged_in_path if you rename /login or /."
+      end
+
+      def self.auth_user_source(user_class : String) : String
+        <<-CRYSTAL
+        class #{user_class} < ApplicationRecord
+          column id : Int64, primary: true
+          column email : String
+          column password_digest : String
+          timestamps
+
+          has_secure_password
+          validates :email, presence: true, uniqueness: true, format: /\\A[^@\\s]+@[^@\\s]+\\z/
+        end
+        CRYSTAL
+      end
+
+      def self.auth_migration_source(table : String) : String
+        <<-CRYSTAL
+        class Create#{Util.class_name(table)} < Saci::Record::Migration
+          def change
+            create_table :#{table} do |t|
+              t.string :email, null: false
+              t.string :password_digest, null: false
+              t.timestamps
+            end
+            add_index :#{table}, :email, unique: true
+          end
+        end
+        CRYSTAL
+      end
+
+      def self.auth_module_source(user_class : String) : String
+        <<-CRYSTAL
+        # Generated by `saci generate authentication`.
+        # ApplicationController includes this module, which:
+        #   * requires login for every action (opt out with
+        #     `allow_unauthenticated_access only: [...]`),
+        #   * memoizes `current_user` as #{user_class}, and
+        #   * resolves the session id through #{user_class}.
+        module Authentication
+          macro included
+            before_action :require_login
+            memoize_current_user #{user_class}
+
+            private def find_current_user(id : Int64) : #{user_class}?
+              #{user_class}.find_by(id: id)
+            end
+          end
+        end
+        CRYSTAL
+      end
+
+      def self.auth_sessions_source(user_class : String) : String
+        <<-CRYSTAL
+        class SessionsController < ApplicationController
+          allow_unauthenticated_access only: [:new, :create]
+          before_action :require_no_login, only: [:new]
+
+          def new
+            @error = nil
+            render_template :new
+          end
+
+          def create
+            email = params["email"]?.to_s.strip.downcase
+            password = params["password"]?.to_s
+            if user = #{user_class}.authenticate_by(email: email, password: password)
+              login(user)
+              redirect_to "/"
+            else
+              @error = "Invalid email or password"
+              render_template :new, status: 422
+            end
+          end
+
+          def destroy
+            logout
+            redirect_to "/login"
+          end
+        end
+        CRYSTAL
+      end
+
+      def self.auth_passwords_source(user_class : String) : String
+        <<-CRYSTAL
+        class PasswordsController < ApplicationController
+          allow_unauthenticated_access only: [:new, :create, :edit, :update]
+
+          def new
+            render_template :new
+          end
+
+          def create
+            @reset_path = nil
+            email = params["email"]?.to_s.strip.downcase
+            if user = #{user_class}.find_by(email: email)
+              token = user.signed_id(purpose: "password_reset", expires_in: 15.minutes)
+              # In production configure a delivery adapter and uncomment:
+              # PasswordMailer.reset(user.email, token).deliver_later
+              @reset_path = "/passwords/\#{token}/edit"
+            end
+            render_template :create
+          end
+
+          def edit
+            @token = params["token"]?.to_s
+            @user = #{user_class}.find_signed(@token, purpose: "password_reset")
+            render_template :edit, status: 422 if @user.nil?
+          end
+
+          def update
+            @token = params["token"]?.to_s
+            @user = #{user_class}.find_signed(@token, purpose: "password_reset")
+            if @user.nil?
+              render text: "Invalid or expired reset link", status: :unprocessable_entity
+              return
+            end
+            @user.password = params["password"]?
+            @user.password_confirmation = params["password_confirmation"]?
+            if @user.save
+              redirect_to "/login"
+            else
+              render_template :edit, status: 422
+            end
+          end
+        end
+        CRYSTAL
+      end
+
+      def self.auth_mailer_source : String
+        <<-CRYSTAL
+        class PasswordMailer < Saci::Mailer::Base
+          default_from "noreply@example.com"
+
+          def self.reset(email : String, token : String) : Saci::Mailer::Mail
+            mail(to: email, subject: "Reset your password") do |format|
+              format.text { "Open /passwords/\#{token}/edit to reset your password. The link expires in 15 minutes." }
+              format.html { "<p>Open <a href=\\"/passwords/\#{token}/edit\\">/passwords/\#{token}/edit</a> to reset your password.</p>" }
+            end
+          end
+        end
+        CRYSTAL
+      end
+
+      def self.auth_login_view : String
+        <<-ECR
+        <h1>Log in</h1>
+        <% if message = @error %>
+          <p class="error"><%= h(message) %></p>
+        <% end %>
+        <%= form_with("/login") do |f| %>
+          <label>Email <%= f.text_field("email") %></label>
+          <label>Password <%= f.password_field("password") %></label>
+          <%= f.submit("Log in") %>
+        <% end %>
+        <p><a href="/passwords/new">Forgot your password?</a></p>
+        ECR
+      end
+
+      def self.auth_forgot_view : String
+        <<-ECR
+        <h1>Reset your password</h1>
+        <%= form_with("/passwords") do |f| %>
+          <label>Email <%= f.text_field("email") %></label>
+          <%= f.submit("Send reset instructions") %>
+        <% end %>
+        ECR
+      end
+
+      def self.auth_sent_view : String
+        <<-ECR
+        <h1>Check your email</h1>
+        <p>If an account exists, password reset instructions are on their way.</p>
+        <% if path = @reset_path %>
+          <p>Development link: <a href="<%= h(path) %>"><%= h(path) %></a></p>
+        <% end %>
+        ECR
+      end
+
+      def self.auth_reset_view : String
+        <<-ECR
+        <h1>Choose a new password</h1>
+        <% if @user %>
+          <%= form_with("/passwords/<%= @token %>", method: "patch") do |f| %>
+            <label>Password <%= f.password_field("password") %></label>
+            <label>Confirmation <%= f.password_field("password_confirmation") %></label>
+            <%= f.submit("Update password") %>
+          <% end %>
+        <% else %>
+          <p>This reset link is invalid or expired.</p>
+        <% end %>
+        ECR
+      end
+
+      # Only rewrites the stock `saci new` ApplicationController; a custom
+      # controller is left alone (instructions printed instead).
+      def self.wire_application_controller! : Nil
+        path = "src/controllers/application_controller.cr"
+        desired = <<-CRYSTAL
+        require "./authentication"
+
+        class ApplicationController < Saci::Controller
+          include Authentication
+        end
+        CRYSTAL
+        if !File.exists?(path)
+          write_file(path, desired)
+        elsif default_application_controller?(File.read(path)) || Generate.force?
+          write_file(path, desired, prompt: false)
+        else
+          puts "note: src/controllers/application_controller.cr is customized; add these lines:"
+          puts "  require \"./authentication\""
+          puts "  include Authentication"
+        end
+      end
+
+      def self.default_application_controller?(content : String) : Bool
+        content.strip == "class ApplicationController < Saci::Controller\nend".strip
+      end
+
+      def self.auth_spec_source(user_class : String) : String
+        <<-CRYSTAL
+        require "../spec_helper"
+
+        describe "SessionsController (authentication generator)" do
+          router = Saci::Router.new.draw do |r|
+            r.get "/login", SessionsController, :new
+            r.post "/login", SessionsController, :create
+            r.delete "/logout", SessionsController, :destroy
+          end
+
+          before_each do
+            Saci::Record.clean_database!
+          end
+
+          it "logs in with valid credentials" do
+            #{user_class}.create!(email: "a@b.c", password: "secret", password_confirmation: "secret")
+            Saci::TestSession.serve(router) do |app|
+              headers = HTTP::Headers{"Content-Type" => "application/x-www-form-urlencoded"}
+              resp = app.post("/login", headers: headers, body: "email=a%40b.c&password=secret")
+              [302, 303].includes?(resp.status_code).should be_true
+            end
+          end
+
+          it "re-renders the form with 422 for bad credentials" do
+            Saci::TestSession.serve(router) do |app|
+              headers = HTTP::Headers{"Content-Type" => "application/x-www-form-urlencoded"}
+              resp = app.post("/login", headers: headers, body: "email=a%40b.c&password=nope")
+              resp.status_code.should eq(422)
+            end
+          end
+        end
+        CRYSTAL
+      end
+
+      private def self.ensure_app! : Nil
+        unless File.exists?("shard.yml")
+          raise Error.new("Not a Saci app directory (missing shard.yml). Run `saci new` first or `cd` into your app.")
+        end
       end
 
       private def self.ensure_app_layout! : Nil
