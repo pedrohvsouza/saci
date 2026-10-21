@@ -930,69 +930,11 @@ module Saci
   end
 end
 
-# Reopen `HTTP::Request` with the Rails request-introspection helpers.
-# Crystal's stdlib already exposes `hostname` and a deprecated nullable
-# `host_with_port`; we provide a non-nil, normalized version here.
+# `request.script_name` is the only request helper that lives here; the
+# host/domain/port/ssl helpers are defined in `http_request_ext.cr` (loaded by
+# `controller.cr`) and must not be duplicated: a later redefinition with a
+# different signature would hide the `tld_length:` overload.
 class HTTP::Request
-  def host_with_port : String
-    if header = headers["Host"]?
-      return header
-    end
-    host = hostname || "localhost"
-    port = self.port
-    default = ssl? ? 443 : 80
-    port == default ? host : "#{host}:#{port}"
-  end
-
-  def domain : String
-    host = (hostname || "localhost").downcase.chomp('.')
-    return host if host.matches?(/\A\d+(\.\d+){3}\z/) || host.includes?(':')
-    host = host.lchop("www.") if host.starts_with?("www.")
-    parts = host.split('.')
-    if parts.size > 2
-      parts[-2..].join('.')
-    else
-      host
-    end
-  end
-
-  def subdomain : String
-    host = (hostname || "localhost").downcase.chomp('.')
-    host = host.lchop("www.") if host.starts_with?("www.")
-    return "" if host.matches?(/\A\d+(\.\d+){3}\z/) || host.includes?(':')
-    domain = self.domain
-    return "" if host == domain
-    suffix = ".#{domain}"
-    return "" unless host.ends_with?(suffix)
-    host[0...(host.size - suffix.size)]
-  end
-
-  def port : Int32
-    if header = headers["Host"]?
-      if header.starts_with?('[')
-        if close = header.index(']')
-          if close + 1 < header.size && header[close + 1] == ':'
-            return header[(close + 2)..].to_i? || (ssl? ? 443 : 80)
-          end
-        end
-      elsif header.count(':') == 1
-        return header.split(':').last.to_i? || (ssl? ? 443 : 80)
-      end
-    end
-    ssl? ? 443 : 80
-  end
-
-  def ssl? : Bool
-    if proto = headers["X-Forwarded-Proto"]?
-      return proto.downcase == "https"
-    end
-    headers["X-Forwarded-Ssl"]? == "on" || headers["Front-End-Https"]? == "on"
-  end
-
-  def protocol : String
-    ssl? ? "https" : "http"
-  end
-
   def script_name : String
     Saci::RouteHelpers.normalize_script_name(headers["X-Script-Name"]? || "")
   end

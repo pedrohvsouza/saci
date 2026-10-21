@@ -45,9 +45,9 @@ class HTTP::Request
         return port_part.to_i? || saci_default_port unless port_part.empty?
       end
     end
-    uri.port || saci_default_port
+    uri.port || (ssl? ? 443 : 80)
   rescue
-    saci_default_port
+    ssl? ? 443 : 80
   end
 
   # `www.example.com` -> `example.com`; IP literals are returned unchanged.
@@ -65,6 +65,7 @@ class HTTP::Request
   def subdomain(tld_length : Int32 = 1) : String
     h = host
     return "" if saci_ip_address?(h)
+    h = h.lchop("www.") if h.starts_with?("www.")
     labels = h.split('.')
     return "" if labels.size <= tld_length + 1
     labels[0...(labels.size - tld_length - 1)].join('.')
