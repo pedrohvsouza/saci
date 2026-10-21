@@ -1,5 +1,7 @@
 require "crypto/bcrypt"
 
+require "../two_factor"
+
 module Saci
   module Record
     # Cost control for `has_secure_password` (mirrors
