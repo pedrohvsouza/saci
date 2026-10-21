@@ -42,6 +42,18 @@ module Saci
     @@server : Server? = nil
     @@server_mutex = Mutex.new
 
+    # Connection identification hook (G203). Runs once per websocket
+    # connection, before the `welcome` frame and before any subscription.
+    # Call `connection.reject_unauthorized_connection` (or raise
+    # `RejectedError`) to close the socket.
+    @@identify_hook : Proc(Connection, Nil)? = nil
+    @@identify_mutex = Mutex.new
+
+    # Optional error sink for timer / writer / identification failures.
+    # Defaults to STDERR; override in tests or route into your logger.
+    @@error_handler : Proc(Exception, Nil)? = nil
+    @@error_mutex = Mutex.new
+
     def self.server : Server
       @@server || @@server_mutex.synchronize { @@server ||= Server.new }
     end
@@ -54,6 +66,75 @@ module Saci
       server.broadcast(stream, payload)
     end
 
+    # Process-local remote-connection registry (G96).
+    def self.remote_connections : RemoteConnections
+      server.remote_connections
+    end
+
+    # Registers the per-connection identification hook. The block receives
+    # the `Connection` (with query/path `params`) and may set identifiers
+    # (`connection.set_identifier`, `connection.current_user = ...`).
+    #
+    # ```
+    # Saci::Cable.identify do |connection|
+    #   token = connection.params["token"]?
+    #   user = token.try { |t| User.find_by(token: t) }
+    #   connection.reject_unauthorized_connection if user.nil?
+    #   connection.current_user = user
+    # end
+    # ```
+    def self.identify(&block : Connection -> Nil) : Nil
+      @@identify_mutex.synchronize { @@identify_hook = block }
+    end
+
+    # Alias for `identify` (connection-level `connect` hook).
+    def self.on_connect(&block : Connection -> Nil) : Nil
+      identify(&block)
+    end
+
+    def self.reset_identify_hook! : Nil
+      @@identify_mutex.synchronize { @@identify_hook = nil }
+    end
+
+    # Installs the process-wide cable error handler (periodic timers,
+    # outbound writer, identification). Returning normally keeps the
+    # connection/timer alive where applicable.
+    def self.on_error(&block : Exception -> Nil) : Nil
+      @@error_mutex.synchronize { @@error_handler = block }
+    end
+
+    def self.reset_error_handler! : Nil
+      @@error_mutex.synchronize { @@error_handler = nil }
+    end
+
+    def self.report_error(ex : Exception, context : String? = nil) : Nil
+      handler = @@error_mutex.synchronize { @@error_handler }
+      if handler
+        begin
+          handler.call(ex)
+        rescue handler_ex
+          STDERR.puts("saci cable error handler raised: #{handler_ex.class}: #{handler_ex.message}")
+        end
+      else
+        prefix = context ? "saci cable #{context}" : "saci cable"
+        STDERR.puts("#{prefix} error: #{ex.class}: #{ex.message}")
+      end
+    end
+
+    # Runs the identification hook. Returns false when the connection was
+    # rejected (the socket is already closed); other exceptions are reported
+    # and treated as rejection so an unauthenticated socket never proceeds.
+    def self.run_identify(connection : Connection) : Bool
+      hook = @@identify_mutex.synchronize { @@identify_hook }
+      hook.try(&.call(connection))
+      true
+    rescue RejectedError
+      false
+    rescue ex
+      report_error(ex, "identification")
+      false
+    end
+
     # Builds the identifier JSON clients send (`{"channel":"X",...}`).
     def self.identifier_for(channel : String, params : Hash(String, String) = {} of String => String) : String
       {"channel" => channel}.merge(params).to_json
@@ -64,30 +145,151 @@ module Saci
     class RejectedError < Exception
     end
 
-    # One per websocket connection. Owns the send lock and tracks the
-    # connection's subscriptions for cleanup on close.
+    # Values storable as connection identifiers (G203). Deliberately a
+    # closed union: Crystal cannot store `Object` in collections, and these
+    # cover wire scalars plus the dominant `current_user` model case.
+    # `Saci::Record::Base` is resolved at semantic-analysis time; the ORM is
+    # always part of a full Saci build.
+    alias IdentifierValue = String | Int32 | Int64 | Float64 | Bool | Time | JSON::Any | Saci::Record::Base | Nil
+
+    # One per websocket connection. Owns the outbound message buffer and
+    # tracks the connection's subscriptions for cleanup on close.
+    #
+    # Concurrency model (G281): each connection has one reader (the
+    # `HTTP::WebSocket` pump that calls `#handle_frame`) and one dedicated
+    # writer fiber draining a *bounded* queue. Producers (broadcasts) only
+    # enqueue; a slow client whose queue fills is disconnected instead of
+    # blocking the publisher. Periodic channel timers add one fiber per
+    # timer while subscribed. There is no shared worker pool — the bound is
+    # the per-connection buffer plus `Server#max_connections`.
     class Connection
+      DEFAULT_MESSAGE_BUFFER_SIZE = 1024
+
       getter socket : HTTP::WebSocket
       getter params : Saci::Params
       getter server : Server
+      # Stable per-socket id (used by `remote_connections.where(identifier:)`).
+      getter identifier : String
+      getter message_buffer_size : Int32
 
-      @send_mutex = Mutex.new
       @track_mutex = Mutex.new
       @subscriptions : Array(Subscription) = [] of Subscription
+      @identifiers_mutex = Mutex.new
+      @identifiers = Hash(String, IdentifierValue).new
 
-      def initialize(@socket : HTTP::WebSocket, @params : Saci::Params, @server : Server)
+      @outbound : ::Channel(String?)
+      @pending = Atomic(Int32).new(0)
+      @closed = Atomic(Bool).new(false)
+      @closing = Atomic(Bool).new(false)
+      @rejected = Atomic(Bool).new(false)
+      @overflowed = Atomic(Bool).new(false)
+
+      def initialize(@socket : HTTP::WebSocket, @params : Saci::Params, @server : Server,
+                     @message_buffer_size : Int32 = DEFAULT_MESSAGE_BUFFER_SIZE,
+                     @identifier : String = Random::Secure.hex(16))
+        # A zero/negative buffer would make every send overflow; clamp to 1.
+        @outbound = ::Channel(String?).new(@message_buffer_size < 1 ? 1 : @message_buffer_size)
+        spawn { writer_loop }
       end
 
+      # Queues one JSON frame. Never blocks: when the bounded buffer is full
+      # the peer is considered dead/slow and is disconnected (backpressure
+      # policy documented on the class).
       def send_json(payload) : Nil
+        return if closed?
         text = payload.to_json
-        @send_mutex.synchronize { @socket.send(text) }
-      rescue IO::Error
-        # Peer is gone; `on_close` performs cleanup.
+        @pending.add(1)
+        select
+        when @outbound.send(text)
+        else
+          @pending.sub(1)
+          @overflowed.set(true)
+          force_close
+        end
+      rescue ::Channel::ClosedError
+        @pending.sub(1)
       end
 
+      # Waits (bounded) until all currently queued frames have been written.
+      # Useful in timer/unit specs; never call from the writer fiber.
+      def flush(timeout : Time::Span = 1.second) : Nil
+        deadline = Time.instant + timeout
+        while @pending.get > 0 && Time.instant < deadline
+          sleep 1.millisecond
+        end
+      end
+
+      def closed? : Bool
+        @closed.get || @closing.get
+      end
+
+      def rejected? : Bool
+        @rejected.get
+      end
+
+      # True when the last outbound enqueue hit a full buffer.
+      def overflowed? : Bool
+        @overflowed.get
+      end
+
+      # Graceful close: flush already-queued frames, then close the socket.
+      # Safe to call from any fiber and idempotent.
       def close : Nil
-        @socket.close
-      rescue IO::Error
+        return if @closing.swap(true)
+        select
+        when @outbound.send(nil)
+        else
+          force_close
+        end
+      rescue ::Channel::ClosedError
+        force_close
+      end
+
+      # Closes the connection and removes it from the server registry.
+      def disconnect : Nil
+        close
+        @server.unregister(self)
+      end
+
+      # Rails connection API (G203). Marks the connection unauthorized,
+      # closes it, and aborts the current hook/subscription.
+      def reject_unauthorized_connection : NoReturn
+        @rejected.set(true)
+        disconnect
+        raise RejectedError.new
+      end
+
+      # -- identifiers ------------------------------------------------------
+      #
+      # Identifiers are connection-scoped values resolved once by the
+      # `Cable.identify` hook (or by a channel `connect` hook) and readable
+      # from every channel on the connection. `IdentifierValue` is a closed
+      # union (see the alias comment); the `identified_by :current_user,
+      # User` macro casts at the channel edge.
+
+      def set_identifier(name : String | Symbol, value : IdentifierValue) : Nil
+        @identifiers_mutex.synchronize { @identifiers[name.to_s] = value }
+      end
+
+      def identifier_value(name : String | Symbol) : IdentifierValue
+        @identifiers_mutex.synchronize { @identifiers[name.to_s]? }
+      end
+
+      # Snapshot (safe to iterate outside the lock).
+      def identifiers : Hash(String, IdentifierValue)
+        @identifiers_mutex.synchronize { @identifiers.dup }
+      end
+
+      def current_user : IdentifierValue
+        identifier_value("current_user")
+      end
+
+      def current_user=(value : IdentifierValue) : Nil
+        set_identifier("current_user", value)
+      end
+
+      def connection_identifier : String
+        @identifier
       end
 
       def track(sub : Subscription) : Nil
@@ -107,6 +309,42 @@ module Saci
           drained = @subscriptions.dup
           @subscriptions.clear
           drained
+        end
+      end
+
+      private def writer_loop : Nil
+        loop do
+          text = @outbound.receive?
+          break if text.nil? # nil sentinel or channel closed
+          begin
+            @socket.send(text)
+          rescue IO::Error
+            break
+          rescue ex
+            Cable.report_error(ex, "writer")
+            break
+          ensure
+            @pending.sub(1)
+          end
+        end
+      ensure
+        begin
+          @socket.close
+        rescue
+        end
+        @closed.set(true)
+      end
+
+      # Hard close used by overflow/close races; drops queued frames.
+      private def force_close : Nil
+        return if @closed.swap(true)
+        begin
+          @outbound.close
+        rescue
+        end
+        begin
+          @socket.close
+        rescue
         end
       end
     end
@@ -307,31 +545,100 @@ module Saci
 
     # In-process pub/sub registry. One instance serves any number of
     # connections/channels; all mutations are mutex-guarded.
+    #
+    # It also owns the live connection registry used by
+    # `remote_connections` (G96) and the optional broadcast recorder used by
+    # the test helpers (G97).
     class Server
-      def initialize
+      getter max_connections : Int32
+      getter message_buffer_size : Int32
+
+      def initialize(max_connections : Int32 = 0, message_buffer_size : Int32 = Connection::DEFAULT_MESSAGE_BUFFER_SIZE)
         @streams = Hash(String, Array(Subscription)).new { |h, k| h[k] = [] of Subscription }
         @mutex = Mutex.new
+        @max_connections = max_connections
+        @message_buffer_size = message_buffer_size < 1 ? 1 : message_buffer_size
+        @connections = Hash(String, Connection).new
+        @connections_mutex = Mutex.new
+        @record_broadcasts = Atomic(Bool).new(false)
+        @broadcasts = Hash(String, Array(JSON::Any)).new { |h, k| h[k] = [] of JSON::Any }
+        @broadcasts_mutex = Mutex.new
       end
 
-      # Instantiates the channel and runs `#subscribed`. Returns nil when
-      # the subscription was rejected or failed (client already notified).
+      # -- live connection registry (G96) ---------------------------------
+
+      # Registers a connection. Returns false when `max_connections` is
+      # reached (the caller closes the socket with a clear log line).
+      def register(connection : Connection) : Bool
+        @connections_mutex.synchronize do
+          if @max_connections > 0 && @connections.size >= @max_connections && !@connections.has_key?(connection.identifier)
+            return false
+          end
+          @connections[connection.identifier] = connection
+          true
+        end
+      end
+
+      def unregister(connection : Connection) : Nil
+        @connections_mutex.synchronize do
+          if found = @connections[connection.identifier]?
+            @connections.delete(connection.identifier) if found.same?(connection)
+          end
+        end
+      end
+
+      def open_connections : Array(Connection)
+        @connections_mutex.synchronize { @connections.values.dup }
+      end
+
+      # Alias matching Rails' `server.connections`.
+      def connections : Array(Connection)
+        open_connections
+      end
+
+      def open_connections_count : Int32
+        @connections_mutex.synchronize { @connections.size }
+      end
+
+      def remote_connections : RemoteConnections
+        RemoteConnections.new(self)
+      end
+
+      # Closes every live connection on this server. Returns the number of
+      # connections targeted (0 when none).
+      def disconnect_all : Int32
+        remote_connections.disconnect
+      end
+
+      # -- subscriptions ----------------------------------------------------
+
+      # Instantiates the channel and runs the optional `#connect` hook plus
+      # `#subscribed`. Returns nil when the subscription was rejected or
+      # failed (client already notified).
       def subscribe(channel_class : Channel.class, connection : Connection, identifier : String, params : Hash(String, JSON::Any)) : Channel?
         channel = channel_class.new(connection, identifier, params)
         begin
+          channel.connect
           channel.subscribed
         rescue RejectedError
+          channel.stop_periodic_timers
+          remove_channel(channel)
           connection.send_json({type: "reject_subscription", identifier: identifier})
           return nil
-        rescue
+        rescue ex
+          Cable.report_error(ex, "subscription")
+          channel.stop_periodic_timers
+          remove_channel(channel)
           connection.close
           return nil
         end
         connection.send_json({type: "confirm_subscription", identifier: identifier})
+        channel.start_periodic_timers
         channel
       end
 
       # Removes one subscription (client `unsubscribe`), running the
-      # channel's `#unsubscribed` hook.
+      # channel's `#unsubscribed` hook and cancelling its timers.
       def unsubscribe(connection : Connection, identifier : String) : Nil
         if sub = connection.find_subscription(identifier)
           remove_subscription(connection, sub, run_hook: true)
@@ -349,12 +656,13 @@ module Saci
       # process. (`RedisServer` overrides this to fan out remotely too;
       # remote arrivals re-enter through `#deliver_local`.)
       def broadcast(stream : String, payload) : Nil
+        record_broadcast(stream, payload)
         deliver_local(stream, payload)
       end
 
       # Fan-out to this process's subscribers only (no Redis hop).
       def deliver_local(stream : String, payload) : Nil
-        subs = @mutex.synchronize { @streams[stream].dup }
+        subs = @mutex.synchronize { @streams[stream]?.try(&.dup) || [] of Subscription }
         subs.each do |sub|
           begin
             sub.channel.deliver(sub.identifier, payload)
@@ -373,7 +681,7 @@ module Saci
       def remove_stream(stream : String, channel : Channel) : Nil
         sub = nil
         @mutex.synchronize do
-          if found = @streams[stream].find { |s| s.channel.same?(channel) }
+          if found = @streams[stream]?.try { |subs| subs.find { |s| s.channel.same?(channel) } }
             @streams[stream].delete(found)
             sub = found
           end
@@ -398,15 +706,155 @@ module Saci
         leftovers.each { |s| channel.connection.untrack(s) }
       end
 
-      private def remove_subscription(connection : Connection, sub : Subscription, run_hook : Bool) : Nil
-        @mutex.synchronize { @streams[sub.stream].delete(sub) }
-        connection.untrack(sub)
-        if run_hook
-          begin
-            sub.channel.unsubscribed
-          rescue
+      # -- introspection (test helpers) -------------------------------------
+
+      def stream_names : Array(String)
+        @mutex.synchronize do
+          @streams.select { |_, subs| !subs.empty? }.keys.sort
+        end
+      end
+
+      def has_stream?(stream : String) : Bool
+        @mutex.synchronize do
+          subs = @streams[stream]?
+          subs.nil? ? false : !subs.empty?
+        end
+      end
+
+      def stream_subscriber_count(stream : String) : Int32
+        @mutex.synchronize { @streams[stream]?.try(&.size) || 0 }
+      end
+
+      # -- broadcast recording (test helpers) --------------------------------
+
+      def record_broadcasts=(enabled : Bool) : Nil
+        @record_broadcasts.set(enabled)
+      end
+
+      def record_broadcasts? : Bool
+        @record_broadcasts.get
+      end
+
+      # All recorded payloads for `stream` (or every stream, in hash order)
+      # since the last `clear_broadcasts`.
+      def broadcasts(stream : String? = nil) : Array(JSON::Any)
+        @broadcasts_mutex.synchronize do
+          if s = stream
+            (@broadcasts[s]? || [] of JSON::Any).dup
+          else
+            @broadcasts.values.flat_map { |values| values.dup }
           end
         end
+      end
+
+      def broadcast_count(stream : String? = nil) : Int32
+        broadcasts(stream).size
+      end
+
+      def clear_broadcasts : Nil
+        @broadcasts_mutex.synchronize { @broadcasts.clear }
+      end
+
+      protected def record_broadcast(stream : String, payload) : Nil
+        return unless @record_broadcasts.get
+        any = payload.is_a?(JSON::Any) ? payload : JSON.parse(payload.to_json)
+        @broadcasts_mutex.synchronize { @broadcasts[stream] << any }
+      rescue ex
+        Cable.report_error(ex, "broadcast recording")
+      end
+
+      private def remove_subscription(connection : Connection, sub : Subscription, run_hook : Bool) : Nil
+        @mutex.synchronize { @streams[sub.stream]?.try(&.delete(sub)) }
+        connection.untrack(sub)
+        begin
+          sub.channel.unsubscribed if run_hook
+        rescue
+          # A broken user hook must not block cleanup.
+        ensure
+          sub.channel.stop_periodic_timers
+        end
+      end
+    end
+
+    # A filtered view over one server's live connections (G96).
+    #
+    # ```
+    # Saci::Cable.server.remote_connections
+    #   .where(current_user: user)
+    #   .disconnect
+    # Saci::Cable.server.remote_connections.where(identifier: sid).disconnect
+    # ```
+    #
+    # Matching is by connection identifier (`identifier` / `id`) or by any
+    # value stored through `Connection#set_identifier`. The registry is
+    # process-local (same as the default adapter); Redis/DB adapters fan out
+    # messages but do not propagate disconnects across processes.
+    class RemoteConnections
+      def initialize(@server : Server, @criteria : Hash(String, IdentifierValue) = {} of String => IdentifierValue)
+      end
+
+      def where(**criteria) : RemoteConnections
+        merged = @criteria.dup
+        criteria.each { |key, value| merged[key.to_s] = value }
+        RemoteConnections.new(@server, merged)
+      end
+
+      def where(criteria : Hash(K, V)) : RemoteConnections forall K, V
+        merged = @criteria.dup
+        criteria.each { |key, value| merged[key.to_s] = value.as(IdentifierValue) }
+        RemoteConnections.new(@server, merged)
+      end
+
+      def to_a : Array(Connection)
+        @server.open_connections.select { |connection| matches?(connection) }
+      end
+
+      def each(& : Connection ->) : Nil
+        to_a.each { |connection| yield connection }
+      end
+
+      # Disconnects every matching connection. Returns the count.
+      def disconnect : Int32
+        targets = to_a
+        targets.each do |connection|
+          connection.disconnect
+          @server.unregister(connection)
+        end
+        targets.size
+      end
+
+      def disconnect_all : Int32
+        disconnect
+      end
+
+      private def matches?(connection : Connection) : Bool
+        @criteria.all? do |key, expected|
+          if key == "identifier" || key == "id"
+            next true if cable_values_equal?(connection.identifier, expected)
+          end
+          cable_values_equal?(connection.identifier_value(key), expected)
+        end
+      end
+
+      private def cable_values_equal?(actual : IdentifierValue, expected : IdentifierValue) : Bool
+        return true if actual.nil? && expected.nil?
+        return false if actual.nil? || expected.nil?
+        return true if actual == expected
+        if record = actual.as?(Saci::Record::Base)
+          # Same model + primary key, or an id passed as the criterion.
+          if other = expected.as?(Saci::Record::Base)
+            return record.class == other.class &&
+              record[record.class.primary_key_name].to_s == other[other.class.primary_key_name].to_s
+          end
+          return record[record.class.primary_key_name].to_s == expected.to_s
+        end
+        if any = actual.as?(JSON::Any)
+          return true if any.raw == expected
+          return any.to_json == expected.to_s
+        end
+        actual.to_s == expected.to_s
+      rescue
+        false
       end
     end
 
@@ -458,6 +906,7 @@ module Saci
       # Local fan-out first (remote failures must never lose local
       # delivery), then the Redis hop (fail-open with a warning).
       def broadcast(stream : String, payload) : Nil
+        record_broadcast(stream, payload)
         deliver_local(stream, payload)
         begin
           publish_envelope({"sender" => @id, "stream" => stream, "message" => payload}.to_json)
@@ -553,6 +1002,77 @@ module Saci
       end
     end
 
+    # One `periodically` declaration. The macro accumulates specs with
+    # `previous_def`/`super`, so a class (and its parents) may declare any
+    # number of independent timers.
+    struct PeriodicSpec
+      getter interval : Time::Span
+      getter handler : Proc(Nil)
+
+      def initialize(@interval : Time::Span, @handler : Proc(Nil))
+      end
+    end
+
+    # Per-subscription timer fiber (G95). Wakes on `interval`, invokes the
+    # handler, and isolates handler exceptions (reported, timer continues).
+    # `stop` closes the wake channel and waits briefly for the fiber to
+    # finish; calling `stop` from the timer's own handler never deadlocks.
+    class PeriodicTimer
+      getter interval : Time::Span
+
+      @fiber : Fiber
+
+      def initialize(@interval : Time::Span, @handler : Proc(Nil), @on_error : Proc(Exception, Nil)? = nil)
+        raise ArgumentError.new("periodically interval must be positive (got #{@interval})") if @interval <= Time::Span.zero
+        @stop = ::Channel(Nil).new(1)
+        @stopped = Atomic(Bool).new(false)
+        @fiber = spawn { run }
+      end
+
+      def stopped? : Bool
+        @stopped.get
+      end
+
+      def stop : Nil
+        return if @stopped.swap(true)
+        begin
+          # Buffered wake signal; never blocks and never closes the channel
+          # (receiving from a closed channel raises in Crystal 1.22).
+          @stop.send(nil)
+        rescue ::Channel::ClosedError
+        end
+        # Do not wait for ourselves when a handler calls `disconnect`.
+        return if Fiber.current.same?(@fiber)
+        deadline = Time.instant + 1.second
+        while !@fiber.dead? && Time.instant < deadline
+          sleep 1.millisecond
+        end
+      end
+
+      private def run : Nil
+        loop do
+          select
+          when @stop.receive
+            break
+          when timeout(@interval)
+            begin
+              @handler.call
+            rescue ex
+              if handler = @on_error
+                begin
+                  handler.call(ex)
+                rescue
+                  Cable.report_error(ex, "periodic timer")
+                end
+              else
+                Cable.report_error(ex, "periodic timer")
+              end
+            end
+          end
+        end
+      end
+    end
+
     # Base class for channels. Subclass and override `subscribed`,
     # `unsubscribed` and `receive`.
     class Channel
@@ -560,7 +1080,16 @@ module Saci
       getter identifier : String
       getter params : Hash(String, JSON::Any)
 
+      @periodic_mutex = Mutex.new
+      @periodic_timers = [] of PeriodicTimer
+      @periodic_started = false
+
       def initialize(@connection : Connection, @identifier : String, @params : Hash(String, JSON::Any))
+      end
+
+      # Optional per-subscription authentication hook, called before
+      # `#subscribed`. For a connection-wide hook use `Cable.identify`.
+      def connect : Nil
       end
 
       # Called after subscribe. Open streams here (`stream_from`) or call
@@ -581,6 +1110,20 @@ module Saci
         raise RejectedError.new
       end
 
+      # Closes the whole websocket connection (and cancels this channel's
+      # timers). Other channels on the same connection are unsubscribed by
+      # the server's close cleanup.
+      def disconnect : Nil
+        stop_periodic_timers
+        connection.disconnect
+      end
+
+      # Rails connection API, available from channels for convenience.
+      def reject_unauthorized_connection : NoReturn
+        stop_periodic_timers
+        connection.reject_unauthorized_connection
+      end
+
       # Sends `payload` to this subscription only.
       def transmit(payload) : Nil
         connection.send_json({"identifier" => identifier, "message" => payload})
@@ -596,6 +1139,30 @@ module Saci
         connection.server.add_stream(connection, stream, identifier, self)
       end
 
+      # Subscribes to the record-derived stream (G94). The default name is
+      # `saci:<Model>:<id>`; a model declaring `broadcasts_for :posts`
+      # (or an explicit `prefix:`) yields Rails-like `posts:<id>`.
+      # Collections sort their constituent names and join with `:`.
+      def stream_for(broadcastable, prefix : String? = nil) : String
+        stream = Cable.broadcasting_for(broadcastable, prefix)
+        stream_from(stream)
+        stream
+      end
+
+      def stop_stream_for(broadcastable, prefix : String? = nil) : Nil
+        stop_stream(Cable.broadcasting_for(broadcastable, prefix))
+      end
+
+      # `stream_for` when present, otherwise reject (Rails'
+      # `stream_or_reject_for`).
+      def stream_or_reject_for(broadcastable, prefix : String? = nil)
+        if broadcastable
+          stream_for(broadcastable, prefix)
+        else
+          reject
+        end
+      end
+
       def stop_stream(stream : String) : Nil
         connection.server.remove_stream(stream, self)
       end
@@ -609,22 +1176,171 @@ module Saci
       def self.broadcast_to(stream : String, payload, server : Server = Cable.server) : Nil
         server.broadcast(stream, payload)
       end
+
+      # Broadcasts to a record/collection-derived stream. Class-level so
+      # publishers do not need a channel instance:
+      #
+      # ```
+      # PostsChannel.broadcast_to(post, {title: "hi"})
+      # PostsChannel.broadcasts_for(post) # => "saci:Post:1"
+      # ```
+      def self.broadcast_to(broadcastable, payload, prefix : String? = nil, server : Server = Cable.server) : Nil
+        server.broadcast(Cable.broadcasting_for(broadcastable, prefix), payload)
+      end
+
+      # Class-level stream-name derivation used by `stream_for` (G94).
+      def self.broadcasts_for(broadcastable, prefix : String? = nil) : String
+        Cable.broadcasting_for(broadcastable, prefix)
+      end
+
+      # Rails-compatible alias.
+      def self.broadcasting_for(broadcastable, prefix : String? = nil) : String
+        Cable.broadcasting_for(broadcastable, prefix)
+      end
+
+      # Instance convenience: broadcast to a record through *this*
+      # connection's server (useful in `receive`).
+      def broadcast_to(broadcastable, payload, prefix : String? = nil) : Nil
+        connection.server.broadcast(Cable.broadcasting_for(broadcastable, prefix), payload)
+      end
+
+      # -- identifiers (G203) ----------------------------------------------
+
+      # Declares a connection identifier exposed on every channel:
+      #
+      # ```
+      # class ApplicationCable::Channel < Saci::Cable::Channel
+      #   identified_by :current_user, User
+      # end
+      # ```
+      #
+      # The connection-wide value is set by `Cable.identify` (or a channel
+      # `connect` hook) via `connection.set_identifier`. The two-argument
+      # form returns the declared type; the one-argument form returns
+      # `JSON::Any?` for wire-provided values.
+      macro identified_by(name, type)
+        def {{name.id}} : {{type}}?
+          connection.identifier_value({{name.id.stringify}}).as?({{type}})
+        end
+
+        def {{name.id}}=(value : {{type}}?) : Nil
+          connection.set_identifier({{name.id.stringify}}, value)
+        end
+      end
+
+      macro identified_by(name)
+        def {{name.id}} : ::Saci::Cable::IdentifierValue
+          connection.identifier_value({{name.id.stringify}})
+        end
+
+        def {{name.id}}=(value : ::Saci::Cable::IdentifierValue) : Nil
+          connection.set_identifier({{name.id.stringify}}, value)
+        end
+      end
+
+      # -- periodic timers (G95) -------------------------------------------
+
+      # Runs the block every `interval` while the subscription is active.
+      # The timer is cancelled by `unsubscribe`, connection close, and
+      # `Channel#disconnect`; handler exceptions are reported and do not
+      # stop the timer.
+      #
+      # ```
+      # periodically(5.seconds) { transmit({type: "tick"}) }
+      # ```
+      macro periodically(interval, &block)
+        def __saci_periodic_handlers : Array(::Saci::Cable::PeriodicSpec)
+          {% if @type.methods.any? { |m| m.name == "__saci_periodic_handlers" } %}
+            previous_def + [::Saci::Cable::PeriodicSpec.new({{interval}}, -> : Nil do
+              {{block.body}}
+              nil
+            end)]
+          {% else %}
+            super + [::Saci::Cable::PeriodicSpec.new({{interval}}, -> : Nil do
+              {{block.body}}
+              nil
+            end)]
+          {% end %}
+        end
+      end
+
+      # Overridden by `periodically` macros (accumulated with
+      # `previous_def`/`super`).
+      def __saci_periodic_handlers : Array(PeriodicSpec)
+        [] of PeriodicSpec
+      end
+
+      # Starts one fiber per declared timer. Called by the server after
+      # `subscribed` succeeds; idempotent.
+      def start_periodic_timers : Nil
+        specs = __saci_periodic_handlers
+        return if specs.empty?
+        started = [] of PeriodicTimer
+        specs.each do |spec|
+          begin
+            started << PeriodicTimer.new(spec.interval, spec.handler,
+              ->(ex : Exception) { Cable.report_error(ex, "periodic timer") })
+          rescue ex
+            Cable.report_error(ex, "periodic timer")
+          end
+        end
+        @periodic_mutex.synchronize do
+          return if @periodic_started
+          @periodic_started = true
+          @periodic_timers.concat(started)
+        end
+      end
+
+      # Cancels every timer for this subscription. Safe/idempotent.
+      def stop_periodic_timers : Nil
+        timers = @periodic_mutex.synchronize do
+          drained = @periodic_timers.dup
+          @periodic_timers.clear
+          @periodic_started = false
+          drained
+        end
+        timers.each(&.stop)
+      end
+
+      def periodic_timers : Array(PeriodicTimer)
+        @periodic_mutex.synchronize { @periodic_timers.dup }
+      end
     end
 
     # Runs the JSON protocol for one socket. Registered channels map
     # channel names (class names) to channel classes.
     def self.handle(socket : HTTP::WebSocket, params : Saci::Params, channels : Hash(String, Channel.class), server : Server) : Nil
-      connection = Connection.new(socket, params, server)
-      socket.send({type: "welcome"}.to_json)
+      connection = Connection.new(socket, params, server, message_buffer_size: server.message_buffer_size)
+
+      unless server.register(connection)
+        Cable.report_error(Exception.new("cable connection limit reached (#{server.max_connections})"), "connections")
+        connection.close
+        return
+      end
+
+      # Authentication/origin hook runs before the welcome frame and before
+      # any subscribe frame can be processed (G203). Rejection closes the
+      # socket; no welcome is sent.
+      unless Cable.run_identify(connection)
+        server.unregister(connection)
+        connection.close
+        return
+      end
+
+      connection.send_json({type: "welcome"})
       socket.on_message do |raw|
         begin
           handle_frame(server, connection, channels, raw)
+        rescue RejectedError
+          connection.close
         rescue
           # One malformed frame must never kill the pump.
         end
       end
       socket.on_close do |_code, _message|
         server.unsubscribe_connection(connection)
+        connection.close
+        server.unregister(connection)
       end
     end
 
@@ -700,7 +1416,7 @@ module Saci
           when "confirm_subscription"
             return identifier
           when "reject_subscription"
-            raise "Subscription rejected for #{identifier}"
+            raise RejectedError.new("Subscription rejected for #{identifier}")
           end
         end
       end
@@ -731,5 +1447,120 @@ module Saci
       rescue IO::Error
       end
     end
+
+    # Test adapter (G97): a normal `Server` that records every published
+    # payload in memory. Use it in place of the default server:
+    #
+    # ```
+    # server = Saci::Cable::TestServer.new
+    # router = Saci::Router.new.draw { |r| r.cable "/cable", ChatChannel, server: server }
+    # # ...
+    # server.broadcasts("chat:1").size.should eq(1)
+    # server.clear_broadcasts
+    # ```
+    class TestServer < Server
+      def initialize(*, max_connections : Int32 = 0,
+                     message_buffer_size : Int32 = Connection::DEFAULT_MESSAGE_BUFFER_SIZE)
+        super(max_connections: max_connections, message_buffer_size: message_buffer_size)
+        self.record_broadcasts = true
+      end
+
+      # Convenience for spec teardown (`server.clear!`).
+      def clear! : Nil
+        clear_broadcasts
+      end
+    end
+
+    alias TestAdapter = TestServer
+
+    # Assertions for cable specs, included into `Saci::TestSession` (see
+    # `src/saci/cable_testing.cr`). They operate on a server (default:
+    # `Cable.server`) and therefore also work with a `TestServer` passed
+    # explicitly to `Router#cable`.
+    module TestHelpers
+      # Recorded payloads for `stream` (newest last).
+      def broadcasts(stream : String, server : ::Saci::Cable::Server = ::Saci::Cable.server) : Array(JSON::Any)
+        server.broadcasts(stream)
+      end
+
+      def assert_broadcasts(stream : String, count : Int32,
+                            server : ::Saci::Cable::Server = ::Saci::Cable.server) : Nil
+        actual = server.broadcasts(stream).size
+        unless actual == count
+          raise "Expected #{count} broadcast(s) on #{stream.inspect}, got #{actual}: #{server.broadcasts(stream).map(&.to_json)}"
+        end
+      end
+
+      def assert_no_broadcasts(stream : String,
+                               server : ::Saci::Cable::Server = ::Saci::Cable.server) : Nil
+        assert_broadcasts(stream, 0, server)
+      end
+
+      def assert_has_stream(stream : String,
+                            server : ::Saci::Cable::Server = ::Saci::Cable.server) : Nil
+        unless server.has_stream?(stream)
+          raise "Expected an open subscription on stream #{stream.inspect}; active streams: #{server.stream_names}"
+        end
+      end
+
+      def assert_has_stream_for(broadcastable, prefix : String? = nil,
+                                server : ::Saci::Cable::Server = ::Saci::Cable.server) : Nil
+        assert_has_stream(::Saci::Cable.broadcasting_for(broadcastable, prefix), server)
+      end
+
+      # Accepts a block that either raises `Cable::RejectedError`, returns
+      # false/nil, or returns a closed/rejected `Connection`.
+      def assert_reject_connection(&block : -> T) : Nil forall T
+        rejected = false
+        begin
+          result = block.call
+          if result.is_a?(::Saci::Cable::Connection)
+            rejected = result.rejected? || result.closed?
+          else
+            rejected = (result == false)
+          end
+        rescue ::Saci::Cable::RejectedError
+          rejected = true
+        end
+        raise "Expected the connection to be rejected but it was accepted" unless rejected
+      end
+
+      def assert_reject_connection(connection : ::Saci::Cable::Connection) : Nil
+        unless connection.rejected? || connection.closed?
+          raise "Expected the connection to be rejected but it is still open"
+        end
+      end
+
+      def open_connections(server : ::Saci::Cable::Server = ::Saci::Cable.server) : Array(::Saci::Cable::Connection)
+        server.open_connections
+      end
+
+      def open_connections_count(server : ::Saci::Cable::Server = ::Saci::Cable.server) : Int32
+        server.open_connections_count
+      end
+
+      def assert_no_open_connections(server : ::Saci::Cable::Server = ::Saci::Cable.server) : Nil
+        count = server.open_connections_count
+        raise "Expected no open cable connections, got #{count}" if count > 0
+      end
+    end
   end
 end
+
+# Record-derived stream names (G94) and the model-level `broadcasts_for`
+# macro are kept in a separate file so the core cable implementation stays
+# usable without the ORM.
+require "./cable_record"
+
+# DB-backed pub/sub (G93/G164) + PostgreSQL adapter entry point (G282).
+require "./cable_solid"
+
+# Existing `TestSession` users get the assertions automatically when cable
+# is loaded after test_session (the order in `src/saci.cr`); standalone
+# `require "saci/cable"` simply skips this. `cable_testing` provides the
+# same integration explicitly.
+{% if @top_level.has_constant?("Saci") && @top_level.constant("Saci").has_constant?("TestSession") %}
+  class ::Saci::TestSession
+    include ::Saci::Cable::TestHelpers
+  end
+{% end %}
