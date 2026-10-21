@@ -1,4 +1,8 @@
 require "ecr"
+require "./assets"
+require "./asset_tags"
+require "./view_helpers"
+require "./form_helpers"
 
 module Saci
   # Shared view helpers (also exposed as controller instance methods so
@@ -292,41 +296,51 @@ module Saci
       end
     end
 
-    def label(field : String, text : String) : String
-      %(<label for="#{HTML.escape(field_id(field))}">#{HTML.escape(text)}</label>)
+    def label(field : String, text : String, **attributes) : String
+      attrs = Views.attributes_hash(attributes)
+      attrs["for"] = field_id(field) unless attrs.has_key?("for")
+      Views.content_tag("label", attrs, text)
     end
 
-    def text_field(name : String, value : String? = nil) : String
-      input("text", name, value || model_string(name))
+    def text_field(name : String, value : Views::FormValue = nil, **attributes) : String
+      input("text", name, field_value(value, model_string(name)), **attributes)
     end
 
-    def password_field(name : String) : String
-      %(<input type="password" name="#{HTML.escape(field_name(name))}" id="#{HTML.escape(field_id(name))}"#{error_class(name)}>)
+    def password_field(name : String, value : Views::FormValue = nil, **attributes) : String
+      input("password", name, value.nil? ? nil : value.to_s, **attributes)
     end
 
-    def hidden_field(name : String, value : String) : String
-      input("hidden", name, value)
+    def hidden_field(name : String, value : Views::FormValue, **attributes) : String
+      input("hidden", name, value.nil? ? "" : value.to_s, **attributes)
     end
 
-    def textarea(name : String, value : String? = nil) : String
-      %(<textarea name="#{HTML.escape(field_name(name))}" id="#{HTML.escape(field_id(name))}"#{error_class(name)}>#{HTML.escape(value || model_string(name) || "")}</textarea>)
+    def textarea(name : String, value : Views::FormValue = nil, **attributes) : String
+      attrs = Views.attributes_hash(attributes)
+      attrs["name"] = field_name(name) unless attrs.has_key?("name")
+      attrs["id"] = field_id(name) unless attrs.has_key?("id")
+      apply_error_class(attrs, name)
+      content = value.nil? ? (model_string(name) || "") : value.to_s
+      Views.content_tag("textarea", attrs, content)
     end
 
     # Rails-style checkbox (hidden `0` + `1` box, checked from the model
     # when `checked` is nil).
-    def check_box(name : String, checked : Bool? = nil) : String
+    def check_box(name : String, checked : Bool? = nil, **attributes) : String
       is_checked = checked.nil? ? model_truthy?(name) : checked
-      String.build do |io|
-        io << %(<input type="hidden" name=") << HTML.escape(field_name(name)) << %(" value="0">)
-        io << %(<input type="checkbox" name=") << HTML.escape(field_name(name)) << %(" id=") << HTML.escape(field_id(name)) << %(" value="1")
-        io << " checked" if is_checked
-        io << error_class(name)
-        io << ">"
-      end
+      hidden = Views.tag("input", {"type" => "hidden", "name" => field_name(name), "value" => "0"})
+      attrs = Views.attributes_hash(attributes)
+      attrs["type"] = "checkbox"
+      attrs["name"] = field_name(name)
+      attrs["id"] = field_id(name) unless attrs.has_key?("id")
+      attrs["value"] = attrs["value"]? || "1"
+      attrs["checked"] = true if is_checked
+      apply_error_class(attrs, name)
+      hidden + Views.tag("input", attrs)
     end
 
-    # `options` as bare values (`["tech", "news"]`) or label/value pairs
-    # (`[{"Tech", "tech"}]`). Selection defaults to the model value.
+    # `options` as bare values (`["tech", "news"]`), label/value pairs
+    # (`[{"Tech", "tech"}]`) or a prebuilt options string. Selection
+    # defaults to the model value.
     def select(name : String, options : Array(String) | Array(Tuple(String, String)), selected : String? = nil) : String
       current = selected || model_string(name)
       String.build do |io|
@@ -341,16 +355,19 @@ module Saci
       end
     end
 
-    def date_field(name : String, value : String? = nil) : String
-      input("date", name, value || model_date(name))
+    def date_field(name : String, value : Views::FormValue = nil, **attributes) : String
+      input("date", name, field_value(value, model_date(name)), **attributes)
     end
 
-    def file_field(name : String) : String
-      %(<input type="file" name="#{HTML.escape(field_name(name))}" id="#{HTML.escape(field_id(name))}"#{error_class(name)}>)
+    def file_field(name : String, **attributes) : String
+      input("file", name, nil, **attributes)
     end
 
-    def submit(label : String = "Save") : String
-      %(<input type="submit" value="#{HTML.escape(label)}">)
+    def submit(label : String = "Save", **attributes) : String
+      attrs = Views.attributes_hash(attributes)
+      attrs["type"] = "submit"
+      attrs["value"] = label
+      Views.tag("input", attrs)
     end
 
     # Renders `record.errors` as an error list (`""` when clean). Needs a
@@ -367,13 +384,14 @@ module Saci
       end
     end
 
-    private def input(type : String, name : String, value : String?) : String
-      base = %(<input type="#{type}" name="#{HTML.escape(field_name(name))}" id="#{HTML.escape(field_id(name))}") + error_class(name)
-      if value
-        base + %( value="#{HTML.escape(value)}">)
-      else
-        base + ">"
-      end
+    private def input(type : String, name : String, value : String?, **attributes) : String
+      attrs = Views.attributes_hash(attributes)
+      attrs["type"] = type
+      attrs["name"] = field_name(name)
+      attrs["id"] = field_id(name) unless attrs.has_key?("id")
+      attrs["value"] = value if value && !attrs.has_key?("value")
+      apply_error_class(attrs, name)
+      Views.tag("input", attrs)
     end
 
     private def field_name(name : String) : String
@@ -383,7 +401,8 @@ module Saci
 
     private def field_id(name : String) : String
       scope = @scope
-      scope ? "#{scope}_#{name}" : name
+      raw = scope ? "#{scope}_#{name}" : name
+      Views.tag_id(raw)
     end
 
     # Appends ` class="field-with-errors"` when the model has errors on the
@@ -507,15 +526,16 @@ module Saci
     # With `model:` + `scope:`, fields bind to the model and scope their
     # names (`story[title]`); `multipart: true` sets the upload encoding.
     # All values are escaped.
-    def form_with(url : String, method : String = "post", authenticity_token : String? = nil, model : Saci::Record::Base? = nil, scope : String? = nil, multipart : Bool = false, & : FormBuilder -> String) : String
-      token = authenticity_token.nil? && method.downcase != "get" ? form_authenticity_token : authenticity_token
-      builder = FormBuilder.new(url, method, token, model, scope, multipart)
+    def form_with(url : String, method : String | Symbol = "post", authenticity_token : String? = nil, model : Saci::Record::Base? = nil, scope : String? = nil, multipart : Bool = false, & : FormBuilder -> String) : String
+      verb = method.to_s.downcase
+      token = authenticity_token.nil? && verb != "get" ? form_authenticity_token : authenticity_token
+      builder = FormBuilder.new(url, verb, token, model, scope, multipart)
       builder.build(yield builder)
     end
 
     # Standalone link, or a self-contained mini-form for non-GET methods
     # (includes the CSRF token — no JavaScript needed).
-    def link_to(text : String, url : String, method : Symbol? = nil) : String
+    def link_to(text : String, url : String, method : Symbol? = nil, **attributes) : String
       if verb = method
         token = form_authenticity_token
         String.build do |io|
@@ -525,8 +545,12 @@ module Saci
           io << %(<button type="submit">) << HTML.escape(text) << %(</button></form>)
         end
       else
-        %(<a href="#{HTML.escape(url)}">#{HTML.escape(text)}</a>)
+        Views.link_to(text, url, **attributes)
       end
+    end
+
+    def link_to(url : String, **attributes, &block : -> String) : String
+      Views.link_to(url, **attributes, &block)
     end
 
     # XSS-safe minimal markdown (see `Saci::Views.markdown`).
