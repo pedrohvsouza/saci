@@ -1,3 +1,6 @@
+require "./jwt"
+require "./totp"
+
 module Saci
   # Controller authentication helpers (devise-lite conventions every app
   # hand-rolls). `Controller` is reopened here so `controller.cr` itself
@@ -49,6 +52,9 @@ module Saci
       property login_path : String = "/login"
       # Where `require_no_login` sends already-logged-in visitors.
       property already_logged_in_path : String = "/"
+      # Where `after_authentication_url` sends users when no pre-login
+      # target was remembered (Rails' `root_url` equivalent).
+      property after_authentication_path : String = "/"
       # Session key holding the logged-in record's id.
       property session_key : Symbol = :user_id
       # Session key holding the pre-login GET target (`require_login`).
@@ -96,6 +102,10 @@ module Saci
       @@mutex.synchronize { @@config.already_logged_in_path }
     end
 
+    def self.after_authentication_path : String
+      @@mutex.synchronize { @@config.after_authentication_path }
+    end
+
     def self.session_key : Symbol
       @@mutex.synchronize { @@config.session_key }
     end
@@ -122,6 +132,76 @@ module Saci
     # ```
     def self.user_finder
       ->(id : Int64) { nil }
+    end
+  end
+
+  # Stable facade for the `saci g authentication` generator and for apps
+  # that prefer one documented entry point over `Saci::Auth` internals.
+  # These are deliberately plain methods (no macro magic) so generated
+  # controllers can call them directly:
+  #
+  # ```
+  # user = Saci::Authentication.find_by_credentials(
+  #   User, email: params["email"]?, password: params["password"]?)
+  #
+  # redirect_to Saci::Auth.login_path unless user
+  # ```
+  #
+  # `require_authentication`, `redirect_unauthenticated` and
+  # `after_authentication_url` live on `Saci::Controller` (they need the
+  # request/session); the module exposes the session key names the
+  # generator stamps into views/controllers.
+  module Authentication
+    def self.configure(& : Auth::Config ->) : Nil
+      Auth.configure { |config| yield config }
+    end
+
+    def self.reset! : Nil
+      Auth.reset!
+    end
+
+    # Session key holding the logged-in record's id.
+    def self.session_key : Symbol
+      Auth.session_key
+    end
+
+    # Session key holding the pre-login redirect target.
+    def self.redirect_key : Symbol
+      Auth.redirect_key
+    end
+
+    # Session key holding the rolling `session_token`.
+    def self.token_key : Symbol
+      Auth.token_key
+    end
+
+    def self.login_path : String
+      Auth.login_path
+    end
+
+    def self.already_logged_in_path : String
+      Auth.already_logged_in_path
+    end
+
+    def self.after_authentication_path : String
+      Auth.after_authentication_path
+    end
+
+    # Authenticates a record by non-password attributes plus `password`.
+    # Delegates to `Record::Base.authenticate_by` (single query + bcrypt;
+    # unknown login and wrong password take the same time).
+    #
+    # ```
+    # Saci::Authentication.authenticate_by(User, email: "a@b.c", password: "secret")
+    # ```
+    def self.authenticate_by(model, **attrs)
+      model.authenticate_by(**attrs)
+    end
+
+    # Alias used by the Rails authentication generator's vocabulary. Same
+    # contract as `authenticate_by`.
+    def self.find_by_credentials(model, **credentials)
+      authenticate_by(model, **credentials)
     end
   end
 
@@ -215,13 +295,62 @@ module Saci
     # Before-action guard: anonymous visitors are redirected to
     # `Saci::Auth.login_path`. For GET requests the original target is
     # remembered in `session[redirect_key]` so the login action can send
-    # the user back (`redirect_to session.string(:redirect_to) || "/"`).
+    # the user back (`redirect_to after_authentication_url`).
     private def require_login : Nil
       return if logged_in?
+      redirect_unauthenticated
+    end
+
+    # Rails 8 authentication-generator name for `require_login`.
+    #
+    # ```
+    # class ApplicationController < Saci::Controller
+    #   before_action :require_authentication
+    # end
+    # ```
+    private def require_authentication : Nil
+      require_login
+    end
+
+    # Stores the requested GET target (so login can return there) and
+    # redirects anonymous visitors to the configured login path.
+    private def redirect_unauthenticated : Nil
       if request.method == "GET"
         session[Saci::Auth.redirect_key] = request.resource
       end
       redirect_to Saci::Auth.login_path
+    end
+
+    # Where to send the user after a successful login: the target saved by
+    # `require_login`/`redirect_unauthenticated`, or
+    # `Saci::Auth.after_authentication_path` (`/` by default). The saved
+    # target is deleted so it can't be replayed.
+    #
+    # ```
+    # def create
+    #   if user = authenticate_by(User, email: params["email"]?, password: params["password"]?)
+    #     login(user)
+    #     redirect_to after_authentication_url
+    #   else
+    #     render plain: "Invalid credentials", status: :unauthorized
+    #   end
+    # end
+    # ```
+    def after_authentication_url : String
+      target = session.string(Saci::Auth.redirect_key)
+      session.delete(Saci::Auth.redirect_key)
+      target || Saci::Auth.after_authentication_path
+    end
+
+    # Controller-level convenience over
+    # `Saci::Authentication.authenticate_by`.
+    def authenticate_by(model, **attrs)
+      Saci::Authentication.authenticate_by(model, **attrs)
+    end
+
+    # Alias matching the Rails authentication generator vocabulary.
+    def find_by_credentials(model, **credentials)
+      Saci::Authentication.find_by_credentials(model, **credentials)
     end
 
     # Before-action guard for login/signup pages: visitors that are

@@ -1,6 +1,8 @@
 require "base64"
 require "random/secure"
 
+require "../password_reset"
+
 module Saci
   module Record
     # Generates a URL-safe random token (24 random bytes → 32 base64url
