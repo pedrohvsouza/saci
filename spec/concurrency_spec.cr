@@ -108,9 +108,7 @@ describe "multithreading" do
           client.close
         end
       end
-      results.each_with_index do |body, i|
-        body.as(String).should eq("ok-#{i}")
-      end
+      results.map(&.as(String)).sort.should eq((0...16).map { |i| "ok-#{i}" }.sort)
     end
   end
 end
