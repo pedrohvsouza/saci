@@ -103,10 +103,10 @@ describe Saci::Metrics do
     # DB gauges are best-effort — present, int or null, never raising.
     ["pending", "dead"].each do |key|
       v = body["jobs"][key]
-      (v.as_i64? || v.raw.nil?).should be_true
+      (!v.as_i64?.nil? || v.raw.nil?).should be_true
     end
     size = body["db"]["size_bytes"]
-    (size.as_i64? || size.raw.nil?).should be_true
+    (!size.as_i64?.nil? || size.raw.nil?).should be_true
   end
 
   it "renders Prometheus exposition" do

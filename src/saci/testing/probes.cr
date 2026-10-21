@@ -55,7 +55,7 @@ module Saci
     # (`Saci::Job.execute` binds internally before this shelf is loaded, so a
     # `previous_def` reopen would not see inline runs; the observer hook is
     # the supported integration point.)
-    Saci::Job.perform_observer = ->(job_class : Saci::Job::Base.class, payload : String, attempt : Int32) do
+    Saci::Job.add_perform_observer ->(job_class : Saci::Job::Base.class, payload : String, attempt : Int32) do
       Saci::Testing::Probes.record_performed(job_class.name, payload)
       nil
     end

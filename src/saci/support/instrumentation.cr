@@ -72,28 +72,16 @@ module Saci
       end
     end
 
-    def self.execute(job_class : Base.class, payload_json : String, attempt : Int32 = 1,
-                     checkpoint : Array(String)? = nil,
-                     checkpoint_sink : Proc(Array(String), Nil)? = nil,
-                     enforce_in_memory_unique : Bool = true) : Nil
-      started = Time.instant
-      payload = Saci::Notifications::Payload{
+    # `perform.saci` is published through the job observer hook (calls inside
+    # `job.cr` bind before reopens, so a `previous_def` override would miss
+    # inline executions).
+    Saci::Job.add_perform_observer ->(job_class : Base.class, payload_json : String, attempt : Int32) do
+      Saci::Notifications.publish("perform.saci", Saci::Notifications::Payload{
         "job"     => job_class.name,
         "queue"   => job_class.queue_name,
         "attempt" => attempt,
-      }
-      begin
-        Saci::Current.set(job: job_class.name) do
-          previous_def(job_class, payload_json, attempt, checkpoint, checkpoint_sink,
-            enforce_in_memory_unique)
-        end
-      rescue ex
-        payload["exception"] = ex.class.name
-        payload["exception_message"] = ex.message
-        raise ex
-      ensure
-        Saci::Notifications.publish("perform.saci", payload, (Time.instant - started).total_milliseconds)
-      end
+      }, 0.0)
+      nil
     end
   end
 

@@ -110,8 +110,8 @@ end
 # ---------------------------------------------------------------------------
 
 FIXTURE_DIR = "tmp/saci_testing_spec/fixtures"
-DB_PATH     = "tmp/saci_testing_spec/db/app_test.db"
-DB_URL      = Saci::Testing.sqlite_url_for(DB_PATH)
+TESTING_DB_PATH     = "tmp/saci_testing_spec/db/app_test.db"
+DB_URL      = Saci::Testing.sqlite_url_for(TESTING_DB_PATH)
 
 Dir.mkdir_p(FIXTURE_DIR)
 

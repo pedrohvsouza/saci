@@ -101,15 +101,20 @@ end
 
 struct Time
   # Rails-style `Time.current`: the traveled clock when active, otherwise
-  # the current UTC time. Prefer this over `Time.utc` in application code
-  # that needs to be time-travel aware.
+  # the framework's zone-aware implementation (`Saci::Time.current`). Using
+  # `previous_def` keeps `Time.use_zone` / `SACI_TIME_ZONE` working in tests
+  # that travel time.
   def self.current : Time
-    Saci::Testing.current_time
+    if Saci::Testing.time_traveled?
+      Saci::Testing.current_time.in(Saci::TimeZone.current.location)
+    else
+      previous_def
+    end
   end
 
   # Convenience alias (Crystal has no `Time.now` in the stdlib).
   def self.now : Time
-    Saci::Testing.current_time
+    self.current
   end
 
   # Patching the no-argument constructors makes ORM timestamps

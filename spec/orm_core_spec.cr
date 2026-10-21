@@ -57,7 +57,7 @@ class CoreProduct < Saci::Record::Base
   before_save { @__saci_callback_count += 1 }
 end
 
-DB_PATH = "/tmp/opencode/saci_orm_core_test.db"
+ORM_CORE_DB_PATH = "/tmp/opencode/saci_orm_core_test.db"
 
 def core_db : DB::Database
   Saci::Record::Base.connection.as(DB::Database)
@@ -65,8 +65,8 @@ end
 
 describe "Saci::Record ORM core gaps" do
   before_all do
-    File.delete(DB_PATH) if File.exists?(DB_PATH)
-    Saci::Record::Base.connection = DB.open("sqlite3://#{DB_PATH}")
+    File.delete(ORM_CORE_DB_PATH) if File.exists?(ORM_CORE_DB_PATH)
+    Saci::Record::Base.connection = DB.open("sqlite3://#{ORM_CORE_DB_PATH}")
     Saci::Record::Migrator.migrate(core_db, [CreateCoreProducts] of Saci::Record::Migration.class)
   end
 
@@ -278,7 +278,7 @@ describe "Saci::Record ORM core gaps" do
       fee.logical_type.should eq(:decimal)
       fee.default_value.should eq(BigDecimal.new("1.25"))
 
-      dump = Saci::Record::Schema.dump(core_db, "sqlite3://#{DB_PATH}")
+      dump = Saci::Record::Schema.dump(core_db, "sqlite3://#{ORM_CORE_DB_PATH}")
       dump.should contain(":decimal")
       dump.should contain("BigDecimal.new(\"1.25\")")
 
@@ -294,7 +294,7 @@ describe "Saci::Record ORM core gaps" do
         reloaded_products.columns.find! { |c| c.name == "fee" }.default_value.should eq(BigDecimal.new("1.25"))
         # Body (excluding the timestamped header line) is byte-stable.
         dump_body = dump.lines.reject(&.starts_with?("# db/schema.cr")).join
-        redump_body = Saci::Record::Schema.dump(fresh, "sqlite3://#{DB_PATH}")
+        redump_body = Saci::Record::Schema.dump(fresh, "sqlite3://#{ORM_CORE_DB_PATH}")
           .lines.reject(&.starts_with?("# db/schema.cr")).join
         redump_body.should eq(dump_body)
       ensure

@@ -32,6 +32,7 @@ module Saci
     # Saci::Testing.register_migrations(CreateUsers, CreatePosts)
     # ```
     @@opened_url : String? = nil
+    @@opened_db : DB::Database? = nil
     @@db_mutex = Mutex.new
 
     # Connection URL for the test database (see env vars above).
@@ -87,12 +88,17 @@ module Saci
           end
           db = Record.connect(url)
           @@opened_url = url
+          @@opened_db = db
           Fixtures.reset_schema_cache!
           Fixtures.clear_rows!
         end
       end
 
-      db = Record.database("primary")
+      # Other specs may have replaced the global primary connection; restore
+      # the database this helper owns so lifecycle tests stay isolated in a
+      # full-suite run.
+      db = @@opened_db || Record.database("primary")
+      ensure_primary_connection!(db)
       migrate!(db, migrations || Record::Migration.test_migrations)
       load_schema!(schema) if schema
       Record.clean_database! if clean
@@ -106,8 +112,20 @@ module Saci
       if @@opened_url != url
         prepare_database!(url)
       end
-      db = Record.database("primary")
+      db = @@opened_db || Record.database("primary")
+      ensure_primary_connection!(db)
       migrate!(db, migrations || Record::Migration.test_migrations)
+    end
+
+    # Restores the helper-owned database as the global primary connection
+    # when another spec replaced it.
+    private def self.ensure_primary_connection!(db : DB::Database) : Nil
+      current = begin
+        Record.database("primary")
+      rescue
+        nil
+      end
+      Record.connection = db unless current == db
     end
 
     # Runs a `.sql` schema file (statement splitting understands quotes and

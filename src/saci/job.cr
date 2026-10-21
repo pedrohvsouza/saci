@@ -309,17 +309,26 @@ module Saci
       Uniqueness.reserve(mode.not_nil!, key.not_nil!)
     end
 
-    # Optional observer used by the testing shelf (and other instrumentation)
-    # to record logical executions without reopening this method. Called once
-    # per `execute`/`perform_now`, not on internal retries.
-    @@perform_observer : Proc(Base.class, String, Int32, Nil)? = nil
+    # Optional observers used by the testing shelf and instrumentation to
+    # record logical executions without reopening this method. Observers run
+    # once per `execute`/`perform_now`, not on internal retries.
+    @@perform_observers = [] of Proc(Base.class, String, Int32, Nil)
 
-    def self.perform_observer=(observer : Proc(Base.class, String, Int32, Nil)?) : Nil
-      @@perform_observer = observer
+    def self.add_perform_observer(observer : Proc(Base.class, String, Int32, Nil)) : Nil
+      @@perform_observers << observer unless @@perform_observers.includes?(observer)
     end
 
-    def self.perform_observer : Proc(Base.class, String, Int32, Nil)?
-      @@perform_observer
+    def self.perform_observer=(observer : Proc(Base.class, String, Int32, Nil)?) : Nil
+      @@perform_observers.clear
+      @@perform_observers << observer if observer
+    end
+
+    def self.perform_observers : Array(Proc(Base.class, String, Int32, Nil))
+      @@perform_observers.dup
+    end
+
+    private def self.notify_perform_observers(job_class : Base.class, payload_json : String, attempt : Int32) : Nil
+      @@perform_observers.each { |observer| observer.call(job_class, payload_json, attempt) }
     end
 
     # Runs one job with its uniqueness guard, retry/discard rules,
@@ -333,7 +342,7 @@ module Saci
                      checkpoint : Array(String)? = nil,
                      checkpoint_sink : Proc(Array(String), Nil)? = nil,
                      enforce_in_memory_unique : Bool = true) : Nil
-      @@perform_observer.try(&.call(job_class, payload_json, attempt))
+      notify_perform_observers(job_class, payload_json, attempt)
       if enforce_in_memory_unique && (mode = job_class.__saci_unique_mode)
         key = job_class.__saci_unique_key(payload_json)
         return unless Uniqueness.try_start(mode, key)
@@ -395,7 +404,7 @@ module Saci
     # uniqueness reservation, matching the existing contract) but still
     # applies callbacks, middleware, rescue handlers and retry rules.
     def self.perform_now(job_class : Base.class, payload_json : String) : Nil
-      @@perform_observer.try(&.call(job_class, payload_json, 1))
+      notify_perform_observers(job_class, payload_json, 1)
       execute_guarded(job_class, payload_json, 1, nil, nil)
     end
 
