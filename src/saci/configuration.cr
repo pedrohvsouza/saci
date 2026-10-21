@@ -1,5 +1,7 @@
 require "./exceptions"
 require "./middleware"
+require "./config_file"
+require "./deploy"
 
 module Saci
   # Central application configuration (`Rails.application.config` equivalent).
@@ -234,6 +236,19 @@ module Saci
     def use(klass : T.class, **options) forall T
       @middleware.use(klass, **options)
     end
+
+    # -- declarative YAML config (G147/G148) --------------------------------
+    #
+    # `Saci.config_for(:database)` reads `config/database.yml` for the current
+    # `APP_ENV`. A missing file returns an empty section, so env-var defaults
+    # keep working for apps that never create these files.
+    def config_for(name : String | Symbol, env : String = Saci.env, dir : String = "config", path : String? = nil) : ConfigFile::Section
+      ConfigFile.config_for(name, env: env, dir: dir, path: path)
+    end
+
+    def config_for!(name : String | Symbol, env : String = Saci.env, dir : String = "config", path : String? = nil) : ConfigFile::Section
+      ConfigFile.config_for!(name, env: env, dir: dir, path: path)
+    end
   end
 
   # Process-wide configuration. Apps normally mutate this in `src/<app>.cr`
@@ -277,5 +292,14 @@ module Saci
 
   def self.middleware : Middleware::Stack
     config.middleware
+  end
+
+  # Rails-like `Rails.application.config_for(:database)` convenience.
+  def self.config_for(name : String | Symbol, env : String = Saci.env, dir : String = "config", path : String? = nil) : ConfigFile::Section
+    config.config_for(name, env: env, dir: dir, path: path)
+  end
+
+  def self.config_for!(name : String | Symbol, env : String = Saci.env, dir : String = "config", path : String? = nil) : ConfigFile::Section
+    config.config_for!(name, env: env, dir: dir, path: path)
   end
 end

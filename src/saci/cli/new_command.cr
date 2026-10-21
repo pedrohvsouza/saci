@@ -7,24 +7,26 @@ module Saci
       SACI_ROOT = File.expand_path("../../../", __DIR__)
 
       def self.run(args : Array(String)) : Int32
-        name = args.find { |a| !a.starts_with?("-") } || raise Error.new("Usage: saci new APP_NAME [--db=sqlite|postgres|mysql] [--saci-path PATH] [--skip-shards] [--skip-git]")
+        name = args.find { |a| !a.starts_with?("-") } || raise Error.new("Usage: saci new APP_NAME [--db=sqlite|postgres|mysql] [--saci-path PATH] [--skip-shards] [--skip-git] [--devcontainer]")
         Util.check_app_name!(name)
         opts = parse_opts(args)
-        create(name, saci_path: opts[:saci_path], skip_shards: opts[:skip_shards], skip_git: opts[:skip_git], db: opts[:db])
+        create(name, saci_path: opts[:saci_path], skip_shards: opts[:skip_shards], skip_git: opts[:skip_git], db: opts[:db], devcontainer: opts[:devcontainer])
         0
       end
 
-      def self.parse_opts(args : Array(String)) : NamedTuple(saci_path: String?, skip_shards: Bool, skip_git: Bool, db: String)
+      def self.parse_opts(args : Array(String)) : NamedTuple(saci_path: String?, skip_shards: Bool, skip_git: Bool, db: String, devcontainer: Bool)
         saci_path = nil
         skip_shards = false
         skip_git = false
         db = "sqlite"
+        devcontainer = false
         i = 0
         while i < args.size
           a = args[i]
           case a
-          when "--skip-shards" then skip_shards = true
-          when "--skip-git"    then skip_git = true
+          when "--skip-shards"  then skip_shards = true
+          when "--skip-git"     then skip_git = true
+          when "--devcontainer" then devcontainer = true
           when .starts_with?("--saci-path=")
             saci_path = a.split("=", 2)[1]
           when "--saci-path"
@@ -38,7 +40,7 @@ module Saci
           end
           i += 1
         end
-        {saci_path: saci_path, skip_shards: skip_shards, skip_git: skip_git, db: db}
+        {saci_path: saci_path, skip_shards: skip_shards, skip_git: skip_git, db: db, devcontainer: devcontainer}
       end
 
       # Normalizes `--db` values (accepts common aliases, fails fast).
@@ -51,7 +53,7 @@ module Saci
         end
       end
 
-      def self.create(name : String, dir : String = name, saci_path : String? = nil, skip_shards : Bool = false, skip_git : Bool = false, db : String = "sqlite") : Nil
+      def self.create(name : String, dir : String = name, saci_path : String? = nil, skip_shards : Bool = false, skip_git : Bool = false, db : String = "sqlite", devcontainer : Bool = false) : Nil
         Util.check_app_name!(name)
         db = normalize_db(db)
         raise Error.new("Directory #{dir} already exists and is not empty.") if Dir.exists?(dir) && !Dir.empty?(dir)
@@ -61,7 +63,7 @@ module Saci
         write(File.join(dir, "shard.yml"), shard_yml(name, dep, db))
         write(File.join(dir, ".gitignore"), gitignore)
         write(File.join(dir, ".tool-versions"), "crystal #{Crystal::VERSION}\n")
-        write(File.join(dir, "README.md"), readme(name))
+        write(File.join(dir, "README.md"), readme(name, devcontainer))
         write(File.join(dir, "src", "#{name}.cr"), entrypoint(name, db))
         write(File.join(dir, "src", "controllers", "application_controller.cr"), application_controller)
         write(File.join(dir, "src", "controllers", "home_controller.cr"), home_controller)
@@ -92,6 +94,22 @@ module Saci
         write(File.join(dir, "config", "initializers", "filter_parameter_logging.cr"), initializer_filter_parameter_logging)
         write(File.join(dir, "config", "initializers", "cors.cr"), initializer_cors)
         write(File.join(dir, "config", "initializers", "assets.cr"), initializer_assets)
+
+        # Declarative per-environment YAML (G147/G148). Saci's env-var defaults
+        # still work when these are deleted; the files document the supported
+        # keys and are read with `Saci.config_for(:name)`.
+        write(File.join(dir, "config", "database.yml"), database_yml(name, db))
+        write(File.join(dir, "config", "cache.yml"), cache_yml(name))
+        write(File.join(dir, "config", "queue.yml"), queue_yml)
+        write(File.join(dir, "config", "cable.yml"), cable_yml(name))
+        write(File.join(dir, "config", "recurring.yml"), recurring_yml)
+        write(File.join(dir, "config", "storage.yml"), storage_yml)
+        write(File.join(dir, "config", "server.yml"), server_yml)
+        write(File.join(dir, "config", "server.cr"), server_cr)
+        write(File.join(dir, "config", "ci.cr"), ci_config(name))
+        write(File.join(dir, "config", "deploy.yml"), deploy_yml(name, db))
+        write(File.join(dir, ".kamal", "secrets"), kamal_secrets(db))
+        write(File.join(dir, "script", "doctor.cr"), doctor_script(name))
         write(File.join(dir, "spec", "spec_helper.cr"), spec_helper(name, db))
         write(File.join(dir, "spec", "app_spec.cr"), app_spec(name))
         write(File.join(dir, "spec", "controllers", ".gitkeep"), "")
@@ -119,9 +137,19 @@ module Saci
         write_executable(File.join(dir, "bin", "ci"), bin_ci)
         write_executable(File.join(dir, "bin", "docker-entrypoint"), bin_docker_entrypoint)
         write_executable(File.join(dir, "bin", "thrust"), bin_thrust)
+        write_executable(File.join(dir, "bin", "doctor"), bin_doctor)
+        write_executable(File.join(dir, "bin", "kamal"), bin_kamal)
+        write_executable(File.join(dir, "bin", "systemd"), bin_systemd(name))
+        write(File.join(dir, "deploy", "#{name}.service"), systemd_unit(name))
+        write(File.join(dir, "docs", "thruster.md"), thruster_doc(name))
         write(File.join(dir, "Dockerfile"), dockerfile(name))
         write(File.join(dir, ".dockerignore"), dockerignore)
         write(File.join(dir, ".github", "workflows", "ci.yml"), ci_workflow)
+
+        if devcontainer
+          write(File.join(dir, ".devcontainer", "devcontainer.json"), devcontainer_json(name))
+          write(File.join(dir, ".devcontainer", "Dockerfile"), devcontainer_dockerfile)
+        end
 
         unless skip_shards
           puts "Installing dependencies (shards install)..."
@@ -231,6 +259,9 @@ module Saci
         !/bin/ci
         !/bin/docker-entrypoint
         !/bin/thrust
+        !/bin/doctor
+        !/bin/kamal
+        !/bin/systemd
         /tmp/*
         !/tmp/.gitkeep
         !/tmp/pids/
@@ -246,12 +277,27 @@ module Saci
         /db/*.db
         /db/*.db-*
         /config/master.key
+        # Keep Kamal secrets as env-var references, never literal values.
+        .kamal/secrets.local
         .DS_Store
         IGNORE
       end
 
-      def self.readme(name : String) : String
+      def self.readme(name : String, devcontainer : Bool = false) : String
         app = Util.class_name(name)
+        container_note = if devcontainer
+                           <<-MD
+
+          ## Devcontainer
+
+          This app was generated with `--devcontainer`. Open the folder in VS
+          Code/Dev Containers (or GitHub Codespaces); `.devcontainer/` builds a
+          Crystal 1.22 image with SQLite headers and runs `shards install` once.
+          Forward port 3000 and use `bin/dev` inside the container.
+          MD
+                         else
+                           ""
+                         end
         <<-MD
         # #{app}
 
@@ -263,6 +309,7 @@ module Saci
         ```sh
         bin/setup          # shards install + db:migrate + db:seed
         bin/dev            # saci serve --watch on http://127.0.0.1:3000
+        bin/doctor         # pre-flight deployment checks
         ```
 
         The health endpoint answers `GET /up` with `200 OK`; point container
@@ -275,9 +322,12 @@ module Saci
         | `bin/saci ...` | Project-local wrapper around the global `saci` binary (args pass through, including `--`). |
         | `bin/setup` | Installs shards, runs migrations, then seeds. `SKIP_SEED=1 bin/setup` skips seeding. |
         | `bin/dev` | `saci serve --watch`; extra args go to `saci serve` (e.g. `bin/dev --port 4000`). |
-        | `bin/ci` | `crystal spec`. Set `SACI_EXECUTION_CONTEXT=1` (or pass `--execution-context`) to add `-Dexecution_context`. |
+        | `bin/ci` | Runs `config/ci.cr` through `saci ci` when available, else `crystal spec`. Set `SACI_EXECUTION_CONTEXT=1` (or pass `--execution-context`) to add `-Dexecution_context`. |
+        | `bin/doctor` | Checks `SECRET_KEY_BASE`, the database URL and writable `storage/`, `log/`, `tmp/`. |
         | `bin/docker-entrypoint` | Prepares the database (`saci db:migrate` or the release `bin/saci-migrate`) and then execs its arguments. |
-        | `bin/thrust` | Documentation only: Saci has no bundled proxy. Put Caddy/nginx/Thruster in front of `saci serve`. |
+        | `bin/kamal` | Wrapper for Kamal 2 (`bin/kamal setup`, `bin/kamal deploy`); see `config/deploy.yml`. |
+        | `bin/systemd` | Prints `deploy/#{name}.service`; `bin/systemd --install` copies it to `/etc/systemd/system`. |
+        | `bin/thrust` | Documentation only: Saci has no bundled proxy. Put Caddy/nginx/Kamal's proxy (or a separately installed Thruster) in front of `saci serve`. |
 
         Direct framework commands still work:
 
@@ -290,16 +340,75 @@ module Saci
         saci serve
         ```
 
+        ## Configuration files
+
+        Saci keeps working with env vars and no YAML. The generated files are
+        the declarative, per-`APP_ENV` surface (G147/G148):
+
+        | File | Read with | Notes |
+        | --- | --- | --- |
+        | `config/database.yml` | `Saci.config_for(:database)` / `Saci::ConfigFile.database_url` | `development`/`test`/`staging`/`production`, pool, optional replicas/cache/queue/cable examples. |
+        | `config/cache.yml` | `Saci.config_for(:cache)` | `memory` by default; Redis example in comments. |
+        | `config/queue.yml` | `Saci.config_for(:queue)` | Maps to `Saci::Job.queue_adapter` (`:async`, `:test`, `:db`, ...). |
+        | `config/cable.yml` | `Saci.config_for(:cable)` | In-process default; Redis example for multi-process. |
+        | `config/recurring.yml` | `Saci.config_for(:recurring)` | Descriptive task list; register blocks with `Saci::Recurring`. |
+        | `config/storage.yml` | `Saci.config_for(:storage)` | Local disk under `storage/`; S3 keys documented. |
+        | `config/server.yml` | `Saci::Deploy::ServerConfig` | Host/port/threads/timeouts; `config/server.cr` applies `HOST`/`PORT` and `SACI_*` overrides at boot. |
+
+        Example:
+
+        ```crystal
+        db = Saci.config_for(:database)
+        db[:adapter].as_s                 # string and symbol keys both work
+        Saci::ConfigFile.database_url     # URL assembled from the current section
+        ```
+
+        Files may use `<%= ENV["NAME"] %>` or
+        `<%= ENV.fetch("NAME", "default") %>`; only those forms are
+        interpolated (there is no runtime ERB). Delete any file and Saci falls
+        back to its env-var defaults.
+
+        ## Operations and deployment
+
+        - **Graceful shutdown.** `src/#{name}.cr` calls
+          `listen_gracefully`, which traps `SIGTERM`/`SIGINT`, stops accepting
+          connections, waits for in-flight requests up to
+          `SACI_SHUTDOWN_TIMEOUT` (default 10s), then runs shutdown hooks.
+          Plain `Saci::Application#listen` keeps its original behaviour.
+        - **Server model.** Crystal's stdlib HTTP server is single-process and
+          has no Puma-style cluster/workers. `SACI_THREADS` maps to Crystal
+          execution contexts and only takes effect when compiled with
+          `-Dexecution_context` (`saci serve --mt`, `bin/dev --mt`). For more
+          capacity run multiple processes behind a proxy or scale containers.
+        - **Kamal 2.** `config/deploy.yml` uses the image built by the
+          `Dockerfile`, exposes port 3000, and probes `/up`. `bin/kamal` is a
+          thin wrapper; Kamal's proxy handles TLS/HTTP2 outside the app.
+          Secrets belong in `.kamal/secrets` as env-var references (or your
+          password manager's command), never literal values.
+        - **systemd.** `deploy/#{name}.service` is a ready-to-edit unit;
+          `bin/systemd` prints it and `bin/systemd --install` installs it.
+          Keep `TimeoutStopSec` above the app's shutdown timeout.
+        - **Docker restart policy.** For plain Docker, use
+          `docker run --restart unless-stopped` so the process restarts after
+          a crash; Kamal/systemd already restart failed units.
+        - **Thruster.** Saci does not bundle a proxy. See
+          `docs/thruster.md` for supported topologies and why `bin/thrust` is
+          documentation, not an implementation.
+
         ## Layout
 
         - `src/<app>.cr` — boot file. There is deliberately **no `config.ru`**:
           Saci is not Rack-based. This file (and `bin/saci`) is the entrypoint.
         - `config/environments/*.cr` — per-environment settings, loaded by a
           require glob.
+        - `config/server.cr` — server settings loaded explicitly by the boot
+          file (it is not an initializer).
         - `config/initializers/*.cr` — app initializers, also loaded by glob
           (`require "../config/initializers/*"`). The generated files are
           comment-only examples so a fresh app always compiles.
         - `config/locales/*.yml` — I18n dictionaries.
+        - `config/*.yml` — declarative per-environment settings (see above).
+        - `config/ci.cr` — local CI steps (`Saci::CI.step` / `Saci::CI.run`).
         - `public/` — static error pages and `robots.txt`. Serve this directory
           with Saci's static middleware when the framework build provides it;
           otherwise mount it behind your reverse proxy. The `/up` route is
@@ -310,14 +419,16 @@ module Saci
         - `storage/`, `log/`, `tmp/pids/`, `vendor/`, `script/` — runtime and
           auxiliary directories. `.gitkeep` keeps empty ones in Git.
         - `bin/` — project binstubs (executable).
+        - `deploy/`, `docs/`, `.kamal/` — systemd unit, deployment docs and
+          Kamal secrets template.
         - `Dockerfile`, `.dockerignore`, `.github/workflows/ci.yml` — deployment
           and CI defaults. `.tool-versions` pins the Crystal version.
-
+        #{container_note}
         ## Docker
 
         ```sh
         docker build -t #{name} .
-        docker run --rm -p 3000:3000 \\
+        docker run --rm -p 3000:3000 --restart unless-stopped \\
           -e SECRET_KEY_BASE="$(saci secret)" \\
           -e DATABASE_URL="postgres://..." \\
           #{name}
@@ -325,10 +436,11 @@ module Saci
 
         The image is multi-stage (Crystal build stage + slim Debian runtime),
         runs as the non-root `saci` user, prepares the database in the
-        entrypoint, and exposes port 3000. `SKIP_DB_PREPARE=1` skips the
-        migrate step. The generated `shard.yml` points at your local Saci
-        checkout; update that path (or vendor/publish Saci) before building in
-        CI or on another machine.
+        entrypoint, and exposes port 3000. `STOPSIGNAL SIGTERM` lets the app
+        drain requests. `SKIP_DB_PREPARE=1` skips the migrate step. The
+        generated `shard.yml` points at your local Saci checkout; update that
+        path (or vendor/publish Saci) before building in CI or on another
+        machine.
 
         ## Notes
 
@@ -336,6 +448,8 @@ module Saci
           (`saci db:migrate`, `saci db:seed`, `saci routes`, `saci test`, ...).
         - Set `SECRET_KEY_BASE` in production. `config/credentials.yml.enc`
           plus the gitignored `config/master.key` is the local alternative.
+        - Run `bin/doctor` before the first deploy and after changing secrets,
+          database URLs or volume mounts.
         MD
       end
 
@@ -375,6 +489,9 @@ module Saci
         # later) loads without editing this boot file.
         require "../config/environments/*"
         require "../config/initializers/*"
+        # Server settings live in config/server.cr (not an initializer):
+        # config/server.yml supplies defaults; HOST/PORT/SACI_* override them.
+        require "../config/server"
         require "./models/*"
         require "./controllers/*"
         require "./channels/*"
@@ -383,19 +500,26 @@ module Saci
 
         env_name = ENV.fetch("APP_ENV", "development")
         FileUtils.mkdir_p("db")
-        db_url = ENV.fetch("DATABASE_URL", "#{url_default}")
+        # config/database.yml (when present) assembles the URL per APP_ENV;
+        # DATABASE_URL still wins, and the historic default is the fallback.
+        db_url = Saci::ConfigFile.database_url(env_name) || ENV.fetch("DATABASE_URL", "#{url_default}")
         Saci::Record.connect(db_url)
         Saci::I18n.reload!
-        Saci.enable_multithreading! if ENV["SACI_MT"]? == "1"
+
+        server_config = Saci::Deploy::ServerConfig.current
+        if server_config.threads > 1
+          Saci.enable_multithreading!(server_config.threads)
+        elsif ENV["SACI_MT"]? == "1"
+          Saci.enable_multithreading!
+        end
 
         router = Saci::Router.new.draw do |r|
           r.get "/up", HealthController, :show
           r.root HomeController, :index
         end
 
-        port = ENV.fetch("PORT", "3000").to_i
-        host = ENV.fetch("HOST", "127.0.0.1")
-        Saci::Application.new(router).listen(port, host)
+        Saci::Deploy.boot_summary(app: "#{name}", db_url: db_url, server: server_config)
+        Saci::Application.new(router).listen_gracefully(server_config.port, server_config.host)
         CRYSTAL
       end
 
@@ -562,7 +686,7 @@ module Saci
 
         FileUtils.mkdir_p("db")
         env_name = ENV.fetch("APP_ENV", "development")
-        db_url = ENV.fetch("DATABASE_URL", "#{url_default}")
+        db_url = Saci::ConfigFile.database_url(env_name) || ENV.fetch("DATABASE_URL", "#{url_default}")
         Saci::Record.connect(db_url)
 
         # Named databases (multidb): register yours here, e.g.
@@ -656,7 +780,7 @@ module Saci
         # `Saci::Record.clean_all!` in specs to truncate all connections.
         FileUtils.mkdir_p("db")
         ENV["APP_ENV"] = "test"
-        db_url = ENV.fetch("DATABASE_URL", "#{url_default}")
+        db_url = Saci::ConfigFile.database_url("test") || ENV.fetch("DATABASE_URL", "#{url_default}")
         Saci::Record.connect(db_url)
         Saci::I18n.reload!
         Saci::Record::Migrator.migrate(Saci::Record.connection.as(DB::Database), SACI_MIGRATIONS)
@@ -746,8 +870,10 @@ module Saci
         SH
       end
 
-      # Mirrors `bin/ci` in Rails 8: specs are the default; opt into
-      # multithreaded execution with SACI_EXECUTION_CONTEXT=1 or
+      # Mirrors `bin/ci` in Rails 8: `config/ci.cr` is the pipeline when the
+      # global Saci binary is available; a plain `crystal spec` remains the
+      # fallback so a fresh checkout still works without `saci` installed.
+      # Opt into multithreaded specs with SACI_EXECUTION_CONTEXT=1 or
       # `bin/ci --execution-context`.
       def self.bin_ci : String
         <<-SH
@@ -756,10 +882,16 @@ module Saci
         cd "$(dirname "$0")/.."
 
         CRYSTAL="${CRYSTAL_BIN:-crystal}"
+        SACI="${SACI_BIN:-saci}"
         MT="${SACI_EXECUTION_CONTEXT:-0}"
         if [ "${1:-}" = "--execution-context" ]; then
           MT=1
           shift
+        fi
+
+        # config/ci.cr (Saci::CI DSL) takes precedence when `saci` is usable.
+        if [ "$MT" != "1" ] && [ -f config/ci.cr ] && command -v "$SACI" >/dev/null 2>&1; then
+          exec "$SACI" ci "$@"
         fi
 
         if [ "$MT" = "1" ]; then
@@ -796,8 +928,9 @@ module Saci
         SH
       end
 
-      # Saci does not bundle an HTTP/2 proxy (Rails' Thruster). Do not pretend
-      # otherwise: this script only documents the supported topology.
+      # Saci does not bundle an HTTP/2 proxy (Rails' Thruster) or Kamal's
+      # proxy. Do not pretend otherwise: this script only documents the
+      # supported topology and the generated deploy files.
       def self.bin_thrust : String
         <<-SH
         #!/usr/bin/env bash
@@ -807,16 +940,705 @@ module Saci
         bin/thrust is a documentation placeholder, not a proxy.
 
         Saci serves HTTP directly (`saci serve`). For production, terminate
-        TLS and compress/cache at a reverse proxy in front of it, for example:
+        TLS and compress/cache at a reverse proxy in front of it:
 
-          Caddy:   reverse_proxy 127.0.0.1:3000
-          nginx:   proxy_pass http://127.0.0.1:3000;
-          Thruster: run it separately and point it at 127.0.0.1:3000
+          Kamal 2:  config/deploy.yml uses kamal-proxy (TLS + /up healthcheck)
+          Caddy:    reverse_proxy 127.0.0.1:3000
+          nginx:    proxy_pass http://127.0.0.1:3000;
+          Thruster: install/run it separately and point it at 127.0.0.1:3000
+
+        Thruster is a standalone Rails proxy, not a Saci component. The
+        generated config/deploy.yml and docs/thruster.md show the supported
+        topologies; no proxy is started by this script.
 
         Keep the app bound to localhost (the default) when a proxy runs on the
         same host. In containers, bind HOST=0.0.0.0 and expose port 3000.
         MSG
         SH
+      end
+
+      # Prebuilt in the Docker image (`bin/saci-doctor`); falls back to
+      # `crystal run` for local checkouts and development.
+      def self.bin_doctor : String
+        <<-SH
+        #!/usr/bin/env bash
+        # Pre-flight deployment checks (secrets, database URL, writable dirs).
+        set -euo pipefail
+        cd "$(dirname "$0")/.."
+
+        if [ -x ./bin/saci-doctor ]; then
+          exec ./bin/saci-doctor "$@"
+        fi
+        exec "${CRYSTAL_BIN:-crystal}" run script/doctor.cr -- "$@"
+        SH
+      end
+
+      # Kamal 2 is an external CLI (Ruby gem or container). Do not vendor or
+      # reimplement it here; this wrapper only runs it from the app root so
+      # config/deploy.yml and .kamal/secrets are picked up.
+      def self.bin_kamal : String
+        <<-SH
+        #!/usr/bin/env bash
+        # Kamal 2 wrapper. Install Kamal separately (`gem install kamal`).
+        set -euo pipefail
+        cd "$(dirname "$0")/.."
+        exec "${KAMAL_BIN:-kamal}" "$@"
+        SH
+      end
+
+      def self.bin_systemd(name : String) : String
+        <<-SH
+        #!/usr/bin/env bash
+        # Print the generated systemd unit, or install it on this host.
+        set -euo pipefail
+        cd "$(dirname "$0")/.."
+
+        service="#{name}"
+        unit="deploy/${service}.service"
+        case "${1:-}" in
+          --install)
+            sudo cp "$unit" "/etc/systemd/system/${service}.service"
+            sudo systemctl daemon-reload
+            sudo systemctl enable --now "$service"
+            ;;
+          *)
+            cat "$unit"
+            ;;
+        esac
+        SH
+      end
+
+      # -- declarative config -------------------------------------------------
+
+      # `database.yml` follows Rails' shape but uses Saci adapter names
+      # (`sqlite3`, `postgres`, `mysql`). The `default:` anchor keeps the four
+      # env sections small; `Saci::ConfigFile` interpolates `<%= ENV[...] %>`
+      # before YAML parsing.
+      def self.database_yml(name : String, db : String = "sqlite") : String
+        ndb = normalize_db(db)
+        adapter = case ndb
+                  when "postgres" then "postgres"
+                  when "mysql"    then "mysql"
+                  else                 "sqlite3"
+                  end
+        lines = [
+          "# config/database.yml — per-environment database settings (G147).",
+          "#",
+          "# Saci connects from DATABASE_URL at boot. This file is the declarative",
+          "# surface for apps that prefer YAML:",
+          "#",
+          "#   db = Saci.config_for(:database)      # current APP_ENV section",
+          "#   db[:adapter]                         # string and symbol keys work",
+          "#   Saci::ConfigFile.database_url        # URL assembled from this file",
+          "#",
+          "# Only <%= ENV[\"NAME\"] %> and <%= ENV.fetch(\"NAME\", \"default\") %> are",
+          "# interpolated; there is no runtime ERB. Deleting this file is safe —",
+          "# the boot file falls back to DATABASE_URL and its built-in default.",
+          "default: &default",
+          "  adapter: #{adapter}",
+          "  pool: <%= ENV.fetch(\"DB_POOL\", \"5\") %>",
+          "  timeout: 5000",
+        ]
+        case ndb
+        when "postgres"
+          lines << "  host: <%= ENV.fetch(\"DB_HOST\", \"localhost\") %>"
+          lines << "  port: <%= ENV.fetch(\"DB_PORT\", \"5432\") %>"
+          lines << "  username: <%= ENV.fetch(\"DB_USERNAME\", \"postgres\") %>"
+          lines << "  password: <%= ENV[\"DB_PASSWORD\"] %>"
+        when "mysql"
+          lines << "  host: <%= ENV.fetch(\"DB_HOST\", \"localhost\") %>"
+          lines << "  port: <%= ENV.fetch(\"DB_PORT\", \"3306\") %>"
+          lines << "  username: <%= ENV.fetch(\"DB_USERNAME\", \"root\") %>"
+          lines << "  password: <%= ENV[\"DB_PASSWORD\"] %>"
+        end
+
+        {"development", "test", "staging", "production"}.each do |env|
+          lines << ""
+          lines << "#{env}:"
+          lines << "  <<: *default"
+          lines << "  url: <%= ENV[\"DATABASE_URL\"] %>"
+          lines << "  database: #{database_name(name, ndb, env)}"
+        end
+
+        lines << ""
+        lines << "# Optional named databases / read replicas. Register them with"
+        lines << "# `Saci::Record.establish_connection(name, url)`; Saci does not"
+        lines << "# connect to these sections automatically."
+        lines << "  # Add read replicas here and register each with establish_connection:"
+        lines << "  replicas: []"
+        lines << "  cache:"
+        lines << "    <<: *default"
+        lines << "    database: #{database_name(name, ndb, "production_cache")}"
+        lines << "  queue:"
+        lines << "    <<: *default"
+        lines << "    database: #{database_name(name, ndb, "production_queue")}"
+        lines << "  cable:"
+        lines << "    <<: *default"
+        lines << "    database: #{database_name(name, ndb, "production_cable")}"
+        lines.join('\n')
+      end
+
+      def self.database_name(name : String, db : String, env : String) : String
+        case normalize_db(db)
+        when "postgres", "mysql" then "#{name}_#{env}"
+        else                          "./db/#{name}_#{env}.db"
+        end
+      end
+
+      def self.cache_yml(name : String) : String
+        <<-YAML
+        # config/cache.yml — cache store per environment (G148).
+        #
+        # Defaults to Saci's in-process MemoryStore. Read it with:
+        #   Saci.config_for(:cache)["store"].as_s
+        # For multi-process deployments, point every process at one Redis
+        # (vendor-free RESP2 client) and uncomment:
+        #   store: redis
+        #   url: <%= ENV.fetch("REDIS_URL", "redis://127.0.0.1:6379") %>
+        development:
+          store: memory
+          namespace: #{name}_development
+
+        test:
+          store: memory
+          namespace: #{name}_test
+
+        staging:
+          store: memory
+          namespace: #{name}_staging
+          # store: redis
+          # url: <%= ENV.fetch("REDIS_URL", "redis://127.0.0.1:6379") %>
+
+        production:
+          store: memory
+          namespace: #{name}_production
+          # store: redis
+          # url: <%= ENV.fetch("REDIS_URL", "redis://127.0.0.1:6379") %>
+        YAML
+      end
+
+      def self.queue_yml : String
+        <<-YAML
+        # config/queue.yml — job queue adapter per environment (G148).
+        #
+        # Values map to `Saci::Job.queue_adapter`: inline, async, test, db.
+        # `db` stores jobs in the database (see Saci::JobDB) and needs its
+        # schema migrated; `async` is the in-process default and is lost on
+        # restart. Read it with `Saci.config_for(:queue)["adapter"].as_s`.
+        development:
+          adapter: async
+          concurrency: 2
+
+        test:
+          adapter: test
+
+        staging:
+          adapter: async
+          concurrency: 4
+          # adapter: db
+          # poll_interval: 1
+
+        production:
+          adapter: async
+          concurrency: 4
+          # adapter: db
+          # poll_interval: 1
+        YAML
+      end
+
+      def self.cable_yml(name : String) : String
+        <<-YAML
+        # config/cable.yml — Action Cable pub/sub per environment (G148).
+        #
+        # The default server is in-process (single replica only). For multiple
+        # replicas use the vendored Redis server:
+        #   Saci::Cable.server = Saci::Cable::RedisServer.new(
+        #     ENV.fetch("REDIS_URL", "redis://127.0.0.1:6379"))
+        # Read this section with `Saci.config_for(:cable)["adapter"].as_s`.
+        development:
+          adapter: memory
+          namespace: #{name}_development
+
+        test:
+          adapter: memory
+          namespace: #{name}_test
+
+        staging:
+          adapter: memory
+          namespace: #{name}_staging
+          # adapter: redis
+          # url: <%= ENV.fetch("REDIS_URL", "redis://127.0.0.1:6379") %>
+
+        production:
+          adapter: memory
+          namespace: #{name}_production
+          # adapter: redis
+          # url: <%= ENV.fetch("REDIS_URL", "redis://127.0.0.1:6379") %>
+        YAML
+      end
+
+      def self.recurring_yml : String
+        <<-YAML
+        # config/recurring.yml — recurring tasks per environment (G148).
+        #
+        # This file is descriptive: register the matching block in code with
+        # `Saci::Recurring.cron("0 3 * * *", "cleanup") { ... }`.
+        # Read it with `Saci.config_for(:recurring)["tasks"]`.
+        development:
+          enabled: false
+          tasks: []
+
+        test:
+          enabled: false
+          tasks: []
+
+        staging:
+          enabled: false
+          tasks: []
+          # tasks:
+          #   - name: sample_cleanup
+          #     schedule: "0 3 * * *"
+          #     class: CleanupJob
+
+        production:
+          enabled: false
+          tasks: []
+          # tasks:
+          #   - name: sample_cleanup
+          #     schedule: "0 3 * * *"
+          #     class: CleanupJob
+        YAML
+      end
+
+      def self.storage_yml : String
+        <<-YAML
+        # config/storage.yml — Active Storage-style service per environment
+        # (G148). Defaults to local disk under storage/. Read it with
+        # `Saci.config_for(:storage)["service"].as_s`.
+        #
+        # Cloud example (register the service before uploading):
+        #   Saci::Storage.register_service("s3", Saci::Storage::S3Service.new(
+        #     bucket: ENV.fetch("S3_BUCKET"), region: ENV.fetch("S3_REGION", "us-east-1")))
+        development:
+          service: local
+          root: storage
+
+        test:
+          service: local
+          root: storage
+
+        staging:
+          service: local
+          root: storage
+          # service: s3
+          # bucket: <%= ENV["S3_BUCKET"] %>
+          # region: <%= ENV.fetch("S3_REGION", "us-east-1") %>
+
+        production:
+          service: local
+          root: storage
+          # service: s3
+          # bucket: <%= ENV["S3_BUCKET"] %>
+          # region: <%= ENV.fetch("S3_REGION", "us-east-1") %>
+        YAML
+      end
+
+      def self.server_yml : String
+        <<-YAML
+        # config/server.yml — HTTP server settings per environment (G138).
+        #
+        # Loaded by config/server.cr through Saci::Deploy::ServerConfig.
+        # Durations are seconds (or "250ms"/"5s"/"2m" strings).
+        #
+        # Crystal's stdlib HTTP server has no Puma-style cluster/workers:
+        # `threads` only takes effect when compiled with -Dexecution_context
+        # (`saci serve --mt`). Run multiple processes for more capacity.
+        development:
+          host: 127.0.0.1
+          port: 3000
+          threads: 1
+          reuse_port: false
+          keep_alive_timeout: 5
+          request_timeout: 30
+          shutdown_timeout: 10
+
+        test:
+          host: 127.0.0.1
+          port: 3000
+          threads: 1
+          reuse_port: false
+          keep_alive_timeout: 5
+          request_timeout: 30
+          shutdown_timeout: 5
+
+        staging:
+          host: 0.0.0.0
+          port: 3000
+          threads: 2
+          reuse_port: false
+          keep_alive_timeout: 5
+          request_timeout: 30
+          shutdown_timeout: 15
+
+        production:
+          host: 0.0.0.0
+          port: 3000
+          threads: 4
+          reuse_port: true
+          keep_alive_timeout: 5
+          request_timeout: 30
+          shutdown_timeout: 15
+        YAML
+      end
+
+      def self.server_cr : String
+        <<-CRYSTAL
+        # config/server.cr — HTTP server settings (G138). Required explicitly by
+        # src/<app>.cr (this is not an initializer).
+        #
+        # There is no Puma cluster mode: Crystal's stdlib server is one process.
+        # `threads` maps to execution contexts and only works in a binary built
+        # with -Dexecution_context (`saci serve --mt`). Use systemd/Kamal/Docker
+        # replicas behind a proxy when one process is not enough.
+        #
+        # Precedence: defaults < config/server.yml[APP_ENV] < these ENV vars.
+        Saci::Deploy::ServerConfig.reload!("config/server.yml")
+
+        Saci::Deploy::ServerConfig.configure do |server|
+          server.host = ENV["HOST"] if ENV["HOST"]?
+          server.port = ENV["PORT"].to_i if ENV["PORT"]?
+          server.threads = ENV["SACI_THREADS"].to_i if ENV["SACI_THREADS"]?
+          server.reuse_port = ENV["SACI_REUSE_PORT"] == "1" if ENV["SACI_REUSE_PORT"]?
+          if value = ENV["SACI_KEEP_ALIVE_TIMEOUT"]?
+            server.keep_alive_timeout = value.to_i.seconds
+          end
+          if value = ENV["SACI_REQUEST_TIMEOUT"]?
+            server.request_timeout = value.to_i.seconds
+          end
+          if value = ENV["SACI_SHUTDOWN_TIMEOUT"]?
+            server.shutdown_timeout = value.to_i.seconds
+          end
+          server.pid_file = ENV["SACI_PIDFILE"]? if ENV["SACI_PIDFILE"]?
+        end
+        CRYSTAL
+      end
+
+      def self.ci_config(name : String) : String
+        <<-CRYSTAL
+        # config/ci.cr — local CI pipeline (G121/G178), run with `bin/ci` or
+        # `saci ci`. `Saci::CI.step` runs compiled Crystal in-process;
+        # `Saci::CI.run` shells out and fails on a non-zero exit status.
+        Saci::CI.step "Format" do
+          status = Process.run("crystal", args: ["tool", "format", "--check", "src", "spec", "config", "db", "script"])
+          Saci::CI.fail!("crystal tool format reported changes") unless status.success?
+        end
+
+        Saci::CI.run "Specs", "crystal spec --no-color"
+        Saci::CI.run "Build", "crystal build src/#{name}.cr -o tmp/ci-build"
+        CRYSTAL
+      end
+
+      def self.deploy_yml(name : String, db : String = "sqlite") : String
+        ndb = normalize_db(db)
+        lines = [
+          "# config/deploy.yml — Kamal 2 deployment (G165).",
+          "#",
+          "# Kamal builds the image from ./Dockerfile and runs kamal-proxy in",
+          "# front of the app (TLS/HTTP2, /up healthcheck). Saci does not bundle",
+          "# a proxy; Kamal owns that layer. Install Kamal separately and run",
+          "# `bin/kamal setup` once, then `bin/kamal deploy`.",
+          "service: #{name}",
+          "image: your-registry-user/#{name}",
+          "",
+          "servers:",
+          "  web:",
+          "    - 192.168.0.1",
+          "",
+          "# SQLite/persistent uploads need a host volume. Use the role form:",
+          "# servers:",
+          "#   web:",
+          "#     hosts:",
+          "#       - 192.168.0.1",
+          "#     volumes:",
+          "#       - /var/lib/#{name}/storage:/app/storage",
+          "#       - /var/lib/#{name}/db:/app/db",
+          "",
+          "proxy:",
+          "  ssl: true",
+          "  host: example.com",
+          "  app_port: 3000",
+          "  healthcheck:",
+          "    path: /up",
+          "    interval: 10",
+          "    timeout: 5",
+          "",
+          "registry:",
+          "  server: ghcr.io",
+          "  username: your-registry-user",
+          "  password:",
+          "    - KAMAL_REGISTRY_PASSWORD",
+          "",
+          "builder:",
+          "  arch: amd64",
+          "",
+          "env:",
+          "  clear:",
+          "    APP_ENV: production",
+          "    HOST: 0.0.0.0",
+          "    PORT: \"3000\"",
+          "    SACI_THREADS: \"4\"",
+          "    SACI_KEEP_ALIVE_TIMEOUT: \"5\"",
+          "    SACI_SHUTDOWN_TIMEOUT: \"15\"",
+          "  secret:",
+          "    - SECRET_KEY_BASE",
+          "    - DATABASE_URL",
+          "",
+          "ssh:",
+          "  user: deploy",
+          "",
+          "# Kamal-side drain must exceed SACI_SHUTDOWN_TIMEOUT so SIGTERM can",
+          "# finish in-flight requests before the container is killed.",
+          "deploy_timeout: 30",
+          "drain_timeout: 30",
+        ]
+
+        case ndb
+        when "postgres"
+          lines.concat([
+            "",
+            "accessories:",
+            "  db:",
+            "    image: postgres:16",
+            "    host: 192.168.0.1",
+            "    port: \"127.0.0.1:5432:5432\"",
+            "    env:",
+            "      clear:",
+            "        POSTGRES_DB: #{name}_production",
+            "        POSTGRES_USER: #{name}",
+            "      secret:",
+            "        - POSTGRES_PASSWORD",
+            "    directories:",
+            "      - data:/var/lib/postgresql/data",
+            "  # redis:",
+            "  #   image: redis:7",
+            "  #   host: 192.168.0.1",
+            "  #   port: \"127.0.0.1:6379:6379\"",
+            "  #   directories:",
+            "  #     - data:/data",
+          ])
+        when "mysql"
+          lines.concat([
+            "",
+            "accessories:",
+            "  db:",
+            "    image: mysql:8.4",
+            "    host: 192.168.0.1",
+            "    port: \"127.0.0.1:3306:3306\"",
+            "    env:",
+            "      clear:",
+            "        MYSQL_DATABASE: #{name}_production",
+            "      secret:",
+            "        - MYSQL_ROOT_PASSWORD",
+            "    directories:",
+            "      - data:/var/lib/mysql",
+            "  # redis:",
+            "  #   image: redis:7",
+            "  #   host: 192.168.0.1",
+            "  #   port: \"127.0.0.1:6379:6379\"",
+            "  #   directories:",
+            "  #     - data:/data",
+          ])
+        else
+          lines.concat([
+            "",
+            "# No database accessory: SQLite lives on the host volume above.",
+            "# For a managed database, set DATABASE_URL in .kamal/secrets.",
+            "# Optional accessories (Redis example):",
+            "accessories: {}",
+            "# accessories:",
+            "#   redis:",
+            "#     image: redis:7",
+            "#     host: 192.168.0.1",
+            "#     port: \"127.0.0.1:6379:6379\"",
+            "#     directories:",
+            "#       - data:/data",
+          ])
+        end
+        lines.join('\n')
+      end
+
+      def self.kamal_secrets(db : String = "sqlite") : String
+        lines = [
+          "# .kamal/secrets — read by Kamal 2 at deploy time (shell syntax).",
+          "# Keep only references here, never literal credentials. Export the",
+          "# variables in your shell/password manager before `bin/kamal deploy`.",
+          "KAMAL_REGISTRY_PASSWORD=$KAMAL_REGISTRY_PASSWORD",
+          "",
+          "# Required by config/deploy.yml env.secret:",
+          "SECRET_KEY_BASE=$SECRET_KEY_BASE",
+          "DATABASE_URL=$DATABASE_URL",
+        ]
+        case normalize_db(db)
+        when "postgres"
+          lines << ""
+          lines << "# Used by the generated db accessory:"
+          lines << "POSTGRES_PASSWORD=$POSTGRES_PASSWORD"
+        when "mysql"
+          lines << ""
+          lines << "# Used by the generated db accessory:"
+          lines << "MYSQL_ROOT_PASSWORD=$MYSQL_ROOT_PASSWORD"
+        end
+        lines.join('\n')
+      end
+
+      def self.doctor_script(name : String) : String
+        <<-CRYSTAL
+        # script/doctor.cr — pre-flight deployment checks (G141/G142/G144).
+        # Run with `bin/doctor` (the Docker image prebuilds bin/saci-doctor).
+        require "saci"
+        require "../config/environments/*"
+
+        env_name = ENV.fetch("APP_ENV", "development")
+        db_url = Saci::ConfigFile.database_url(env_name) || ENV["DATABASE_URL"]?
+        exit(Saci::Deploy.doctor(db_url: db_url))
+        CRYSTAL
+      end
+
+      def self.systemd_unit(name : String) : String
+        <<-UNIT
+        [Unit]
+        Description=#{name} (Saci)
+        After=network-online.target
+        Wants=network-online.target
+
+        [Service]
+        Type=simple
+        # Create a dedicated user/group (`useradd --system --home /srv/#{name} saci`).
+        User=saci
+        Group=saci
+        WorkingDirectory=/srv/#{name}
+        Environment=APP_ENV=production
+        Environment=HOST=127.0.0.1
+        Environment=PORT=3000
+        # Keep secrets out of this unit: mode 0600 EnvironmentFile.
+        EnvironmentFile=-/etc/saci/#{name}.env
+        ExecStart=/srv/#{name}/bin/#{name}
+        KillSignal=SIGTERM
+        # Must be greater than SACI_SHUTDOWN_TIMEOUT in config/server.yml.
+        TimeoutStopSec=30
+        Restart=on-failure
+        RestartSec=5
+        NoNewPrivileges=true
+        PrivateTmp=true
+        ProtectSystem=full
+        ReadWritePaths=/srv/#{name}/storage /srv/#{name}/log /srv/#{name}/tmp
+
+        [Install]
+        WantedBy=multi-user.target
+        UNIT
+      end
+
+      def self.thruster_doc(name : String) : String
+        <<-MD
+        # Thruster and reverse proxies
+
+        Saci does **not** bundle Thruster (or any proxy). `bin/thrust` is a
+        documentation placeholder, not a server. The generated app speaks
+        plain HTTP/1.1 via Crystal's stdlib server; TLS, HTTP/2, compression
+        and asset caching belong in a proxy in front of it.
+
+        ## Supported topologies
+
+        ### Kamal 2 (recommended for containers)
+
+        `config/deploy.yml` runs kamal-proxy beside the `#{name}` container.
+        It terminates TLS, exposes port 3000, and healthchecks `GET /up`:
+
+        ```sh
+        bin/kamal setup     # first deploy
+        bin/kamal deploy    # subsequent deploys
+        ```
+
+        The app receives `SIGTERM`, drains for
+        `SACI_SHUTDOWN_TIMEOUT` (15s in the generated deploy config), and
+        Kamal waits `drain_timeout: 30` before killing it.
+
+        ### systemd + Caddy/nginx
+
+        `deploy/#{name}.service` runs the app on `127.0.0.1:3000`. Put Caddy
+        or nginx on the same host and proxy to that address. Keep the app on
+        loopback; the proxy owns public ports 80/443.
+
+        ### Thruster as an external binary
+
+        Thruster is the Rails 8 proxy (HTTP/2, compression, X-Sendfile). It is
+        not a Saci dependency, but you may install it separately and point it
+        at `127.0.0.1:3000`:
+
+        ```sh
+        thrust bin/#{name} --port 3000
+        ```
+
+        Verify `/up` through the proxy before switching traffic. Do not claim
+        Thruster-specific features (X-Sendfile, asset caching) unless the
+        external proxy actually provides them.
+
+        ## Health and shutdown contract
+
+        - `GET /up` returns `200 OK` without touching the database.
+        - The Dockerfile declares `HEALTHCHECK` against `/up` and
+          `STOPSIGNAL SIGTERM`.
+        - Plain `docker run` should use `--restart unless-stopped`; Kamal and
+          systemd already restart failed processes.
+
+        ## Caveats
+
+        - Crystal's stdlib server is single-process: there is no Puma cluster
+          mode. Scale with containers/processes behind the proxy.
+        - `SACI_THREADS` needs a binary compiled with `-Dexecution_context`
+          (`saci serve --mt`); otherwise it is intentionally a no-op.
+        MD
+      end
+
+      def self.devcontainer_json(name : String) : String
+        <<-JSON
+        {
+          "name": "#{name}",
+          "build": {
+            "dockerfile": "Dockerfile",
+            "context": ".."
+          },
+          "workspaceFolder": "/workspace",
+          "postCreateCommand": "shards install",
+          "forwardPorts": [3000],
+          "remoteEnv": {
+            "APP_ENV": "development"
+          },
+          "customizations": {
+            "vscode": {
+              "extensions": ["crystal-lang.crystal-lang"]
+            }
+          }
+        }
+        JSON
+      end
+
+      def self.devcontainer_dockerfile : String
+        <<-DOCKER
+        # Devcontainer image: Crystal + native headers used by the common
+        # drivers. The app itself is bind-mounted at /workspace.
+        FROM crystallang/crystal:1.22.0
+        RUN apt-get update \\
+         && apt-get install -y --no-install-recommends \\
+              ca-certificates curl git libsqlite3-dev libssl-dev libyaml-dev \\
+              pkg-config postgresql-client default-mysql-client \\
+         && rm -rf /var/lib/apt/lists/*
+        RUN useradd --create-home --uid 1000 --shell /bin/bash vscode \\
+         && mkdir -p /workspace \\
+         && chown vscode:vscode /workspace
+        WORKDIR /workspace
+        USER vscode
+        DOCKER
       end
 
       # -- containers / CI ---------------------------------------------------
@@ -836,8 +1658,11 @@ module Saci
         RUN shards install --production
 
         COPY . .
-        RUN crystal build src/#{name}.cr --release --no-debug -o bin/#{name}
+        # -Dexecution_context makes SACI_THREADS/config/server.yml `threads`
+        # effective; without it Crystal stays single-threaded (a no-op).
+        RUN crystal build src/#{name}.cr --release --no-debug -Dexecution_context -o bin/#{name}
         RUN crystal build db/migrate.cr --release --no-debug -o bin/saci-migrate
+        RUN crystal build script/doctor.cr --release --no-debug -o bin/saci-doctor
 
         FROM debian:bookworm-slim AS runtime
         # Runtime libraries required by the release binary (verified with
@@ -861,12 +1686,22 @@ module Saci
 
         COPY --from=build --chown=saci:saci /app/bin/#{name} /app/bin/#{name}
         COPY --from=build --chown=saci:saci /app/bin/saci-migrate /app/bin/saci-migrate
+        COPY --from=build --chown=saci:saci /app/bin/saci-doctor /app/bin/saci-doctor
         COPY --from=build --chown=saci:saci /app/bin/docker-entrypoint /app/bin/docker-entrypoint
         COPY --from=build --chown=saci:saci /app/config/locales /app/config/locales
+        COPY --from=build --chown=saci:saci /app/config/database.yml /app/config/database.yml
+        COPY --from=build --chown=saci:saci /app/config/cache.yml /app/config/cache.yml
+        COPY --from=build --chown=saci:saci /app/config/queue.yml /app/config/queue.yml
+        COPY --from=build --chown=saci:saci /app/config/cable.yml /app/config/cable.yml
+        COPY --from=build --chown=saci:saci /app/config/recurring.yml /app/config/recurring.yml
+        COPY --from=build --chown=saci:saci /app/config/storage.yml /app/config/storage.yml
+        COPY --from=build --chown=saci:saci /app/config/server.yml /app/config/server.yml
         COPY --from=build --chown=saci:saci /app/public /app/public
 
         USER saci
         EXPOSE 3000
+        # SIGTERM triggers Saci::Deploy::GracefulShutdown (drain + hooks).
+        STOPSIGNAL SIGTERM
         HEALTHCHECK --interval=30s --timeout=3s --start-period=10s \\
           CMD curl -fsS http://127.0.0.1:3000/up || exit 1
 
@@ -881,6 +1716,10 @@ module Saci
         .github
         .crystal
         .shards
+        .devcontainer
+        .kamal
+        deploy
+        docs
         lib
         spec
         tmp
@@ -936,7 +1775,7 @@ module Saci
                 with:
                   crystal: 1.22.0
               - name: crystal tool format --check
-                run: crystal tool format --check src spec db
+                run: crystal tool format --check src spec db config script
 
           spec:
             name: Specs
