@@ -204,7 +204,7 @@ module Saci
           file ||= path unless path.empty?
         end
       end
-      file ? File.size(file) : nil
+      file.try { |path| File.size(path) }
     rescue
       nil
     end

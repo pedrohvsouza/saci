@@ -168,11 +168,12 @@ module Saci
 
   class Controller
     # Redirect log line with `Saci.filter_redirect` applied to the target.
-    def redirect_to(location : String, status : Int32 | Symbol = 302) : Nil
+    def redirect_to(location : String, status : Int32 | Symbol = 302,
+                    allow_other_host : Bool = false) : Nil
       if Saci.log_requests
         Saci.logger.info { "Redirected to #{Saci.filter_redirect_value(location)}" }
       end
-      previous_def
+      previous_def(location, status, allow_other_host)
     end
   end
 end
