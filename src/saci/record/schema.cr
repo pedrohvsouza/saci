@@ -14,10 +14,12 @@ module Saci
     #
     # SQLite normalization (documented, byte-stable): SQLite shares one
     # storage type across several logical types, so BOOLEAN/DATE/
-    # DATETIME/JSON map back to :integer/:text, DECIMAL/BIGINT to
-    # :float/:integer, and only single-column integer primary keys map
-    # back to :serial. `t.timestamps` (created_at + updated_at, both
-    # NOT NULL without defaults) is detected and re-emitted.
+    # DATETIME/JSON map back to :integer/:text, and only single-column
+    # integer primary keys map back to :serial. Exact DECIMAL columns use
+    # the TEXT-affinity `TEXT_DECIMAL` type and reload as :decimal (they
+    # keep their digits); legacy REAL-backed decimals reload as :float.
+    # `t.timestamps` (created_at + updated_at, both NOT NULL without
+    # defaults) is detected and re-emitted.
     # Re-dumping a loaded database is byte-stable. Defaults that cannot
     # round-trip exactly are normalized to no default and reported as
     # `# NOTE:` lines in the generated file.
@@ -113,12 +115,12 @@ module Saci
           io << "# schema-loaded database boots queue workers without extra steps.\n"
           io << "#\n"
           io << "# SQLite normalization: SQLite shares storage across logical types, so\n"
-          io << "# BOOLEAN/DATE/DATETIME/JSON reload as :integer/:text and DECIMAL/BIGINT\n"
-          io << "# as :float/:integer; only single-column integer primary keys reload as\n"
-          io << "# :serial. `t.timestamps` (created_at + updated_at, both NOT NULL without\n"
-          io << "# defaults) is detected and re-emitted. Re-dumping a loaded database is\n"
-          io << "# byte-stable; defaults that cannot round-trip exactly are normalized to\n"
-          io << "# no default (noted below).\n"
+          io << "# BOOLEAN/DATE/DATETIME/JSON reload as :integer/:text; exact decimals\n"
+          io << "# (TEXT_DECIMAL) stay :decimal while legacy REAL-backed decimals :float;\n"
+          io << "# only single-column integer primary keys reload as :serial. `t.timestamps`\n"
+          io << "# (created_at + updated_at, both NOT NULL without defaults) is detected and\n"
+          io << "# re-emitted. Re-dumping a loaded database is byte-stable; defaults that\n"
+          io << "# cannot round-trip exactly are normalized to no default (noted below).\n"
           notes.each { |n| io << "# NOTE: " << n << "\n" }
           rest.each do |o, _, other_notes|
             other_notes.each { |n| io << "# NOTE: [" << o.name << "] " << n << "\n" }
@@ -184,6 +186,7 @@ module Saci
         when Bool             then v ? "true" : "false"
         when Int32, Int64     then "#{v}_i64"
         when Float32, Float64 then v.to_s
+        when BigDecimal       then "BigDecimal.new(#{v.to_s.inspect})"
         when String           then v.inspect
         else                       "nil"
         end
@@ -285,7 +288,7 @@ module Saci
             pk = any_to_i64(rs.read) != 0
             col_names[cid] = name
             logical = sqlite_reverse_type(decltype, pk)
-            default, note = sqlite_parse_default(table, name, dflt_raw)
+            default, note = sqlite_parse_default(table, name, dflt_raw, logical)
             notes << note if note
             cols << ColumnDef.new(name, logical, !notnull && !pk, default, pk)
           end
@@ -331,12 +334,13 @@ module Saci
         when "VARCHAR", "CHARACTER VARYING", "CHAR", "CHARACTER", "NCHAR", "NVARCHAR", "CLOB" then :string
         when "TEXT", "DATE", "DATETIME", "TIMESTAMP"                                                                                  then :text
         when "INTEGER", "INT", "BIGINT", "SMALLINT", "MEDIUMINT", "TINYINT", "BOOLEAN", "BOOL"                                          then :integer
-        when "REAL", "FLOAT", "DOUBLE", "DOUBLE PRECISION", "DECIMAL", "NUMERIC"                                                       then :float
+        when "TEXT_DECIMAL", "DECIMAL", "NUMERIC"                                                                                       then :decimal
+        when "REAL", "FLOAT", "DOUBLE", "DOUBLE PRECISION"                                                                              then :float
         else                                                                                                                          :text
         end
       end
 
-      private def self.sqlite_parse_default(table : String, column : String, raw) : Tuple(Value, String?)
+      private def self.sqlite_parse_default(table : String, column : String, raw, logical : Symbol = :text) : Tuple(Value, String?)
         case raw
         when Nil                        then {nil, nil}
         when Bool                       then {raw, nil}
@@ -347,10 +351,18 @@ module Saci
           s = raw.strip
           return {nil, nil} if s.empty? || s.upcase == "NULL"
           if s.size >= 2 && s.starts_with?("'") && s.ends_with?("'")
-            return {s[1..-2].gsub("''", "'"), nil}
+            inner = s[1..-2].gsub("''", "'")
+            if logical == :decimal && (d = parse_decimal?(inner))
+              return {d, nil}
+            end
+            return {inner, nil}
           end
           if s.size >= 2 && s.starts_with?("\"") && s.ends_with?("\"")
-            return {s[1..-2], nil}
+            inner = s[1..-2]
+            if logical == :decimal && (d = parse_decimal?(inner))
+              return {d, nil}
+            end
+            return {inner, nil}
           end
           up = s.upcase
           return {true, nil} if up == "TRUE"
@@ -358,12 +370,21 @@ module Saci
           if {"CURRENT_TIMESTAMP", "CURRENT_DATE", "CURRENT_TIME"}.includes?(up)
             return {nil, "#{table}.#{column}: default #{s} does not round-trip; normalized to no default"}
           end
+          if logical == :decimal && (d = parse_decimal?(s))
+            return {d, nil}
+          end
           return {s.to_i64, nil} if s.to_i64?
           return {s.to_f64, nil} if s.to_f64?
           {nil, "#{table}.#{column}: default #{raw.inspect} does not round-trip; normalized to no default"}
         else
           {nil, "#{table}.#{column}: default does not round-trip; normalized to no default"}
         end
+      end
+
+      private def self.parse_decimal?(s : String) : BigDecimal?
+        BigDecimal.new(s.strip)
+      rescue InvalidBigDecimalException
+        nil
       end
 
       # -- PostgreSQL -----------------------------------------------------
@@ -440,9 +461,16 @@ module Saci
         return {false, nil} if s == "false"
         if s.starts_with?("'")
           if m = s.match(/\A'(.*)'::[\w ]+\z/m)
-            return {m[1].gsub("''", "'"), nil}
+            inner = m[1].gsub("''", "'")
+            if logical == :decimal && (d = parse_decimal?(inner))
+              return {d, nil}
+            end
+            return {inner, nil}
           end
           return {s, nil} if logical == :string || logical == :text
+        end
+        if logical == :decimal && (d = parse_decimal?(s))
+          return {d, nil}
         end
         if i = s.to_i64?
           return {logical == :boolean ? (i != 0) : i, nil}
@@ -567,6 +595,9 @@ module Saci
         when :integer, :bigint
           return {unquoted.to_i64, nil} if unquoted.to_i64?
         when :float, :decimal
+          if logical == :decimal && (d = parse_decimal?(unquoted))
+            return {d, nil}
+          end
           return {unquoted.to_f64, nil} if unquoted.to_f64?
         when :string, :text
           return {unquoted, nil}

@@ -1,6 +1,7 @@
 require "db"
 require "sqlite3"
 require "json"
+require "big"
 require "./record/inflector"
 require "./record/errors"
 require "./record/query"
@@ -63,15 +64,25 @@ module Saci
   #   MySQL (`Record.quote`).
   # * `Time`/`Bool` bind natively on PostgreSQL/MySQL; on SQLite they are
   #   stored as RFC3339 text / `0`/`1` (`Record.to_db`).
+  # * Exact `Decimal`/`BigDecimal` money columns bind as their canonical
+  #   decimal string (never Float64). SQLite stores them in TEXT-affinity
+  #   `TEXT_DECIMAL`; PostgreSQL/MySQL use native `NUMERIC`/`DECIMAL`
+  #   (`Record.db_type`).
   # * Auto-increment PKs: `AUTOINCREMENT` (SQLite), `BIGSERIAL` (PostgreSQL),
   #   `BIGINT AUTO_INCREMENT` (MySQL). Inserts use `RETURNING` on PostgreSQL
   #   (`last_insert_id` is unsupported by crystal-pg).
   module Record
+    # Public exact-decimal type for `column price : Decimal` /
+    # `column price : Saci::Record::Decimal`. Backed by Crystal's stdlib
+    # `BigDecimal` (arbitrary precision), never by `Float64`.
+    alias Decimal = BigDecimal
+
     # Every value a column, condition or assignment may carry.
     # `Array(String)` covers `:string_array` columns (`column tags :
     # Array(String)`), stored natively as `TEXT[]` on PostgreSQL and as
-    # JSON text on SQLite/MySQL.
-    alias Value = String | Int32 | Int64 | Float32 | Float64 | Bool | Time | Bytes | Array(String) | Nil
+    # JSON text on SQLite/MySQL. `BigDecimal` covers exact `Decimal`
+    # columns (money) after G297 — stored as canonical text on SQLite.
+    alias Value = String | Int32 | Int64 | Float32 | Float64 | Bool | Time | Bytes | Array(String) | BigDecimal | Nil
 
     # Database adapters, detected from the connection URL scheme
     # (`sqlite3://` → `:sqlite`, `postgres(ql)://` → `:postgres`,
@@ -82,6 +93,11 @@ module Saci
     end
 
     class RecordNotSaved < Exception
+    end
+
+    # Raised by `destroy!` when `destroy` could not remove the record
+    # (new record, already destroyed, or a `before_destroy` abort).
+    class RecordNotDestroyed < Exception
     end
 
     # Raised by `dependent: :restrict_with_exception` when a record still
@@ -468,6 +484,39 @@ module Saci
       end
     end
 
+    # Coerces input into the exact `BigDecimal` type used by `Decimal`
+    # columns. Accepts strings, all numeric types (including Float64/Int
+    # inputs, converted through their decimal text) and nil.
+    def self.to_decimal(v : Object) : BigDecimal?
+      case v
+      when Nil        then nil
+      when BigDecimal then v
+      when Number
+        begin
+          BigDecimal.new(v.to_s)
+        rescue InvalidBigDecimalException
+          nil
+        end
+      when String
+        begin
+          BigDecimal.new(v.strip)
+        rescue InvalidBigDecimalException
+          nil
+        end
+      when Bool then v ? BigDecimal.new(1) : BigDecimal.new(0)
+      else            nil
+      end
+    end
+
+    # Parses a decimal stored as text (SQLite `TEXT_DECIMAL`) or a driver's
+    # numeric representation (`PG::Numeric#to_s` is exact).
+    def self.parse_decimal?(s : String) : BigDecimal?
+      return nil if s.strip.empty?
+      BigDecimal.new(s.strip)
+    rescue InvalidBigDecimalException
+      nil
+    end
+
     def self.to_bool(v : Value) : Bool?
       case v
       when Nil    then nil
@@ -485,11 +534,18 @@ module Saci
     # natively through their drivers. `Array(String)` (for `:string_array`
     # columns) binds natively on PostgreSQL (`TEXT[]`) and is JSON-encoded
     # to text elsewhere.
+    #
+    # `Decimal`/`BigDecimal` (exact money) binds as its canonical decimal
+    # string on every adapter. SQLite stores it in a `TEXT_DECIMAL` column
+    # (TEXT affinity preserves every digit; NUMERIC affinity would coerce
+    # through REAL); PostgreSQL/MySQL parse the string into their native
+    # NUMERIC/DECIMAL type without a Float64 round-trip.
     def self.to_db(v : Object, adapter : Adapter = :sqlite) : Value
       case v
       when Nil    then nil
       when Bool   then adapter == :sqlite ? (v ? 1_i64 : 0_i64) : v
       when Time   then adapter == :sqlite ? v.to_rfc3339 : v
+      when BigDecimal then v.to_s
       when String, Int32, Int64, Float32, Float64, Bytes then v
       when Array(String) then adapter == :postgres ? v : v.to_json
       else
@@ -554,6 +610,7 @@ module Saci
       case default
       when Nil    then nil
       when Bool   then adapter == :postgres ? (default ? "TRUE" : "FALSE") : (default ? "1" : "0")
+      when BigDecimal then "'#{default.to_s.gsub("'", "''")}'"
       when Number then default.to_s
       when String then "'#{default.gsub("'", "''")}'"
       when Time   then "'#{default.to_rfc3339}'"
@@ -566,16 +623,32 @@ module Saci
     #
     # `enum_values`/`enum_type` serve `:enum` columns (PostgreSQL needs the
     # standalone type name; MySQL renders `ENUM(...)` inline; SQLite stores
-    # `TEXT`). `precision` (0..6) serves `:datetime` (`TIMESTAMP(p)` on
+    # `TEXT`). `precision`/`scale` serve `:decimal` (exact money, default
+    # `NUMERIC(38,18)` / `DECIMAL(38,18)`; SQLite uses the TEXT-affinity
+    # `TEXT_DECIMAL` so values are never coerced through REAL) and
+    # `precision` (0..6) alone serves `:datetime` (`TIMESTAMP(p)` on
     # PostgreSQL, `DATETIME(fsp)` on MySQL, ignored on SQLite).
-    def self.db_type(logical : Symbol, adapter : Adapter, enum_values : Array(String)? = nil, enum_type : String? = nil, precision : Int32? = nil) : String
+    def self.db_type(logical : Symbol, adapter : Adapter, enum_values : Array(String)? = nil, enum_type : String? = nil, precision : Int32? = nil, scale : Int32? = nil) : String
       case logical
       when :string   then "VARCHAR(255)"
       when :text     then "TEXT"
       when :integer  then "INTEGER"
       when :bigint   then adapter == :sqlite ? "INTEGER" : "BIGINT"
       when :float    then adapter == :sqlite ? "REAL" : (adapter == :postgres ? "DOUBLE PRECISION" : "DOUBLE")
-      when :decimal  then adapter == :sqlite ? "REAL" : (adapter == :postgres ? "DOUBLE PRECISION" : "DOUBLE")
+      when :decimal
+        # SQLite's NUMERIC/REAL affinity would round exact decimals through
+        # a binary float. `TEXT_DECIMAL` has TEXT affinity, so the canonical
+        # decimal string survives byte-for-byte (see `Record.to_db`).
+        if adapter == :sqlite
+          "TEXT_DECIMAL"
+        else
+          p = precision || 38
+          s = precision ? (scale || 0) : (scale || 18)
+          if p <= 0 || s < 0 || s > p
+            raise ArgumentError.new("decimal precision/scale out of range (got precision: #{p}, scale: #{s})")
+          end
+          adapter == :postgres ? "NUMERIC(#{p},#{s})" : "DECIMAL(#{p},#{s})"
+        end
       when :date     then adapter == :sqlite ? "TEXT" : "DATE"
       # crystal-mysql cannot decode the native JSON column type
       # (MYSQL_TYPE_JSON), so JSON is stored as TEXT on MySQL (the JSON
@@ -738,6 +811,19 @@ module Saci
       when "Int32"
         adapter == :sqlite ? rs.read(Int64?) : rs.read(Int32?)
       when "Float64" then rs.read(Float64?)
+      # Exact decimal. SQLite stores canonical text (`TEXT_DECIMAL`);
+      # crystal-pg decodes NUMERIC as `PG::Numeric`, whose `#to_s` is exact
+      # (no Float64 round-trip); crystal-mysql decodes DECIMAL as Float64
+      # (driver limitation — see the G297 notes), so convert through text.
+      when "Decimal"
+        case v = rs.read
+        when Nil        then nil
+        when BigDecimal then v
+        when String     then parse_decimal?(v)
+        when Bytes      then parse_decimal?(String.new(v))
+        when Number     then to_decimal(v)
+        else                 parse_decimal?(v.to_s)
+        end
       when "String"
         if adapter == :postgres
           case v = rs.read

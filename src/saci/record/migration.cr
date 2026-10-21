@@ -3,9 +3,9 @@ module Saci
     # Column definition used by `TableDefinition` and `add_column`.
     # Stores the *logical* type; SQL renders per adapter (`to_sql`).
     # `enum_values` serves `:enum` columns; `precision` (0..6) serves
-    # `:datetime`. `to_sql` takes the owning table so PostgreSQL enum
-    # columns can reference their standalone type
-    # (`Migration.enum_type_name`).
+    # `:datetime`, and `precision`/`scale` serve exact `:decimal` columns.
+    # `to_sql` takes the owning table so PostgreSQL enum columns can
+    # reference their standalone type (`Migration.enum_type_name`).
     struct ColumnDef
       getter name : String
       getter logical_type : Symbol
@@ -14,14 +14,15 @@ module Saci
       getter primary_key : Bool
       getter enum_values : Array(String)?
       getter precision : Int32?
+      getter scale : Int32?
 
-      def initialize(@name, @logical_type, @null, @default_value, @primary_key, @enum_values : Array(String)? = nil, @precision : Int32? = nil)
+      def initialize(@name, @logical_type, @null, @default_value, @primary_key, @enum_values : Array(String)? = nil, @precision : Int32? = nil, @scale : Int32? = nil)
       end
 
       def to_sql(adapter : Adapter = :sqlite, table : String? = nil) : String
         String.build do |s|
           enum_type = table ? Migration.enum_type_name(table, @name) : nil
-          s << "#{Record.quote(@name, adapter)} #{Record.db_type(@logical_type, adapter, @enum_values, enum_type, @precision)}"
+          s << "#{Record.quote(@name, adapter)} #{Record.db_type(@logical_type, adapter, @enum_values, enum_type, @precision, @scale)}"
           if @primary_key
             case adapter
             when :postgres then s << " PRIMARY KEY"
@@ -92,8 +93,22 @@ module Saci
         add(name, :float, null, default)
       end
 
-      def decimal(name : String | Symbol, null : Bool = true, default : Value = nil)
-        add(name, :decimal, null, default)
+      # Exact decimal/numeric column. `precision`/`scale` default to
+      # `(38, 18)` on PostgreSQL/MySQL (native `NUMERIC`/`DECIMAL`);
+      # SQLite uses TEXT-affinity `TEXT_DECIMAL` to preserve every digit
+      # (see `Record.db_type`). `column price : Decimal` on the model.
+      def decimal(name : String | Symbol, null : Bool = true, default : Value = nil, precision : Int32? = nil, scale : Int32? = nil)
+        if p = precision
+          s = scale || 0
+          if p <= 0 || s < 0 || s > p
+            raise ArgumentError.new("decimal #{name}: precision/scale out of range (got precision: #{p}, scale: #{s})")
+          end
+        elsif s = scale
+          if s < 0
+            raise ArgumentError.new("decimal #{name}: scale #{s} is out of range")
+          end
+        end
+        @columns << ColumnDef.new(name.to_s, :decimal, null, default, false, nil, precision, scale)
       end
 
       def date(name : String | Symbol, null : Bool = true, default : Value = nil)
@@ -419,7 +434,7 @@ module Saci
         Record.exec_compat(@db, "DROP TABLE #{Record.quote(name, ad)}")
       end
 
-      def add_column(table : String | Symbol, name : String | Symbol, type : Symbol, null : Bool = true, default : Value = nil, values : Array(String)? = nil, precision : Int32? = nil) : Nil
+      def add_column(table : String | Symbol, name : String | Symbol, type : Symbol, null : Bool = true, default : Value = nil, values : Array(String)? = nil, precision : Int32? = nil, scale : Int32? = nil) : Nil
         ad = Record.adapter_of(@db)
         tbl, col = table.to_s, name.to_s
         if @inverting
@@ -443,7 +458,7 @@ module Saci
             Record.exec_compat(@db, stmt)
           end
         end
-        Record.exec_compat(@db, "ALTER TABLE #{Record.quote(tbl, ad)} ADD COLUMN #{ColumnDef.new(col, type, null, default, false, values, precision).to_sql(ad, tbl)}")
+        Record.exec_compat(@db, "ALTER TABLE #{Record.quote(tbl, ad)} ADD COLUMN #{ColumnDef.new(col, type, null, default, false, values, precision, scale).to_sql(ad, tbl)}")
       end
 
       def remove_column(table : String | Symbol, name : String | Symbol) : Nil

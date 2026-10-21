@@ -25,9 +25,10 @@ module Saci
     #
     # Supported column types: `Int32`, `Int64`, `Float64`, `String`,
     # `Bool`, `Time`, `Bytes` (all automatically nilable), plus logical
-    # types `Decimal` (Float64-backed), `Date` (Time-backed), `JSON`
-    # (String-backed, with a `<name>_json` helper) and `Array(String)`
-    # (string arrays: native `TEXT[]` on PostgreSQL, JSON text elsewhere).
+    # types `Decimal` (exact `BigDecimal`-backed money — G297), `Date`
+    # (Time-backed), `JSON` (String-backed, with a `<name>_json` helper)
+    # and `Array(String)` (string arrays: native `TEXT[]` on PostgreSQL,
+    # JSON text elsewhere).
     class Base
       # -- connection ------------------------------------------------------
       # Delegates to the module-global connection (see `Saci::Record` —
@@ -199,10 +200,11 @@ module Saci
       # Declares a typed attribute. Automatically nilable.
       # `default:` sets the initial value on `new` (like ActiveRecord).
       #
-      # Logical types `Decimal` (Float64-backed, e.g. confidence scores),
-      # `Date` (Time-backed, use `.date` on values), `JSON`
-      # (String-backed, with a `<name>_json` / `<name>_json=` `JSON::Any`
-      # helper) and `Array(String)` (string arrays, declared as
+      # Logical types `Decimal` / `Saci::Record::Decimal` (exact
+      # `BigDecimal`-backed money — never Float64), `Date` (Time-backed,
+      # use `.date` on values), `JSON` (String-backed, with a
+      # `<name>_json` / `<name>_json=` `JSON::Any` helper) and
+      # `Array(String)` (string arrays, declared as
       # `column tags : Array(String)` for `t.string_array` columns) map to
       # physical column types for storage.
       macro column(decl, primary = false, default = nil)
@@ -210,9 +212,9 @@ module Saci
         {% if ctype.ends_with?("?") %}
           {% raise "Saci::Record.column #{decl.var}: declare a non-nilable type (nilability is automatic). Got: #{ctype}" %}
         {% end %}
-        {% if ctype == "Decimal" %}
-          {% ptype = "Float64" %}
-          {% stype = "Float64" %}
+        {% if ctype == "Decimal" || ctype == "BigDecimal" || ctype.ends_with?("::Decimal") %}
+          {% ptype = "BigDecimal" %}
+          {% stype = "Decimal" %}
         {% elsif ctype == "Date" %}
           {% ptype = "Time" %}
           {% stype = "Time" %}
@@ -226,7 +228,7 @@ module Saci
           {% ptype = ctype %}
           {% stype = ctype %}
         {% end %}
-        {% unless ["Int32", "Int64", "Float64", "String", "Bool", "Time", "Bytes", "Array(String)"].includes?(ptype) %}
+        {% unless ["Int32", "Int64", "Float64", "String", "Bool", "Time", "Bytes", "Array(String)", "BigDecimal"].includes?(ptype) %}
           {% raise "Saci::Record.column #{decl.var}: unsupported type #{ctype}. Supported: Int32, Int64, Float64, String, Bool, Time, Bytes, Decimal, Date, JSON, Array(String)." %}
         {% end %}
         @{{decl.var.id}} : {{ptype.id}}?
@@ -236,8 +238,23 @@ module Saci
         end
 
         def {{decl.var.id}}=(value : {{ptype.id}}?) : {{ptype.id}}?
+          %old_attr = @{{decl.var.id}}
           @{{decl.var.id}} = value
+          __saci_track_write({{decl.var.stringify}}, %old_attr, @{{decl.var.id}})
+          value
         end
+
+        {% if stype == "Decimal" %}
+          # Convenience overloads: `record.price = 12.5` / `= 12` keep
+          # working while the stored attribute stays exact (`BigDecimal`).
+          def {{decl.var.id}}=(value : Int | Float) : {{ptype.id}}?
+            %converted = Saci::Record.to_decimal(value)
+            %old_attr = @{{decl.var.id}}
+            @{{decl.var.id}} = %converted
+            __saci_track_write({{decl.var.stringify}}, %old_attr, @{{decl.var.id}})
+            %converted
+          end
+        {% end %}
 
         {% if ctype == "JSON" %}
           # Parsed view of a JSON column (`nil` when blank; raises
@@ -249,10 +266,41 @@ module Saci
           end
 
           def {{decl.var.id}}_json=(value : ::JSON::Any) : ::JSON::Any
-            @{{decl.var.id}} = value.to_json
+            self.{{decl.var.id}} = value.to_json
             value
           end
         {% end %}
+
+        # -- dirty tracking (ActiveModel::Dirty-compatible) -------------
+        def {{decl.var.id}}_changed? : Bool
+          __saci_attribute_changed?({{decl.var.stringify}})
+        end
+
+        def {{decl.var.id}}_change : Array(Saci::Record::Value)?
+          __saci_attribute_change({{decl.var.stringify}})
+        end
+
+        def {{decl.var.id}}_was : {{ptype.id}}?
+          %was = __saci_attribute_was({{decl.var.stringify}})
+          %was.is_a?({{ptype.id}}) ? %was : nil
+        end
+
+        def {{decl.var.id}}_previously_was : {{ptype.id}}?
+          %was = __saci_attribute_previously_was({{decl.var.stringify}})
+          %was.is_a?({{ptype.id}}) ? %was : nil
+        end
+
+        def saved_change_to_{{decl.var.id}} : Array(Saci::Record::Value)?
+          __saci_saved_change_to({{decl.var.stringify}})
+        end
+
+        def saved_change_to_{{decl.var.id}}? : Bool
+          __saci_saved_change_to?({{decl.var.stringify}})
+        end
+
+        def will_save_change_to_{{decl.var.id}}? : Bool
+          __saci_will_save_change_to?({{decl.var.stringify}})
+        end
 
         def self.__saci_column_names : Array(Tuple(String, String))
           previous_def + [{ {{decl.var.stringify}}, {{stype}} }]
@@ -260,8 +308,11 @@ module Saci
 
         def __saci_set_attr(key : String, value : Saci::Record::Value) : Bool
           if key == {{decl.var.stringify}}
+            %old_attr = @{{decl.var.id}}
             {% if stype == "String" %}
               @{{decl.var.id}} = value.nil? ? nil : value.to_s
+            {% elsif stype == "Decimal" %}
+              @{{decl.var.id}} = Saci::Record.to_decimal(value)
             {% elsif stype == "Int64" %}
               @{{decl.var.id}} = Saci::Record.to_i64(value)
             {% elsif stype == "Int32" %}
@@ -277,6 +328,7 @@ module Saci
             {% elsif stype == "Array(String)" %}
               @{{decl.var.id}} = Saci::Record.to_string_array(value)
             {% end %}
+            __saci_track_write({{decl.var.stringify}}, %old_attr, @{{decl.var.id}})
             return true
           end
           previous_def
@@ -290,7 +342,11 @@ module Saci
         {% unless default.is_a?(NilLiteral) %}
           def __saci_apply_defaults : Nil
             previous_def
-            @{{decl.var.id}} = {{default}}
+            {% if stype == "Decimal" %}
+              @{{decl.var.id}} = Saci::Record.to_decimal({{default}})
+            {% else %}
+              @{{decl.var.id}} = {{default}}
+            {% end %}
           end
         {% end %}
 
@@ -302,12 +358,89 @@ module Saci
       end
 
       # Adds `created_at` / `updated_at` columns, auto-maintained on save.
+      # Explicitly assigned timestamps are preserved: on create only nil
+      # values are filled, and on update `updated_at` is not overwritten
+      # when the record assigned it during that save (G299).
       macro timestamps
         column created_at : Time
         column updated_at : Time
 
         def self.__saci_timestamps? : Bool
           true
+        end
+      end
+
+      # Rails-style model enum (G13). Crystal reserves the `enum` keyword,
+      # so the DSL is `model_enum`:
+      #
+      # ```
+      # class Post < ApplicationRecord
+      #   column status : Int32
+      #   model_enum status: {draft: 0, live: 1}
+      # end
+      #
+      # post.draft?       # => true
+      # post.live!        # assign + save!
+      # post.status_value # => 1 (raw column value)
+      # Post.live         # scope
+      # Post.statuses     # => {"draft" => 0, "live" => 1}
+      # ```
+      #
+      # Generates predicates (`draft?`), bang setters (`draft!`), scopes
+      # (`Post.draft`), the `status_value` reader, a class-level
+      # `statuses` hash and an inclusion validation for non-nil values.
+      # String-backed enums work too (`model_enum status: {draft: "draft"}`).
+      macro model_enum(**mapping)
+        {% unless mapping.is_a?(NamedTupleLiteral) && mapping.keys.size == 1 %}
+          {% raise "model_enum expects one attribute, e.g. `model_enum status: {draft: 0, live: 1}` (got #{mapping})" %}
+        {% end %}
+        {% attr = mapping.keys[0] %}
+        {% values = mapping[attr] %}
+        {% plural = attr.stringify.ends_with?("s") ? attr.stringify + "es" : attr.stringify + "s" %}
+        {% unless values.is_a?(NamedTupleLiteral) && values.keys.size > 0 %}
+          {% raise "model_enum #{attr}: expected a non-empty hash, e.g. {draft: 0, live: 1}" %}
+        {% end %}
+
+        {% for label in values.keys %}
+          def {{label.id}}? : Bool
+            self.{{attr.id}} == {{values[label]}}
+          end
+
+          def {{label.id}}! : self
+            self.{{attr.id}} = {{values[label]}}
+            save!
+          end
+
+          def self.{{label.id}} : Saci::Record::Query(self)
+            where({{attr.id}}: {{values[label]}})
+          end
+        {% end %}
+
+        # Raw stored value (`1`, not the label) — Rails' `status_before_type_cast`
+        # equivalent, kept simple under this framework's column model.
+        def {{attr.id}}_value : Saci::Record::Value
+          self.{{attr.id}}
+        end
+
+        # Label => raw value mapping (string keys, like Rails `Model.statuses`).
+        def self.{{plural.id}} : Hash(String, Saci::Record::Value)
+          %mapping = {} of String => Saci::Record::Value
+          {% for label in values.keys %}
+            %mapping[{{label.stringify}}] = {{values[label]}}
+          {% end %}
+          %mapping
+        end
+
+        def __saci_run_validations(errors : Saci::Record::Errors) : Nil
+          previous_def
+          %enum_value = self.{{attr.id}}
+          unless %enum_value.nil?
+            %enum_valid = false
+            {% for label in values.keys %}
+              %enum_valid = true if %enum_value == {{values[label]}}
+            {% end %}
+            errors.add({{attr.id.stringify}}, "is not included in the list") unless %enum_valid
+          end
         end
       end
 
@@ -420,15 +553,18 @@ module Saci
 
       def initialize
         __saci_apply_defaults
+        __saci_dirty_reset!
       end
 
       def initialize(attrs : NamedTuple)
         __saci_apply_defaults
+        __saci_dirty_reset!
         assign(attrs)
       end
 
       def initialize(**attrs : Object)
         __saci_apply_defaults
+        __saci_dirty_reset!
         assign(attrs)
       end
 
@@ -494,23 +630,37 @@ module Saci
 
       def save : Bool
         return false unless valid?
+        __saci_persist_record
+      end
+
+      def save! : self
+        raise RecordInvalid.new(errors) unless save
+        self
+      end
+
+      # Persists the record without running validations (callbacks and
+      # timestamp maintenance still run). Used by `update_attribute`,
+      # `increment!`, `decrement!` and `toggle!` (G294).
+      private def __saci_persist_record : Bool
         __saci_before_save
         touch_timestamps
+        # Baseline for `previous_changes`: dirty changes captured after
+        # before_save/timestamps plus values just before the SQL write.
+        pre_values = __saci_snapshot_values
+        pre_changes = __saci_changes_snapshot
         was_new = new_record?
         if was_new
           insert_record
         else
           update_record
         end
+        # Commit dirty state before after_* callbacks so they can read
+        # `previous_changes` / `saved_changes` (ActiveModel semantics).
+        __saci_dirty_commit!(pre_values, pre_changes, was_new)
         __saci_after_create if was_new
         __saci_after_save
         __saci_fire_after_commit(was_new)
         true
-      end
-
-      def save! : self
-        raise RecordInvalid.new(errors) unless save
-        self
       end
 
       def update(attrs : NamedTuple) : Bool
@@ -560,6 +710,90 @@ module Saci
         true
       end
 
+      # Rails `update_attribute(name, value)`: assigns one attribute and
+      # saves, skipping validations while running the normal callbacks and
+      # timestamp maintenance (G294).
+      def update_attribute(name : String | Symbol, value : Saci::Record::Value) : Bool
+        key = name.to_s
+        unless self.class.__saci_column_names.any? { |(n, _)| n == key }
+          raise UnknownAttributeError.new("unknown attribute '#{key}' for #{self.class}")
+        end
+        __saci_set_attr(key, value)
+        __saci_persist_record
+      end
+
+      # Rails `update_column(name, value)`: writes one column directly to
+      # the database, skipping validations and callbacks. The in-memory
+      # attribute and its dirty snapshot are updated to match the database
+      # (the column is clean afterwards). Raises on new records and the
+      # primary key.
+      def update_column(name : String | Symbol, value : Saci::Record::Value) : Bool
+        key = name.to_s
+        raise RecordNotSaved.new("Cannot update_column on a new #{self.class} record") if new_record?
+        raise RecordNotSaved.new("Cannot update_column on a destroyed #{self.class} record") if destroyed?
+        unless self.class.__saci_column_names.any? { |(n, _)| n == key }
+          raise UnknownAttributeError.new("unknown attribute '#{key}' for #{self.class}")
+        end
+        if key == self.class.__saci_primary_key
+          raise ArgumentError.new("update_column cannot update the primary key '#{key}'")
+        end
+        __saci_update_pairs([{key, value}])
+      end
+
+      # `increment!(:views, 2)` — adds to a numeric column and persists.
+      # Validations are skipped; callbacks and timestamps run (unlike
+      # Rails' counter helpers, which write only the counter column).
+      # Returns self.
+      def increment!(attribute : String | Symbol, by : Int = 1) : self
+        __saci_adjust_counter(attribute, by.to_i64)
+        self
+      end
+
+      # `decrement!(:stock)` — subtracts from a numeric column and persists.
+      def decrement!(attribute : String | Symbol, by : Int = 1) : self
+        __saci_adjust_counter(attribute, -by.to_i64)
+        self
+      end
+
+      private def __saci_adjust_counter(attribute : String | Symbol, delta : Int64) : Nil
+        key = attribute.to_s
+        unless self.class.__saci_column_names.any? { |(n, _)| n == key }
+          raise UnknownAttributeError.new("unknown attribute '#{key}' for #{self.class}")
+        end
+        old = __saci_get_attr(key)
+        new_value : Value = case old
+        when Nil        then delta
+        when BigDecimal then old + BigDecimal.new(delta)
+        when Int32      then (old.to_i64 + delta).to_i32
+        when Int64      then old + delta
+        when Float32    then (old.to_f64 + delta).to_f32
+        when Float64    then old + delta.to_f64
+        else
+          raise ArgumentError.new("increment!/decrement! requires a numeric attribute '#{key}' (got #{old.class})")
+        end
+        __saci_set_attr(key, new_value)
+        __saci_persist_record
+      end
+
+      # `toggle!(:admin)` — flips a boolean column (nil => true) and saves.
+      def toggle!(attribute : String | Symbol) : self
+        key = attribute.to_s
+        unless self.class.__saci_column_names.any? { |(n, _)| n == key }
+          raise UnknownAttributeError.new("unknown attribute '#{key}' for #{self.class}")
+        end
+        old = __saci_get_attr(key)
+        __saci_set_attr(key, !(old.is_a?(Bool) && old))
+        __saci_persist_record
+        self
+      end
+
+      # Rails `destroy!`: like `destroy` but raises `RecordNotDestroyed`
+      # instead of returning false.
+      def destroy! : self
+        destroy || raise RecordNotDestroyed.new("Failed to destroy #{self.class}##{__saci_get_attr(self.class.__saci_primary_key)}")
+        self
+      end
+
       # `touch` — sets `updated_at` (plus any given columns) to now and
       # persists, skipping validations and callbacks. Returns `false` for
       # new records.
@@ -604,6 +838,9 @@ module Saci
           vals)
         pairs.each do |(n, v)|
           __saci_set_attr(n, v)
+          # Direct writes bypass validations/callbacks but the database is
+          # now in sync: reflect the new value in the dirty snapshot.
+          __saci_mark_attribute_clean(n)
         end
         true
       end
@@ -631,6 +868,7 @@ module Saci
         end
         @new_record = false
         @destroyed = false
+        __saci_dirty_reset!
         self
       end
 
@@ -676,8 +914,18 @@ module Saci
       private def touch_timestamps : Nil
         return unless self.class.__saci_timestamps?
         now = Time.utc
-        __saci_set_attr("created_at", now) if new_record?
-        __saci_set_attr("updated_at", now)
+        if new_record?
+          # G299: preserve explicitly assigned timestamps on create; only
+          # fill missing/nil values (Rails behavior).
+          __saci_set_attr("created_at", now) if __saci_get_attr("created_at").nil?
+          __saci_set_attr("updated_at", now) if __saci_get_attr("updated_at").nil?
+        else
+          # On update, bump updated_at unless the caller assigned it
+          # during this save (explicit assignment wins).
+          unless @__saci_assigned_for_save.includes?("updated_at")
+            __saci_set_attr("updated_at", now)
+          end
+        end
       end
 
       private def insert_record : Nil
@@ -761,6 +1009,9 @@ module Saci
 
       def __saci_mark_persisted! : Nil
         @new_record = false
+        # Loaded records start clean and have no `previous_changes`
+        # (a fresh instance fetched from the database, not a save).
+        __saci_dirty_reset!
       end
 
       # -- finders ----------------------------------------------------------
@@ -2332,3 +2583,7 @@ module Saci
     end
   end
 end
+
+# Dirty tracking is a reopening of `Saci::Record::Base` (G10); kept in its
+# own file to keep the core class readable and the diff reviewable.
+require "./dirty"

@@ -1075,9 +1075,13 @@ describe "Saci::Record" do
     m.meta_json.not_nil!["b"][1].should eq(2)
 
     # Migration logical types render per adapter.
-    Saci::Record.db_type(:decimal, :sqlite).should eq("REAL")
-    Saci::Record.db_type(:decimal, :postgres).should eq("DOUBLE PRECISION")
-    Saci::Record.db_type(:decimal, :mysql).should eq("DOUBLE")
+    # Exact decimal DDL (G297): SQLite uses TEXT affinity; PG/MySQL use
+    # native NUMERIC/DECIMAL with explicit precision/scale.
+    Saci::Record.db_type(:decimal, :sqlite).should eq("TEXT_DECIMAL")
+    Saci::Record.db_type(:decimal, :postgres).should eq("NUMERIC(38,18)")
+    Saci::Record.db_type(:decimal, :mysql).should eq("DECIMAL(38,18)")
+    Saci::Record.db_type(:decimal, :postgres, precision: 10, scale: 2).should eq("NUMERIC(10,2)")
+    Saci::Record.db_type(:decimal, :mysql, precision: 12, scale: 4).should eq("DECIMAL(12,4)")
     Saci::Record.db_type(:date, :sqlite).should eq("TEXT")
     Saci::Record.db_type(:date, :postgres).should eq("DATE")
     Saci::Record.db_type(:json, :sqlite).should eq("TEXT")
