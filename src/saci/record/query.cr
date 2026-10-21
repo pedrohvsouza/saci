@@ -1,5 +1,11 @@
 module Saci
   module Record
+    # Raised by `sole` / `find_sole_by` when a scope contains more than one
+    # record (Rails: `ActiveRecord::SoleRecordExceeded`). A missing record
+    # raises `RecordNotFound` instead.
+    class SoleRecordExceeded < Exception
+    end
+
     # Chainable, Rails-relation-like query builder.
     #
     # ```
@@ -9,7 +15,10 @@ module Saci
     class Query(T)
       include Enumerable(T)
 
-      def initialize(@klass : T.class, @conditions : Array(String) = [] of String, @params : Array(Value) = [] of Value, @order : Array(String) = [] of String, @limit : Int32? = nil, @offset : Int32? = nil, @select_cols : Array(String)? = nil, @distinct_flag : Bool = false, @joins : Array(String) = [] of String, @group_cols : Array(String) = [] of String, @includes : Array(String) = [] of String, @nested_includes : Hash(String, Array(String)) = {} of String => Array(String), @records : Array(T)? = nil)
+      # New scope flags (`none`, `having`, `from`, `lock`, ...) are optional
+      # trailing parameters so existing positional `Query(T).new` calls keep
+      # working. Every chain method goes through `spawn`.
+      def initialize(@klass : T.class, @conditions : Array(String) = [] of String, @params : Array(Value) = [] of Value, @order : Array(String) = [] of String, @limit : Int32? = nil, @offset : Int32? = nil, @select_cols : Array(String)? = nil, @distinct_flag : Bool = false, @joins : Array(String) = [] of String, @group_cols : Array(String) = [] of String, @includes : Array(String) = [] of String, @nested_includes : Hash(String, Array(String)) = {} of String => Array(String), @records : Array(T)? = nil, @none_flag : Bool = false, @having : Array(String) = [] of String, @from_clause : String? = nil, @annotations : Array(String) = [] of String, @readonly_flag : Bool = false, @lock_clause : String? = nil, @references : Array(String) = [] of String, @having_params : Array(Value) = [] of Value)
       end
 
       # Adapter of the model's database (resolved per call so
@@ -27,8 +36,8 @@ module Saci
       # Clone with overrides — every chain method funnels through here so
       # `select`/`distinct`/`joins`/`group`/`includes` survive chaining.
       # Any scope change drops preloaded `@records` (fresh SQL scope).
-      private def spawn(conditions : Array(String) = @conditions.dup, params : Array(Value) = @params.dup, order : Array(String) = @order.dup, limit : Int32? = @limit, offset : Int32? = @offset, select_cols : Array(String)? = @select_cols.try(&.dup), distinct_flag : Bool = @distinct_flag, joins : Array(String) = @joins.dup, group_cols : Array(String) = @group_cols.dup, includes : Array(String) = @includes.dup, nested_includes : Hash(String, Array(String)) = @nested_includes.dup, records : Array(T)? = nil) : Query(T)
-        Query(T).new(@klass, conditions, params, order, limit, offset, select_cols, distinct_flag, joins, group_cols, includes, nested_includes, records)
+      private def spawn(conditions : Array(String) = @conditions.dup, params : Array(Value) = @params.dup, order : Array(String) = @order.dup, limit : Int32? = @limit, offset : Int32? = @offset, select_cols : Array(String)? = @select_cols.try(&.dup), distinct_flag : Bool = @distinct_flag, joins : Array(String) = @joins.dup, group_cols : Array(String) = @group_cols.dup, includes : Array(String) = @includes.dup, nested_includes : Hash(String, Array(String)) = @nested_includes.dup, records : Array(T)? = nil, none_flag : Bool = @none_flag, having : Array(String) = @having.dup, from_clause : String? = @from_clause, annotations : Array(String) = @annotations.dup, readonly_flag : Bool = @readonly_flag, lock_clause : String? = @lock_clause, references : Array(String) = @references.dup, having_params : Array(Value) = @having_params.dup) : Query(T)
+        Query(T).new(@klass, conditions, params, order, limit, offset, select_cols, distinct_flag, joins, group_cols, includes, nested_includes, records, none_flag, having, from_clause, annotations, readonly_flag, lock_clause, references, having_params)
       end
 
       # `where(title: "x", published: true)` — nil becomes `IS NULL`, a
@@ -113,6 +122,114 @@ module Saci
         left = @conditions.empty? ? "1 = 1" : @conditions.map { |c| "(#{c})" }.join(" AND ")
         right = other.@conditions.empty? ? "1 = 1" : other.@conditions.map { |c| "(#{c})" }.join(" AND ")
         spawn(["((#{left}) OR (#{right}))"], @params.dup + other.@params)
+      end
+
+      # `Post.where(a: 1).and(Post.where(b: 2))` — ANDs another relation's
+      # conditions into the receiver (Rails requires structurally
+      # compatible relations; Saci keeps the receiver's other scopes).
+      def and(other : Query(T)) : Query(T)
+        spawn(@conditions.dup + other.@conditions, @params.dup + other.@params)
+      end
+
+      # `merge(other)` — folds another relation's scope into this one.
+      #
+      # Merge rules (Rails-inspired): WHERE/HAVING/JOIN conditions and
+      # annotations accumulate; the *other* relation wins for `order`,
+      # `limit`, `offset`, `select`, `from`, `lock` and `distinct` when it
+      # actually sets them. Includes are unioned. `none` is sticky.
+      def merge(other : Query(T)) : Query(T)
+        merged_includes = (@includes + other.@includes).uniq
+        merged_nested = @nested_includes.dup
+        other.@nested_includes.each do |k, v|
+          merged_nested[k] = ((merged_nested[k]? || [] of String) + v).uniq
+        end
+        spawn(
+          conditions: @conditions + other.@conditions,
+          params: @params + other.@params,
+          order: other.@order.empty? ? @order.dup : other.@order.dup,
+          limit: other.@limit.nil? ? @limit : other.@limit,
+          offset: other.@offset.nil? ? @offset : other.@offset,
+          select_cols: other.@select_cols.nil? ? @select_cols.try(&.dup) : other.@select_cols.try(&.dup),
+          distinct_flag: @distinct_flag || other.@distinct_flag,
+          joins: @joins + other.@joins,
+          group_cols: other.@group_cols.empty? ? @group_cols.dup : other.@group_cols.dup,
+          includes: merged_includes,
+          nested_includes: merged_nested,
+          none_flag: @none_flag || other.@none_flag,
+          having: @having + other.@having,
+          from_clause: other.@from_clause.nil? ? @from_clause : other.@from_clause,
+          annotations: @annotations + other.@annotations,
+          lock_clause: other.@lock_clause.nil? ? @lock_clause : other.@lock_clause,
+          references: (@references + other.@references).uniq,
+          having_params: @having_params + other.@having_params,
+        )
+      end
+
+      # `rewhere(published: true)` — replaces every existing WHERE clause.
+      def rewhere(**conds : Object) : Query(T)
+        spawn(conditions: [] of String, params: [] of Value).where(**conds)
+      end
+
+      def rewhere(conds : NamedTuple) : Query(T)
+        rewhere(**conds)
+      end
+
+      # `unscope(:order, :limit, :where, ...)` — removes the named parts.
+      # Supported: `:where`, `:order`, `:limit`, `:offset`, `:select`,
+      # `:group`, `:joins`, `:includes`, `:having`, `:from`, `:lock`,
+      # `:annotate`, `:distinct`.
+      def unscope(*parts : Symbol) : Query(T)
+        conditions = @conditions.dup
+        params = @params.dup
+        order = @order.dup
+        lim = @limit
+        off = @offset
+        select_cols = @select_cols.try(&.dup)
+        group_cols = @group_cols.dup
+        joins = @joins.dup
+        includes = @includes.dup
+        nested = @nested_includes.dup
+        distinct_flag = @distinct_flag
+        having = @having.dup
+        having_params = @having_params.dup
+        from_clause = @from_clause
+        lock_clause = @lock_clause
+        annotations = @annotations.dup
+        parts.each do |part|
+          case part
+          when :where    then conditions = [] of String; params = [] of Value
+          when :order    then order = [] of String
+          when :limit    then lim = nil
+          when :offset   then off = nil
+          when :select   then select_cols = nil
+          when :group    then group_cols = [] of String
+          when :joins    then joins = [] of String
+          when :includes then includes = [] of String; nested = {} of String => Array(String)
+          when :having   then having = [] of String; having_params = [] of Value
+          when :from     then from_clause = nil
+          when :lock     then lock_clause = nil
+          when :annotate then annotations = [] of String
+          when :distinct then distinct_flag = false
+          else
+            raise ArgumentError.new("unscope: unsupported part #{part.inspect} (supported: :where, :order, :limit, :offset, :select, :group, :joins, :includes, :having, :from, :lock, :annotate, :distinct)")
+          end
+        end
+        spawn(conditions, params, order, lim, off, select_cols, distinct_flag, joins, group_cols, includes, nested, nil, @none_flag, having, from_clause, annotations, @readonly_flag, lock_clause, @references.dup, having_params)
+      end
+
+      # `none` — a relation that never touches the database and always
+      # yields no records (`to_a`, `count`, `exists?`, `pluck`,
+      # `update_all` and `delete_all` short-circuit).
+      def none : Query(T)
+        spawn(none_flag: true)
+      end
+
+      # Negates every WHERE condition (`NOT (cond1 AND cond2)`). Binds are
+      # preserved in order. An unscoped relation is returned unchanged.
+      def invert_where : Query(T)
+        return spawn if @conditions.empty?
+        joined = @conditions.size == 1 ? @conditions.first : @conditions.map { |c| "(#{c})" }.join(" AND ")
+        spawn(["NOT (#{joined})"], @params.dup)
       end
 
       # `select(:title)` / `select(:id, :title)` / `select("COUNT(*) AS n")`.
@@ -205,6 +322,225 @@ module Saci
         spawn(@conditions.dup, @params.dup, @order.dup, @limit, @offset, @select_cols.try(&.dup), @distinct_flag, @joins.dup, @group_cols.dup, @includes.dup, merged)
       end
 
+      # `preload` is an alias of `includes` for now — Saci always preloads
+      # associations in separate queries (there is no join-based preloader).
+      def preload(*names : Symbol) : Query(T)
+        includes(*names)
+      end
+
+      def preload(**nested) : Query(T)
+        includes(**nested)
+      end
+
+      def preload : Query(T)
+        self
+      end
+
+      # `eager_load(:user)` — joins the association *and* preloads it with
+      # `includes` (Rails' eager_load does a single LEFT OUTER JOIN; Saci
+      # documents and implements this as joins + includes, which returns
+      # the same records for `belongs_to`/`has_one` and de-duplicates via
+      # `distinct` only when the caller asks for it).
+      def eager_load(*names : Symbol) : Query(T)
+        frags = names.to_a.map do |n|
+          unless @klass.__saci_assoc_kinds.has_key?(n.to_s)
+            raise ArgumentError.new("Unknown association '#{n}' for eager_load on #{@klass.name}")
+          end
+          frag = @klass.__saci_join_sql(n.to_s)
+          if frag.nil?
+            raise ArgumentError.new("Association '#{n}' cannot be eager-loaded on #{@klass.name} (has_many :through is not joinable)")
+          end
+          frag
+        end
+        spawn(joins: @joins.dup + frags, includes: @includes + names.to_a.map(&.to_s))
+      end
+
+      # `left_joins(:user)` / `left_outer_joins(:user)` — association joins
+      # with `LEFT OUTER JOIN` so rows without a matching association stay
+      # in the result set.
+      def left_joins(*names : Symbol) : Query(T)
+        frags = names.to_a.map do |n|
+          frag = @klass.__saci_join_sql(n.to_s)
+          if frag.nil?
+            raise ArgumentError.new("Unknown association '#{n}' for left_joins on #{@klass.name}")
+          end
+          frag.sub(/^INNER JOIN/, "LEFT OUTER JOIN")
+        end
+        spawn(@conditions.dup, @params.dup, @order.dup, @limit, @offset, @select_cols.try(&.dup), @distinct_flag, @joins.dup + frags)
+      end
+
+      def left_outer_joins(*names : Symbol) : Query(T)
+        left_joins(*names)
+      end
+
+      # `without(:comments)` — drops eager-loaded associations from the
+      # relation (top-level and nested parents). Does not affect `joins`.
+      def without(*names : Symbol) : Query(T)
+        drop = names.to_a.map(&.to_s)
+        includes = @includes.reject { |n| drop.includes?(n) }
+        nested = @nested_includes.reject { |k, _| drop.includes?(k) }
+        spawn(includes: includes, nested_includes: nested)
+      end
+
+      # `references(:user)` — Rails uses this to force joined tables into
+      # eager loading. Saci SQL joins are explicit strings, so this is a
+      # documented no-op marker retained for API compatibility.
+      def references(*names : Symbol) : Query(T)
+        spawn(references: (@references + names.to_a.map(&.to_s)).uniq)
+      end
+
+      # `reselect(:title)` — replaces the SELECT list; `reselect` with no
+      # arguments restores the default model columns.
+      def reselect : Query(T)
+        spawn(select_cols: nil)
+      end
+
+      def reselect(*cols : String | Symbol) : Query(T)
+        return reselect if cols.empty?
+        frags = cols.to_a.map { |c| c.is_a?(Symbol) ? qualified(c.to_s) : c.to_s }
+        spawn(select_cols: frags)
+      end
+
+      # `regroup(:tag_id)` — replaces the GROUP BY list on a relation (use
+      # `group(...)` when grouped aggregates are wanted).
+      def regroup(*cols : String | Symbol) : Query(T)
+        quoted = cols.to_a.map { |c| c.is_a?(Symbol) ? qualified(c.to_s) : c.to_s }
+        spawn(group_cols: quoted)
+      end
+
+      # `annotate("load published posts")` — prefixes emitted SQL with
+      # `/* ... */` comments (visible in logs / EXPLAIN output).
+      def annotate(*comments : String | Symbol) : Query(T)
+        spawn(annotations: @annotations + comments.to_a.map { |c| c.to_s })
+      end
+
+      # `readonly` — Rails marks loaded records read-only. Saci has no
+      # per-record read-only enforcement, so this is a documented marker
+      # (the flag is preserved across chaining but does not block writes).
+      def readonly(value : Bool = true) : Query(T)
+        spawn(readonly_flag: value)
+      end
+
+      # `lock` — on PostgreSQL appends `FOR UPDATE` (or the given raw
+      # clause, e.g. `"FOR SHARE"`) to SELECTs. SQLite has no row locks and
+      # MySQL is left as a documented no-op in this implementation.
+      def lock(clause : String = "FOR UPDATE") : Query(T)
+        spawn(lock_clause: clause)
+      end
+
+      # `from("posts PARTITION (...)")` / `from("(SELECT ...) AS posts")` —
+      # replaces the FROM source for SELECT/COUNT/pluck/EXPLAIN. UPDATE and
+      # DELETE always target the model's real table.
+      def from(source : String) : Query(T)
+        spawn(from_clause: source)
+      end
+
+      # `having("COUNT(*) > ?", 1)` — raw condition with binds, appended to
+      # GROUP BY. Binds are tracked separately from WHERE binds so chaining
+      # `where` after `having` keeps placeholder order correct.
+      def having(sql : String, *args : Object) : Query(T)
+        ad = adapter
+        converted = args.to_a.map { |a| Record.to_db(a, ad) }
+        spawn(having: @having + ["(#{sql})"], having_params: @having_params + converted)
+      end
+
+      def having(sql : String) : Query(T)
+        spawn(having: @having + ["(#{sql})"])
+      end
+
+      def having(sql : String, args : Array(Value)) : Query(T)
+        ad = adapter
+        converted = args.map { |a| Record.to_db(a, ad) }
+        spawn(having: @having + ["(#{sql})"], having_params: @having_params + converted)
+      end
+
+      # `having(count: 2)` — hash form (`NULL` becomes `IS NULL`).
+      def having(**conds : Object) : Query(T)
+        ad = adapter
+        new_conds = @having.dup
+        new_params = @having_params.dup
+        conds.each do |key, value|
+          col = Record.quote(key, ad)
+          if value.nil?
+            new_conds << "#{col} IS NULL"
+          else
+            new_conds << "#{col} = ?"
+            new_params << Record.to_db(value, ad)
+          end
+        end
+        spawn(having: new_conds, having_params: new_params)
+      end
+
+      # `optimizer_hints("INDEX(posts idx_posts_title)")` — documented
+      # no-op: hints are accepted for Rails API compatibility but never
+      # emitted (Saci does not parse optimizer hints per adapter).
+      def optimizer_hints(*hints : String) : Query(T)
+        self
+      end
+
+      # `associated(:user)` — only rows whose association exists. Implemented
+      # as `joins(name)` + `distinct`, so `belongs_to`/`has_one`/`has_many`
+      # work whenever `joins(name)` does (has_many :through raises, as with
+      # `joins`).
+      def associated(name : Symbol) : Query(T)
+        joins(name).distinct
+      end
+
+      # `missing(:bio)` — rows where the column is NULL.
+      def missing(col : String | Symbol) : Query(T)
+        spawn(@conditions.dup + ["#{qualified(col)} IS NULL"], @params.dup)
+      end
+
+      # `excluding(record)` / `excluding(records)` — drops the given
+      # records by primary key. Empty input returns the scope unchanged.
+      def excluding(*records : T) : Query(T)
+        excluding(records.to_a)
+      end
+
+      def excluding(records : Array(T)) : Query(T)
+        return spawn if records.empty?
+        ad = adapter
+        pk = @klass.__saci_primary_key
+        ids = records.map { |r| r.__saci_get_attr(pk) }.reject(&.nil?)
+        return spawn if ids.empty?
+        if ids.size == 1
+          spawn(@conditions.dup + ["#{qualified(pk)} != ?"], @params.dup + [Record.to_db(ids.first, ad)] of Value)
+        else
+          ph = Array(String).new(ids.size, "?").join(", ")
+          spawn(@conditions.dup + ["#{qualified(pk)} NOT IN (#{ph})"], @params.dup + ids.map { |v| Record.to_db(v, ad) })
+        end
+      end
+
+      # `in_order_of(:status, ["draft", "live", "archived"])` — orders by
+      # the position of the column value in the given list (values not in
+      # the list come last). The CASE expression is prepended to any
+      # existing order. Values are rendered as escaped SQL literals so no
+      # bind-order issues arise with later `where` calls.
+      def in_order_of(col : String | Symbol, values : Array) : Query(T)
+        return spawn if values.empty?
+        ad = adapter
+        branches = [] of String
+        values.each_with_index do |v, i|
+          branches << "WHEN #{sql_literal(v, ad)} THEN #{i + 1}"
+        end
+        expr = "CASE #{qualified(col)} #{branches.join(" ")} ELSE #{values.size + 1} END"
+        spawn(order: [expr] + @order.dup)
+      end
+
+      # Renders a value as an inline SQL literal (used by `in_order_of`,
+      # where binds inside ORDER BY would interleave badly with later WHERE
+      # binds). Strings single-quote-escape; everything else is numeric.
+      private def sql_literal(v : Object, ad : Adapter) : String
+        case v
+        when Nil    then "NULL"
+        when Bool   then ad == :sqlite ? (v ? "1" : "0") : (v ? "TRUE" : "FALSE")
+        when Time   then "'#{v.to_rfc3339.gsub("'", "''")}'"
+        when String then "'#{v.gsub("'", "''")}'"
+        when Number then v.to_s
+        else             "'#{v.to_s.gsub("'", "''")}'"
+        end
+      end
+
       def order(field : Symbol | String, dir : Symbol = :asc) : Query(T)
         direction = dir.to_s.upcase == "DESC" ? "DESC" : "ASC"
         spawn(@conditions.dup, @params.dup, @order.dup + ["#{qualified(field)} #{direction}"])
@@ -212,14 +548,13 @@ module Saci
 
       # `order(created_at: :desc, title: :asc)`
       def order(**opts : Object) : Query(T)
-        q = self
         ad = adapter
-        opts.each do |field, dir|
+        tbl = Record.quote(@klass.table_name, ad)
+        frags = opts.map do |field, dir|
           direction = dir.to_s.upcase == "DESC" ? "DESC" : "ASC"
-          tbl = Record.quote(q.@klass.table_name, ad)
-          q = Query(T).new(q.@klass, q.@conditions.dup, q.@params.dup, q.@order.dup + ["#{tbl}.#{Record.quote(field, ad)} #{direction}"], q.@limit, q.@offset, q.@select_cols.try(&.dup), q.@distinct_flag, q.@joins.dup, q.@group_cols.dup, q.@includes.dup, q.@nested_includes.dup)
+          "#{tbl}.#{Record.quote(field, ad)} #{direction}"
         end
-        q
+        spawn(order: @order.dup + frags)
       end
 
       # Raw SQL ordering, e.g. `order_raw("RANDOM()")`.
@@ -236,6 +571,9 @@ module Saci
       end
 
       def to_a : Array(T)
+        if @none_flag
+          return [] of T
+        end
         if r = @records
           return r.dup
         end
@@ -244,7 +582,7 @@ module Saci
         col_types = {} of String => String
         @klass.__saci_column_names.each { |(n, t)| col_types[n] = t }
         results = [] of T
-        Record.query_compat(conn, select_sql(ad), @params) do |rs|
+        Record.query_compat(conn, select_sql(ad), @params + @having_params) do |rs|
           rs.each do
             results << load_indexed_row(rs, ad, col_types)
           end
@@ -318,21 +656,34 @@ module Saci
         to_a.each { |r| yield r }
       end
 
-      def find_each(batch_size : Int32 = 1000, & : T ->) : Nil
-        off = 0
-        loop do
-          batch = limit(batch_size).offset(off).to_a
-          break if batch.empty?
-          batch.each { |r| yield r }
-          break if batch.size < batch_size
-          off += batch_size
+      # `find_each(batch_size: 1000, start: nil)` — yields records one at a
+      # time in primary-key order (keyset batching when the relation has no
+      # explicit `order`; offset batching when it does, preserving custom
+      # order). Custom primary keys are honored.
+      def find_each(batch_size : Int32 = 1000, start : Value? = nil, & : T ->) : Nil
+        find_in_batches(batch_size: batch_size, start: start) { |batch| batch.each { |r| yield r } }
+      end
+
+      # `find_in_batches(batch_size: 1000, start: nil)` — yields arrays of
+      # records. See `in_batches` for the underlying relation batching.
+      def find_in_batches(batch_size : Int32 = 1000, start : Value? = nil, finish : Value? = nil, & : Array(T) ->) : Nil
+        in_batches(batch_size: batch_size, start: start, finish: finish).each do |batch|
+          yield batch.to_a
         end
+      end
+
+      # `in_batches(batch_size: 1000)` — returns a `BatchEnumerator` that
+      # yields relations scoped to each batch (Rails-compatible shape).
+      def in_batches(batch_size : Int32 = 1000, start : Value? = nil, finish : Value? = nil) : BatchEnumerator(T)
+        raise ArgumentError.new("batch_size must be positive (got #{batch_size})") if batch_size <= 0
+        BatchEnumerator(T).new(self, @klass.__saci_primary_key, adapter, !@order.empty?, batch_size, start, finish)
       end
 
       def first : T?
         if r = @records
           return r.first?
         end
+        return nil if @none_flag
         limit(1).to_a.first?
       end
 
@@ -340,19 +691,253 @@ module Saci
         first || raise RecordNotFound.new("Couldn't find #{@klass.name}")
       end
 
+      # `take` / `take(3)` — first record / first N records.
+      def take : T?
+        first
+      end
+
+      def take(n : Int32) : Array(T)
+        return [] of T if @none_flag
+        limit(n).to_a
+      end
+
+      def take(n : Int) : Array(T)
+        take(n.to_i32)
+      end
+
+      # `last` / `last(3)` — last record(s). Without an explicit order this
+      # orders by primary key descending (Rails behavior); with an order it
+      # applies `LIMIT/OFFSET` to the ordered scope (or slices the loaded
+      # records when a limit/offset is already present).
+      def last : T?
+        if r = @records
+          return r.last?
+        end
+        return nil if @none_flag
+        if @limit || @offset
+          to_a.last?
+        elsif @order.empty?
+          order(@klass.__saci_primary_key, :desc).limit(1).first?
+        else
+          c = count
+          c == 0 ? nil : offset(c - 1).limit(1).first?
+        end
+      end
+
+      def last(n : Int32) : Array(T)
+        return [] of T if @none_flag
+        return to_a.last(n) if @limit || @offset || !@order.empty?
+        order(@klass.__saci_primary_key, :desc).limit(n).to_a.reverse
+      end
+
+      def last(n : Int) : Array(T)
+        last(n.to_i32)
+      end
+
+      # Zero-based ordinal lookup (`find_nth(0)` is `first`).
+      def find_nth(index : Int32) : T?
+        return nil if index < 0 || @none_flag
+        offset(index).limit(1).first?
+      end
+
+      def find_nth(index : Int) : T?
+        find_nth(index.to_i32)
+      end
+
+      def find_nth!(index : Int32) : T
+        find_nth(index) || raise RecordNotFound.new("Couldn't find #{@klass.name} at index #{index}")
+      end
+
+      def second : T?
+        find_nth(1)
+      end
+
+      def third : T?
+        find_nth(2)
+      end
+
+      def fourth : T?
+        find_nth(3)
+      end
+
+      def fifth : T?
+        find_nth(4)
+      end
+
+      def forty_two : T?
+        find_nth(41)
+      end
+
+      def second_to_last : T?
+        nth_from_end(1)
+      end
+
+      def third_to_last : T?
+        nth_from_end(2)
+      end
+
+      # `nth_from_end(0)` is `last`.
+      def nth_from_end(index : Int32) : T?
+        return nil if index < 0 || @none_flag
+        recs = to_a
+        recs.size > index ? recs[recs.size - 1 - index] : nil
+      end
+
+      # `ids` — primary keys without instantiating records.
+      def ids : Array(Value)
+        return [] of Value if @none_flag
+        pluck(@klass.__saci_primary_key)
+      end
+
+      # -- relation predicates ---------------------------------------------
+
+      def any? : Bool
+        if @none_flag
+          return false
+        end
+        if r = @records
+          return !r.empty?
+        end
+        exists?
+      end
+
+      def many? : Bool
+        if @none_flag
+          return false
+        end
+        if r = @records
+          return r.size > 1
+        end
+        limit(2).to_a.size > 1
+      end
+
+      def none? : Bool
+        !any?
+      end
+
+      def one? : Bool
+        if @none_flag
+          return false
+        end
+        if r = @records
+          return r.size == 1
+        end
+        limit(2).to_a.size == 1
+      end
+
+      # `pick(:title)` → first row's value; `pick(:id, :title)` → array of
+      # values (nil when the scope is empty). Honors ORDER/LIMIT(1)/OFFSET.
+      def pick(col : String | Symbol) : Value?
+        row = pick_row([col] of String | Symbol)
+        row.try(&.[0]?)
+      end
+
+      def pick(*cols : String | Symbol) : Array(Value)?
+        return nil if cols.empty?
+        pick_row(cols.to_a)
+      end
+
+      private def pick_row(cols : Array(String | Symbol)) : Array(Value)?
+        return nil if @none_flag
+        ad = adapter
+        sel = cols.map { |c| qualified(c) }.join(", ")
+        limit_part = @offset ? " LIMIT 1 OFFSET #{@offset}" : " LIMIT 1"
+        sql = "#{annotation_sql}SELECT #{sel} FROM #{from_sql(ad)}#{joins_sql}#{where_sql}#{having_sql}#{order_sql}#{limit_part}#{lock_sql(ad)}"
+        row : Array(Value)? = nil
+        Record.query_compat(@klass.connection, sql, @params + @having_params) do |rs|
+          rs.each do
+            row = read_generic_row(rs)
+            break
+          end
+        end
+        row
+      end
+
+      # -- sole / find-or-create -------------------------------------------
+
+      # `sole` — exactly one record or raise (`RecordNotFound` for zero,
+      # `SoleRecordExceeded` for more than one).
+      def sole : T
+        recs = @records || limit(2).to_a
+        if recs.empty?
+          raise RecordNotFound.new("Couldn't find #{@klass.name} (expected exactly one)")
+        elsif recs.size > 1
+          raise SoleRecordExceeded.new("Found more than one #{@klass.name} (expected exactly one)")
+        end
+        recs.first
+      end
+
+      def find_sole_by(**conds : Object) : T
+        where(**conds).sole
+      end
+
+      def find_sole_by(conds : NamedTuple) : T
+        find_sole_by(**conds)
+      end
+
+      # `find_or_create_by(email: "x")` — find first, otherwise create.
+      # Not race-safe (no unique-index rescue); use `create_or_find_by` for
+      # the insert-first pattern.
+      def find_or_create_by(**attrs : Object) : T
+        where(**attrs).first || @klass.create(**attrs)
+      end
+
+      def find_or_create_by(attrs : NamedTuple) : T
+        where(**attrs).first || @klass.create(**attrs)
+      end
+
+      def find_or_initialize_by(**attrs : Object) : T
+        where(**attrs).first || @klass.new(**attrs)
+      end
+
+      def find_or_initialize_by(attrs : NamedTuple) : T
+        where(**attrs).first || @klass.new(**attrs)
+      end
+
+      # `create_or_find_by(email: "x")` — inserts first and, on a unique
+      # violation, returns the existing row. Validation errors propagate.
+      def create_or_find_by(**attrs : Object) : T
+        begin
+          @klass.create!(**attrs)
+        rescue ex : Exception
+          raise ex unless unique_violation?(ex)
+          where(**attrs).first || raise ex
+        end
+      end
+
+      def create_or_find_by(attrs : NamedTuple) : T
+        begin
+          @klass.create!(**attrs)
+        rescue ex : Exception
+          raise ex unless unique_violation?(ex)
+          where(**attrs).first || raise ex
+        end
+      end
+
+      private def unique_violation?(ex : Exception) : Bool
+        msg = ex.message.try(&.downcase) || ""
+        msg.includes?("unique constraint") || msg.includes?("duplicate key") ||
+          msg.includes?("duplicate entry") || msg.includes?("unique failed") ||
+          msg.includes?("23505") || msg.includes?("constraint failed: unique")
+      end
+
       def count : Int64
+        if @none_flag
+          return 0_i64
+        end
         if r = @records
           return r.size.to_i64
         end
         conn = @klass.connection
-        Record.scalar_compat(conn, count_sql(adapter), @params).as(Int64)
+        Record.scalar_compat(conn, count_sql(adapter), @params + @having_params).as(Int64)
       end
 
       def exists? : Bool
         if r = @records
           return !r.empty?
         end
-        count > 0
+        return false if @none_flag
+        limit(1).to_a.any?
       end
 
       # Scalar aggregates (WHERE + JOINs apply; `ORDER`/`LIMIT` do not).
@@ -379,6 +964,7 @@ module Saci
       end
 
       def update_all(attrs : NamedTuple) : Int64
+        return 0_i64 if @none_flag
         ad = adapter
         sets = [] of String
         vals = [] of Value
@@ -391,7 +977,13 @@ module Saci
         res.rows_affected
       end
 
+      # Keyword form (`where(...).update_all(published: true)`).
+      def update_all(**attrs : Object) : Int64
+        update_all(attrs)
+      end
+
       def delete_all : Int64
+        return 0_i64 if @none_flag
         res = Record.exec_compat(@klass.connection, delete_sql(adapter), @params)
         res.rows_affected
       end
@@ -401,6 +993,7 @@ module Saci
       # and callbacks. `time:` overrides the timestamp (default `Time.utc`).
       # Returns the number of rows touched.
       def touch_all(*names, time : Time? = nil) : Int64
+        return 0_i64 if @none_flag
         ad = adapter
         cols = [] of String
         names.each { |x| cols << x.to_s }
@@ -427,11 +1020,13 @@ module Saci
       end
 
       def pluck(col : String | Symbol) : Array(Value)
+        return [] of Value if @none_flag
         ad = adapter
         col_type = @klass.__saci_column_names.find { |(n, _)| n == col.to_s }.try(&.[1]) || "String"
         d = @distinct_flag ? "DISTINCT " : ""
         values = [] of Value
-        Record.query_compat(@klass.connection, "SELECT #{d}#{qualified(col)} FROM #{Record.quote(@klass.table_name, ad)}#{joins_sql}#{where_sql}", @params) do |rs|
+        sql = "#{annotation_sql}SELECT #{d}#{qualified(col)} FROM #{from_sql(ad)}#{joins_sql}#{where_sql}#{group_sql}#{having_sql}#{order_sql}#{limit_sql(ad)}"
+        Record.query_compat(@klass.connection, sql, @params + @having_params) do |rs|
           rs.each do
             values << Record.read_typed(rs, col_type, ad)
           end
@@ -471,9 +1066,9 @@ module Saci
             end
           end
         end
-        sql = "SELECT #{groups}, #{expr} FROM #{Record.quote(@klass.table_name, ad)}#{joins_sql}#{where_sql} GROUP BY #{groups}"
+        sql = "#{annotation_sql}SELECT #{groups}, #{expr} FROM #{from_sql(ad)}#{joins_sql}#{where_sql} GROUP BY #{groups}#{having_sql}"
         rows = [] of Array(Value)
-        Record.query_compat(@klass.connection, sql, @params) do |rs|
+        Record.query_compat(@klass.connection, sql, @params + @having_params) do |rs|
           rs.each do
             rows << read_grouped_row(rs, ad, key_type)
           end
@@ -508,10 +1103,72 @@ module Saci
       private def scalar_aggregate(func : String, col : String) : Value
         ad = adapter
         result : Value = nil
-        Record.query_compat(@klass.connection, "SELECT #{func}(#{qualified(col)}) FROM #{Record.quote(@klass.table_name, ad)}#{joins_sql}#{where_sql}", @params) do |rs|
+        sql = "#{annotation_sql}SELECT #{func}(#{qualified(col)}) FROM #{from_sql(ad)}#{joins_sql}#{where_sql}#{having_sql}"
+        Record.query_compat(@klass.connection, sql, @params + @having_params) do |rs|
           rs.each { result = Record.read_generic(rs) }
         end
         result
+      end
+
+      # `explain` / `explain(analyze: true)` — runs the relation's SELECT
+      # through the adapter's plan command and returns a readable string
+      # (SQL plus one plan row per line). SQLite uses `EXPLAIN QUERY PLAN`
+      # (it has no ANALYZE variant); PostgreSQL uses `EXPLAIN` /
+      # `EXPLAIN (ANALYZE, BUFFERS)`; MySQL uses `EXPLAIN` /
+      # `EXPLAIN ANALYZE`.
+      def explain(analyze : Bool = false) : String
+        if @none_flag
+          return "Saci::Record::Query#none — no SQL executed"
+        end
+        ad = adapter
+        sql = select_sql(ad)
+        prefix = case ad
+                 when :sqlite   then "EXPLAIN QUERY PLAN "
+                 when :postgres then analyze ? "EXPLAIN (ANALYZE, BUFFERS) " : "EXPLAIN "
+                 when :mysql    then analyze ? "EXPLAIN ANALYZE " : "EXPLAIN "
+                 else                "EXPLAIN "
+                 end
+        String.build do |io|
+          io << prefix << sql << '\n'
+          Record.query_compat(@klass.connection, prefix + sql, @params + @having_params) do |rs|
+            write_explain_rows(io, rs)
+          end
+        end
+      end
+
+      # Writes column headers + rows for `explain` (plain method: iterating
+      # column metadata inside a query block ICEs this compiler).
+      private def write_explain_rows(io : IO, rs : DB::ResultSet) : Nil
+        total = rs.column_count
+        headers = [] of String
+        i = 0
+        while i < total
+          headers << rs.column_name(i)
+          i += 1
+        end
+        io << headers.join(" | ") << '\n'
+        rs.each do
+          vals = [] of String
+          j = 0
+          while j < total
+            v = Record.read_generic(rs)
+            vals << (v.nil? ? "NULL" : v.to_s)
+            j += 1
+          end
+          io << vals.join(" | ") << '\n'
+        end
+      end
+
+      # Reads one row of arbitrary columns (`pick`).
+      private def read_generic_row(rs : DB::ResultSet) : Array(Value)
+        vals = [] of Value
+        i = 0
+        total = rs.column_count
+        while i < total
+          vals << Record.read_generic(rs)
+          i += 1
+        end
+        vals
       end
 
       private def where_sql : String
@@ -524,6 +1181,10 @@ module Saci
 
       private def group_sql : String
         @group_cols.empty? ? "" : " GROUP BY #{@group_cols.join(", ")}"
+      end
+
+      private def having_sql : String
+        @having.empty? ? "" : " HAVING #{@having.join(" AND ")}"
       end
 
       private def order_sql : String
@@ -541,6 +1202,29 @@ module Saci
         end
       end
 
+      # SQL comments (`annotate`) — sanitized so a comment cannot close
+      # itself early.
+      private def annotation_sql : String
+        return "" if @annotations.empty?
+        String.build do |io|
+          @annotations.each do |a|
+            io << "/* " << a.gsub("*/", "* /") << " */ "
+          end
+        end
+      end
+
+      private def from_sql(ad : Adapter) : String
+        @from_clause || Record.quote(@klass.table_name, ad)
+      end
+
+      # `FOR UPDATE` is emitted on PostgreSQL only; SQLite has no row locks
+      # and MySQL is a documented no-op here.
+      private def lock_sql(ad : Adapter) : String
+        clause = @lock_clause
+        return "" if clause.nil?
+        ad == :postgres ? " #{clause}" : ""
+      end
+
       private def select_sql(ad : Adapter) : String
         cols = begin
           if s = @select_cols
@@ -551,11 +1235,11 @@ module Saci
           end
         end
         d = @distinct_flag ? "DISTINCT " : ""
-        "SELECT #{d}#{cols} FROM #{Record.quote(@klass.table_name, ad)}#{joins_sql}#{where_sql}#{group_sql}#{order_sql}#{limit_sql(ad)}"
+        "#{annotation_sql}SELECT #{d}#{cols} FROM #{from_sql(ad)}#{joins_sql}#{where_sql}#{group_sql}#{having_sql}#{order_sql}#{limit_sql(ad)}#{lock_sql(ad)}"
       end
 
       private def count_sql(ad : Adapter) : String
-        "SELECT COUNT(*) FROM #{Record.quote(@klass.table_name, ad)}#{joins_sql}#{where_sql}"
+        "#{annotation_sql}SELECT COUNT(*) FROM #{from_sql(ad)}#{joins_sql}#{where_sql}#{having_sql}"
       end
 
       private def update_sql(ad : Adapter, sets : String) : String
@@ -564,6 +1248,105 @@ module Saci
 
       private def delete_sql(ad : Adapter) : String
         "DELETE FROM #{Record.quote(@klass.table_name, ad)}#{where_sql}"
+      end
+    end
+
+    # Batch iterator returned by `Query#in_batches`. Yields relations, one
+    # per batch, each carrying the batch's loaded records (so `to_a` does
+    # not re-query) and still supporting `update_all` / `delete_all` /
+    # `pluck`.
+    #
+    # ```
+    # Post.where(published: true).in_batches(batch_size: 100) do |batch|
+    #   batch.update_all(seen: true)
+    #   batch.each_record { |post| ... }
+    # end
+    # ```
+    class BatchEnumerator(T)
+      @pk : String
+      @adapter : Adapter
+      @ordered : Bool
+      @batch_size : Int32
+      @start : Value?
+      @finish : Value?
+
+      def initialize(@query : Query(T), @pk : String, @adapter : Adapter, @ordered : Bool, @batch_size : Int32 = 1000, @start : Value? = nil, @finish : Value? = nil)
+      end
+
+      getter batch_size : Int32
+
+      # Yields one relation per batch. Keyset pagination (`pk > last`) is
+      # used for unordered relations; explicit orders fall back to
+      # LIMIT/OFFSET so the caller's ordering is preserved.
+      def each(& : Query(T) ->) : Nil
+        return if @batch_size <= 0
+        qpk = Record.quote(@pk, @adapter)
+        after = @start
+        off = 0
+        first = true
+        loop do
+          scope = @query
+          if after
+            scope = scope.where("#{qpk} #{first ? ">=" : ">"} ?", after)
+          end
+          if @ordered
+            scope = scope.offset(off)
+          else
+            scope = scope.order(@pk, :asc)
+          end
+          scope = scope.where("#{qpk} <= ?", @finish) if @finish
+          records = scope.limit(@batch_size).to_a
+          break if records.empty?
+          ids = records.map { |r| r.__saci_get_attr(@pk) }.reject(&.nil?)
+          if ids.empty?
+            # Model without a usable primary key: fall back to plain yields.
+            yield scope.limit(@batch_size)
+          else
+            ph = Array(String).new(ids.size, "?").join(", ")
+            rel = @query.where("#{qpk} IN (#{ph})", ids).__saci_with_records(records)
+            yield rel
+          end
+          break if records.size < @batch_size
+          first = false
+          if @ordered
+            off += @batch_size
+          else
+            after = ids.last? || break
+          end
+        end
+      end
+
+      # Yields individual records across all batches.
+      def each_record(& : T ->) : Nil
+        each { |batch| batch.each { |r| yield r } }
+      end
+
+      def update_all(attrs : NamedTuple) : Int64
+        total = 0_i64
+        each { |batch| total += batch.update_all(attrs) }
+        total
+      end
+
+      def update_all(**attrs : Object) : Int64
+        update_all(attrs)
+      end
+
+      def delete_all : Int64
+        total = 0_i64
+        each { |batch| total += batch.delete_all }
+        total
+      end
+
+      def pluck(col : String | Symbol) : Array(Value)
+        values = [] of Value
+        each { |batch| values.concat(batch.pluck(col)) }
+        values
+      end
+
+      def count : Int64
+        total = 0_i64
+        each { |batch| total += batch.count }
+        total
       end
     end
 
@@ -590,6 +1373,18 @@ module Saci
 
       def where(sql : String) : GroupedQuery(T)
         GroupedQuery(T).new(@query.where(sql))
+      end
+
+      def having(sql : String, *args : Object) : GroupedQuery(T)
+        GroupedQuery(T).new(@query.having(sql, *args))
+      end
+
+      def having(sql : String) : GroupedQuery(T)
+        GroupedQuery(T).new(@query.having(sql))
+      end
+
+      def having(**conds : Object) : GroupedQuery(T)
+        GroupedQuery(T).new(@query.having(**conds))
       end
 
       def order(field : Symbol | String, dir : Symbol = :asc) : GroupedQuery(T)
@@ -678,3 +1473,11 @@ module Saci
     end
   end
 end
+
+# Bulk writes / class-level finders / dialect helpers live in separate
+# files; requiring them here keeps `require "./record/query"` self-contained.
+# The coordinator may also list them in `src/saci.cr` (requires are
+# idempotent).
+require "./bulk"
+require "./finders"
+require "./dialect"
