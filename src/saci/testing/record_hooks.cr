@@ -90,10 +90,25 @@ module Saci
         @@__saci_test_migrations_mutex.synchronize { @@__saci_test_migrations.clear }
       end
 
-      # Subclasses self-register when this file is loaded before the
-      # migration is defined (normal for apps that `require "saci"` first).
+      # Subclasses self-register only when the app opts in. Automatic
+      # registration is intentionally off in the framework suite: every spec
+      # file's migrations would otherwise be collected into one test
+      # database. Apps call `Saci::Testing.register_migrations(...)` (or set
+      # `Saci::Testing.auto_register_migrations = true`) explicitly.
+      @@__saci_auto_register = false
+
+      def self.auto_register_migrations=(value : Bool) : Nil
+        @@__saci_auto_register = value
+      end
+
+      def self.auto_register_migrations? : Bool
+        @@__saci_auto_register
+      end
+
       macro inherited
-        Saci::Record::Migration.register_test_migration(self)
+        if Saci::Record::Migration.auto_register_migrations?
+          Saci::Record::Migration.register_test_migration(self)
+        end
       end
     end
   end

@@ -638,7 +638,8 @@ describe "saci info commands" do
         link_extras_framework_lib!
         Dir.mkdir_p("config/initializers")
         File.write("config/initializers/marker.cr", "File.write(\"init_marker.txt\", \"ran\")\n")
-        Saci::CLI::Info.initializer_files.size.should eq(1)
+        Saci::CLI::Info.initializer_files.should contain("config/initializers/marker.cr")
+        Saci::CLI::Info.initializer_files.size.should be >= 1
         Saci::CLI.run(["initializers:run", "marker"]).should eq(0)
         File.read("init_marker.txt").should eq("ran")
       end

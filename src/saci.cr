@@ -47,6 +47,9 @@ require "./saci/audit"
 require "./saci/policy"
 require "./saci/policy_controller"
 require "./saci/openapi"
+require "./saci/tasks"
+require "./saci/ci"
+require "./saci/db_tasks"
 require "./saci/support/all"
 
 module Saci

@@ -125,7 +125,21 @@ module Saci
       rescue
         nil
       end
-      Record.connection = db unless current == db
+      Record.assign_primary(db) unless current == db
+    end
+
+    # Restores the test database as the global primary connection. Cheap
+    # enough to call from a per-example hook; other spec files may have
+    # swapped `Saci::Record.connection` while the suite runs.
+    def self.restore_database! : Nil
+      if db = @@opened_db
+        current = begin
+          Record.database("primary")
+        rescue
+          nil
+        end
+        Record.assign_primary(db) unless current == db
+      end
     end
 
     # Runs a `.sql` schema file (statement splitting understands quotes and

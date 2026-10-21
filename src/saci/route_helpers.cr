@@ -134,10 +134,10 @@ module Saci
 
     def self.dom_id(record, prefix : String? = nil) : String
       base = dom_class(record)
-      persisted = if record.responds_to?(:persisted?)
-                    record.persisted?
-                  elsif record.responds_to?(:id)
+      persisted = if record.responds_to?(:id)
                     !record.id.nil?
+                  elsif record.responds_to?(:persisted?)
+                    record.persisted?
                   else
                     true
                   end

@@ -264,6 +264,7 @@ module Saci
           db:fixtures:load          load spec/fixtures or test/fixtures YAML
           db:seed:replant           truncate tables, then run db/seed.cr
           db:schema:dump|load|check db/schema.cr snapshot commands
+          db:schema:load            load the db/schema.cr snapshot
           db:schema:cache:dump      write db/schema_cache.yml
           db:test:prepare           create + prepare the test database
           db:create|drop            create/drop databases (drop refuses production)

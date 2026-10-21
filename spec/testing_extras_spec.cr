@@ -162,6 +162,7 @@ fixture :testing_posts, TestingPost
 # ---------------------------------------------------------------------------
 
 describe "Saci::Testing test database lifecycle" do
+  before_each { Saci::Testing.restore_database! }
   it "prepares a fresh SQLite database and runs registered migrations" do
     Saci::Testing.opened_url.should eq(DB_URL)
     applied = Saci::Record::Migrator.applied_names(Saci::Record.database("primary"))
@@ -209,11 +210,17 @@ describe "Saci::Testing test database lifecycle" do
   end
 end
 
+# Keep this spec's test database isolated: only these migrations belong in
+# it, even when the full suite loads other specs' migrations.
+Saci::Record::Migration.reset_test_migrations!
+Saci::Testing.register_migrations(CreateTestingTeams, CreateTestingUsers, CreateTestingPosts)
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
 describe "Saci::Testing::Fixtures" do
+  before_each { Saci::Testing.restore_database! }
   transactional_tests
 
   it "loads YAML fixtures, assigns ids and exposes labels" do
@@ -271,6 +278,7 @@ end
 # in-memory label/id table from the database, so mutation tests run outside
 # transactional_tests and reload afterwards.
 describe "Saci::Testing::Fixtures reloading" do
+  before_each { Saci::Testing.restore_database! }
   it "replaces existing rows when delete_existing is true" do
     TestingUser.create!(name: "extra")
     TestingUser.count.should eq(4)
@@ -293,6 +301,7 @@ end
 # ---------------------------------------------------------------------------
 
 describe "Saci::Testing::Factory" do
+  before_each { Saci::Testing.restore_database! }
   transactional_tests
 
   it "builds unsaved records and creates persisted ones" do
@@ -361,6 +370,7 @@ end
 # ---------------------------------------------------------------------------
 
 describe "Saci::Testing.transactional" do
+  before_each { Saci::Testing.restore_database! }
   it "rolls back the block and returns its value" do
     before = TestingUser.count
     result = Saci::Testing.transactional do
@@ -433,6 +443,7 @@ end
 # ---------------------------------------------------------------------------
 
 describe "Saci::Testing time helpers" do
+  before_each { Saci::Testing.restore_database! }
   transactional_tests
 
   it "travels and restores time inside a block" do
@@ -515,6 +526,7 @@ class TestingMailer < Saci::Mailer::Base
 end
 
 describe "Saci::Testing assertion helpers" do
+  before_each { Saci::Testing.restore_database! }
   transactional_tests
 
   it "asserts changes and no changes" do
@@ -647,6 +659,7 @@ def testing_pages_router : Saci::Router
 end
 
 describe "Saci::Testing.assert_select" do
+  before_each { Saci::Testing.restore_database! }
   it "matches tag/id/class selectors and counts" do
     Saci::TestSession.serve(testing_pages_router) do |app|
       response = app.get("/page")
@@ -692,6 +705,7 @@ end
 # ---------------------------------------------------------------------------
 
 describe "Saci::Testing.parallelize" do
+  before_each { Saci::Testing.restore_database! }
   it "derives per-worker sqlite URLs" do
     Saci::Testing.worker_database_url("sqlite3://./db/app_test.db", 2).should eq("sqlite3://./db/app_test_2.db")
   end

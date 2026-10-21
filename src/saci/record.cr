@@ -265,6 +265,15 @@ module Saci
       @@databases_mutex.synchronize { @@databases["primary"] = db }
     end
 
+    # Re-points the primary database without running connection tuning.
+    # Used by test helpers that restore their own database while another
+    # connection/transaction may be active (tuning would deadlock on the
+    # pool mutex in that situation).
+    def self.assign_primary(db : DB::Database) : Nil
+      @@connection = db
+      @@databases_mutex.synchronize { @@databases["primary"] = db }
+    end
+
     # Opens a URL and assigns it as the primary database, recording the URL
     # so the adapter is detected (unlike `connection=`, which keeps the
     # SQLite default for backward compatibility).
