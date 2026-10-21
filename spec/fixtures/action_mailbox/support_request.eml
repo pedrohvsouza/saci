@@ -1,0 +1,15 @@
+From: "Jane Doe" <jane@example.com>
+To: Support <support@example.com>
+Cc: ops@example.com
+Subject: =?UTF-8?B?SGVscCBuZWVkZWQ=?=
+Date: Wed, 21 Oct 2015 07:28:00 +0200
+Message-ID: <fixture-support-1@example.com>
+In-Reply-To: <fixture-parent-1@example.com>
+References: <fixture-parent-1@example.com>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: quoted-printable
+
+Hi support=2C
+My account is locked and I can't sign in.
+Thanks=21
