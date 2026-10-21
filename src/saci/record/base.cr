@@ -1,5 +1,29 @@
 module Saci
   module Record
+    # Compile-time metadata registered by every association macro. Used by
+    # `accepts_nested_attributes_for` (G19), `has_one :through` joins
+    # (G186), autosave (G240) and HABTM (G33) without runtime reflection
+    # (Crystal has no `send`/`constantize`).
+    #
+    # `factory` instantiates a bare target record; `finder` loads one by
+    # primary key. Storing small procs per association keeps the generated
+    # code type-safe while still allowing generic nested-attribute code to
+    # work with any model.
+    struct AssocMeta
+      getter kind : Symbol
+      getter table : String
+      getter foreign_key : String?
+      getter through : String?
+      getter factory : Proc(Saci::Record::Base)?
+      getter finder : Proc(Value, Saci::Record::Base)?
+
+      def initialize(@kind : Symbol, @table : String, @foreign_key : String? = nil,
+                     @through : String? = nil,
+                     @factory : Proc(Saci::Record::Base)? = nil,
+                     @finder : Proc(Value, Saci::Record::Base)? = nil)
+      end
+    end
+
     # ActiveRecord-equivalent base class.
     #
     # ```
@@ -43,8 +67,19 @@ module Saci
         Record.connection
       end
 
-      def self.transaction(&block : DB::Connection -> T) : T? forall T
-        Record.transaction_on(self.connection) { |conn| block.call(conn) }
+      # Runs the block in a transaction. `isolation:` (G21) accepts
+      # `:serializable`, `:repeatable_read`, `:read_committed` and
+      # `:read_uncommitted`; PostgreSQL emits `BEGIN ISOLATION LEVEL …` and
+      # MySQL `SET TRANSACTION ISOLATION LEVEL …` before `BEGIN`. SQLite has
+      # a single serializable mode, so the option is documented as a no-op
+      # there. Nested calls reuse the open transaction and ignore isolation.
+      def self.transaction(isolation : Symbol? = nil, &block : DB::Connection -> T) : T? forall T
+        conn = self.connection
+        if iso = isolation
+          Record.transaction_with_isolation(conn, iso) { |tx| block.call(tx) }
+        else
+          Record.transaction_on(conn) { |tx| block.call(tx) }
+        end
       end
 
       # Pins this model to a named database (`Saci::Record.establish_connection`).
@@ -137,6 +172,38 @@ module Saci
         end
 
         def self.__saci_assoc_kinds : Hash(String, Symbol)
+          super
+        end
+
+        def self.__saci_assoc_meta(assoc_name : String) : Saci::Record::AssocMeta?
+          super
+        end
+
+        def __saci_assoc_current(assoc_name : String) : Array(Saci::Record::Base)
+          super
+        end
+
+        def __saci_assoc_writes_pending? : Bool
+          super
+        end
+
+        def __saci_assoc_write_before : Nil
+          super
+        end
+
+        def __saci_assoc_write_after : Nil
+          super
+        end
+
+        def __saci_assoc_validate(errors : Saci::Record::Errors) : Nil
+          super
+        end
+
+        def __saci_set_nested_attributes(name : String, value : Object) : Bool
+          super
+        end
+
+        def __saci_autosave_register(assoc_name : String, child : Saci::Record::Base) : Nil
           super
         end
 
@@ -506,6 +573,52 @@ module Saci
       def __saci_run_dependents : Nil
       end
 
+      # -- autosave / nested-attribute hooks (G19, G240) -------------------
+      # These chains are appended to by association macros (`autosave: true`)
+      # and by `accepts_nested_attributes_for`. `Base#save` consults them to
+      # (a) validate associated records before writing and (b) write them in
+      # the same transaction as the owner.
+      def __saci_assoc_writes_pending? : Bool
+        false
+      end
+
+      # Runs before the owner INSERT/UPDATE (belongs_to saves the parent
+      # record first so its generated id can be copied onto the owner).
+      def __saci_assoc_write_before : Nil
+      end
+
+      # Runs after the owner INSERT/UPDATE (has_many/has_one need the
+      # owner's generated primary key).
+      def __saci_assoc_write_after : Nil
+      end
+
+      # Adds `"<assoc> is invalid"` when an autosaved/nested child is invalid.
+      def __saci_assoc_validate(errors : Errors) : Nil
+      end
+
+      # Currently associated records, read from the eager-load cache when
+      # present. Used by autosave (never forces a query for has_many) and by
+      # nested attributes (`has_one`, `update_only:`).
+      def __saci_assoc_current(assoc_name : String) : Array(Base)
+        [] of Base
+      end
+
+      # Runtime hook used by `assign`/`initialize` so nested-attribute
+      # hashes can be passed as `Model.new(comments_attributes: [...])`.
+      def __saci_set_nested_attributes(name : String, value : Object) : Bool
+        false
+      end
+
+      # Called by `Query#build` so autosaved collections can register the
+      # child before the owner is saved.
+      def __saci_autosave_register(assoc_name : String, child : Base) : Nil
+      end
+
+      # Metadata for one association (`accepts_nested_attributes_for`).
+      def self.__saci_assoc_meta(assoc_name : String) : Saci::Record::AssocMeta?
+        nil
+      end
+
       # Association metadata for `includes` (`name => kind`), accumulated
       # via `previous_def` by the association macros below.
       def self.__saci_assoc_kinds : Hash(String, Symbol)
@@ -516,7 +629,7 @@ module Saci
       # loaded records. Each association macro prepends its own branch and
       # delegates the rest via `previous_def`.
       def self.__saci_preload_assoc(records : Array(Saci::Record::Base), assoc_name : String) : Nil
-        raise ArgumentError.new("includes() cannot preload '#{assoc_name}' on #{self.name} (only belongs_to/has_many/has_one; has_many :through is not supported)")
+        raise ArgumentError.new("includes() cannot preload '#{assoc_name}' on #{self.name} (unknown association)")
       end
 
       # Symbol-form `joins(:assoc)` fragment for one association, or nil when
@@ -570,9 +683,13 @@ module Saci
 
       def assign(attrs : NamedTuple) : Nil
         attrs.each do |key, value|
-          unless __saci_set_attr(key.to_s, value)
-            raise UnknownAttributeError.new("unknown attribute '#{key}' for #{self.class}")
+          if value.is_a?(Saci::Record::Value)
+            next if __saci_set_attr(key.to_s, value)
           end
+          # Nested attributes (`comments_attributes: [...]`) are not part of
+          # the `Value` union; the generated setter hook handles them.
+          next if __saci_set_nested_attributes(key.to_s, value)
+          raise UnknownAttributeError.new("unknown attribute '#{key}' for #{self.class}")
         end
       end
 
@@ -641,6 +758,12 @@ module Saci
       # Persists the record without running validations (callbacks and
       # timestamp maintenance still run). Used by `update_attribute`,
       # `increment!`, `decrement!` and `toggle!` (G294).
+      #
+      # When an association has `autosave: true` or nested attributes have
+      # pending children (G19/G240), the owner write and the child writes
+      # share one transaction. `belongs_to` children are written before the
+      # owner, `has_many`/`has_one` children after it (they need the owner's
+      # generated primary key).
       private def __saci_persist_record : Bool
         __saci_before_save
         touch_timestamps
@@ -649,10 +772,24 @@ module Saci
         pre_values = __saci_snapshot_values
         pre_changes = __saci_changes_snapshot
         was_new = new_record?
-        if was_new
-          insert_record
-        else
-          update_record
+        write = -> do
+          __saci_assoc_write_before
+          was_new ? insert_record : update_record
+          __saci_assoc_write_after
+          true
+        end
+        begin
+          if __saci_assoc_writes_pending?
+            conn = self.class.connection
+            Record.transaction_on(conn) { |_tx| write.call }
+          else
+            write.call
+          end
+        rescue ex
+          # A failed child write rolls the owner INSERT back; restore the
+          # in-memory new-record flag so a retry behaves like Rails.
+          @new_record = true if was_new && !@new_record
+          raise ex
         end
         # Commit dirty state before after_* callbacks so they can read
         # `previous_changes` / `saved_changes` (ActiveModel semantics).
@@ -807,6 +944,8 @@ module Saci
 
       private def __saci_touch(keys : Array(String)) : Bool
         return false if new_record?
+        # G238: `Saci::Record.no_touching { ... }` suppresses timestamp bumps.
+        return true if Saci::Record.no_touching?
         now = Time.utc
         pairs = [] of Tuple(String, Value)
         if self.class.__saci_timestamps?
@@ -882,6 +1021,7 @@ module Saci
           __saci_before_validation_on_update
         end
         run_validations(errors)
+        __saci_assoc_validate(errors)
         errors.empty?
       end
 
@@ -931,6 +1071,11 @@ module Saci
       private def insert_record : Nil
         pk = self.class.__saci_primary_key
         pk_val = __saci_get_attr(pk)
+        # Optimistic locking (G20): a new record starts at version 0 unless
+        # the caller assigned one explicitly.
+        if __saci_lock_column && __saci_get_attr("lock_version").nil?
+          __saci_set_attr("lock_version", 0)
+        end
         conn = self.class.connection
         ad = Record.adapter_of(conn)
         cols = self.class.__saci_column_names
@@ -988,12 +1133,45 @@ module Saci
         raise RecordNotSaved.new("Cannot update #{self.class} without primary key") if pk_val.nil?
         conn = self.class.connection
         ad = Record.adapter_of(conn)
-        cols = self.class.__saci_column_names.reject { |(n, _)| n == pk }
+        lock_col = __saci_lock_column
+        lock_val = lock_col ? __saci_get_attr(lock_col) : nil
+        if lock_col && lock_val.nil?
+          raise StaleObjectError.new("#{self.class} has a nil #{lock_col}; cannot update with optimistic locking")
+        end
+        cols = self.class.__saci_column_names.reject { |(n, _)| n == pk || n == lock_col }
         sets = cols.map { |(n, _)| "#{Record.quote(n, ad)} = ?" }.join(", ")
-        values = cols.map { |(n, _)| Record.to_db(__saci_get_attr(n), ad) } + [Record.to_db(pk_val, ad)] of Value
-        Record.exec_compat(conn,
-          "UPDATE #{Record.quote(self.class.table_name, ad)} SET #{sets} WHERE #{Record.quote(pk, ad)} = ?",
+        values = cols.map { |(n, _)| Record.to_db(__saci_get_attr(n), ad) }
+        if lock_col
+          new_lock = (Record.to_i64(lock_val) || 0_i64) + 1
+          sets = sets.empty? ? "#{Record.quote(lock_col, ad)} = ?" : "#{sets}, #{Record.quote(lock_col, ad)} = ?"
+          values << new_lock
+        end
+        values << Record.to_db(pk_val, ad)
+        where = "#{Record.quote(pk, ad)} = ?"
+        if lock_col
+          where += " AND #{Record.quote(lock_col, ad)} = ?"
+          values << Record.to_db(lock_val, ad)
+        end
+        res = Record.exec_compat(conn,
+          "UPDATE #{Record.quote(self.class.table_name, ad)} SET #{sets} WHERE #{where}",
           values)
+        if lock_col
+          if res.rows_affected == 0
+            raise StaleObjectError.new("Attempted to update a stale object: #{self.class}##{pk_val}")
+          end
+          # Reflect the bumped version in memory; the dirty commit after the
+          # write records it in `previous_changes` like any other attribute.
+          __saci_set_attr(lock_col, (Record.to_i64(lock_val) || 0_i64) + 1)
+        end
+      end
+
+      # Name of the optimistic-locking column, or nil when the model does not
+      # declare one (`column lock_version : Int32`). G20.
+      private def __saci_lock_column : String?
+        self.class.__saci_column_names.each do |(n, _)|
+          return n if n == "lock_version"
+        end
+        nil
       end
 
       # -- loading ----------------------------------------------------------
@@ -1906,7 +2084,7 @@ module Saci
       # (a Symbol/String names the column explicitly); `touch: true` bumps
       # the parent's `updated_at` on save and destroy (`touch: :col` bumps
       # that column too).
-      macro belongs_to(name, class_name = nil, foreign_key = nil, counter_cache = nil, touch = nil, polymorphic = nil)
+      macro belongs_to(name, class_name = nil, foreign_key = nil, counter_cache = nil, touch = nil, polymorphic = nil, autosave = nil)
         {% if polymorphic %}
           {% type_col = "#{name.id}_type" %}
           {% id_col = "#{name.id}_id" %}
@@ -1994,16 +2172,159 @@ module Saci
               previous_def
             end
           end
+
+          def self.__saci_assoc_meta(assoc_name : String) : Saci::Record::AssocMeta?
+            if assoc_name == {{name.id.stringify}}
+              Saci::Record::AssocMeta.new(:belongs_to_polymorphic, "", {{id_col}})
+            else
+              previous_def
+            end
+          end
+
+          def __saci_assoc_current(assoc_name : String) : Array(Saci::Record::Base)
+            if assoc_name == {{name.id.stringify}}
+              if __saci_assoc_cache.has_key?({{name.id.stringify}})
+                %cached = __saci_assoc_cache[{{name.id.stringify}}]
+                return [%cached.as(Saci::Record::Base)] if %cached.is_a?(Saci::Record::Base)
+              end
+              if %cur = self.{{name.id}}
+                [%cur]
+              else
+                [] of Saci::Record::Base
+              end
+            else
+              previous_def
+            end
+          end
         {% else %}
         {% k = (class_name ? class_name.id.stringify : name.id.stringify.camelcase).id %}
         {% fk = (foreign_key ? foreign_key.id.stringify : "#{name.id}_id").id %}
         {% fk_str = (foreign_key ? foreign_key.id.stringify : "#{name.id}_id") %}
         def {{name.id}} : {{k}}?
+          {% if autosave %}
+            if %tracked = @__saci_belongs_to_{{name.id}}
+              return %tracked
+            end
+          {% end %}
           if __saci_assoc_cache.has_key?({{name.id.stringify}})
             return __saci_assoc_cache[{{name.id.stringify}}].as({{k}}?)
           end
           %fk_val = self.{{fk}}
           %fk_val.nil? ? nil : {{k}}.find(%fk_val)
+        end
+
+        # Assignment (and `build_`/`create_` below) is available on every
+        # `belongs_to`; `autosave: true` makes the parent save the assigned
+        # record before itself (G240). Without autosave the caller must save
+        # the target explicitly.
+        {% if autosave %}
+          @__saci_belongs_to_{{name.id}} : {{k}}? = nil
+        {% end %}
+
+        def {{name.id}}=(obj : {{k}}?) : {{k}}?
+          if obj.nil?
+            __saci_set_attr({{fk_str}}, nil)
+            {% if autosave %}
+              @__saci_belongs_to_{{name.id}} = nil
+            {% end %}
+          else
+            if obj.persisted?
+              __saci_set_attr({{fk_str}}, obj.__saci_get_attr({{k}}.__saci_primary_key))
+            end
+            {% if autosave %}
+              @__saci_belongs_to_{{name.id}} = obj
+            {% end %}
+          end
+          obj
+        end
+
+        {% if autosave %}
+          def build_{{name.id}} : {{k}}
+            %obj = {{k}}.new
+            @__saci_belongs_to_{{name.id}} = %obj
+            %obj
+          end
+
+          def build_{{name.id}}(attrs : NamedTuple) : {{k}}
+            %obj = {{k}}.new(attrs)
+            @__saci_belongs_to_{{name.id}} = %obj
+            %obj
+          end
+
+          def build_{{name.id}}(**attrs : Object) : {{k}}
+            %obj = {{k}}.new(attrs)
+            @__saci_belongs_to_{{name.id}} = %obj
+            %obj
+          end
+
+          def create_{{name.id}}(attrs : NamedTuple) : {{k}}
+            %obj = build_{{name.id}}(attrs)
+            %obj.save!
+            self.{{name.id}} = %obj
+            %obj
+          end
+
+          def create_{{name.id}}(**attrs : Object) : {{k}}
+            create_{{name.id}}(attrs)
+          end
+
+          def __saci_assoc_writes_pending? : Bool
+            previous_def || begin
+              %t = @__saci_belongs_to_{{name.id}}
+              !%t.nil? && (%t.new_record? || %t.changed?)
+            end
+          end
+
+          def __saci_assoc_validate(errors : Saci::Record::Errors) : Nil
+            previous_def
+            if %t = @__saci_belongs_to_{{name.id}}
+              if (%t.new_record? || %t.changed?) && !%t.valid?
+                errors.add({{name.id.stringify}}, "is invalid")
+              end
+            end
+          end
+
+          def __saci_assoc_write_before : Nil
+            previous_def
+            if %t = @__saci_belongs_to_{{name.id}}
+              if %t.new_record? || %t.changed?
+                %t.save || raise Saci::Record::RecordNotSaved.new("Failed to save autosaved {{name.id}} record")
+                %t_pk = %t.__saci_get_attr({{k}}.__saci_primary_key)
+                __saci_set_attr({{fk_str}}, %t_pk) unless %t_pk.nil?
+              end
+            end
+          end
+        {% end %}
+
+        def __saci_assoc_current(assoc_name : String) : Array(Saci::Record::Base)
+          if assoc_name == {{name.id.stringify}}
+            if __saci_assoc_cache.has_key?({{name.id.stringify}})
+              %cached = __saci_assoc_cache[{{name.id.stringify}}]
+              return [%cached.as(Saci::Record::Base)] if %cached.is_a?(Saci::Record::Base)
+            end
+            {% if autosave %}
+              if %tracked = @__saci_belongs_to_{{name.id}}
+                return [%tracked.as(Saci::Record::Base)]
+              end
+            {% end %}
+            if %cur = self.{{name.id}}
+              [%cur.as(Saci::Record::Base)]
+            else
+              [] of Saci::Record::Base
+            end
+          else
+            previous_def
+          end
+        end
+
+        def self.__saci_assoc_meta(assoc_name : String) : Saci::Record::AssocMeta?
+          if assoc_name == {{name.id.stringify}}
+            Saci::Record::AssocMeta.new(:belongs_to, {{k}}.table_name, {{fk_str}}, nil,
+              -> { {{k}}.new.as(Saci::Record::Base) },
+              ->(id : Saci::Record::Value) { {{k}}.find(id).as(Saci::Record::Base) })
+          else
+            previous_def
+          end
         end
 
         {% if counter_cache %}
@@ -2044,7 +2365,7 @@ module Saci
                 %t_cols << {{touch.id.stringify}}
               {% end %}
               %t_cols << "updated_at" if {{k}}.__saci_timestamps? && !%t_cols.includes?("updated_at")
-              Saci::Record.touch_row({{k}}.connection, {{k}}.table_name, {{k}}.primary_key_name, %t_fk, %t_cols)
+              Saci::Record.touch_row({{k}}.connection, {{k}}.table_name, {{k}}.primary_key_name, %t_fk, %t_cols) unless Saci::Record.no_touching?
             end
           end
 
@@ -2057,7 +2378,7 @@ module Saci
                 %t_cols << {{touch.id.stringify}}
               {% end %}
               %t_cols << "updated_at" if {{k}}.__saci_timestamps? && !%t_cols.includes?("updated_at")
-              Saci::Record.touch_row({{k}}.connection, {{k}}.table_name, {{k}}.primary_key_name, %t_fk, %t_cols)
+              Saci::Record.touch_row({{k}}.connection, {{k}}.table_name, {{k}}.primary_key_name, %t_fk, %t_cols) unless Saci::Record.no_touching?
             end
           end
         {% end %}
@@ -2132,11 +2453,12 @@ module Saci
       # the value (`WHERE (""user_id"" = ?)`). String `+` keeps it runtime.
       # Likewise, bind macro strings with single `.stringify`, never
       # `.stringify.stringify` (the latter bakes quote chars into the value).
-      macro has_many(name, class_name = nil, foreign_key = nil, through = nil, source = nil, dependent = nil, **_saci_opts)
+      macro has_many(name, class_name = nil, foreign_key = nil, through = nil, source = nil, source_type = nil, dependent = nil, **_saci_opts)
         {% n = name.id.stringify %}
         {% sing = n.ends_with?("ies") ? n[0...-3] + "y" : (n.ends_with?("s") ? n[0...-1] : n) %}
         {% k = (class_name ? class_name.id.stringify : sing.camelcase).id %}
         {% as_opt = _saci_opts[:as] %}
+        {% auto = _saci_opts[:autosave] %}
         {% if as_opt %}
           {% iface = as_opt.id.stringify %}
           {% poly_fk = iface + "_id" %}
@@ -2232,23 +2554,157 @@ module Saci
               previous_def
             end
           end
+
+          def self.__saci_assoc_meta(assoc_name : String) : Saci::Record::AssocMeta?
+            if assoc_name == {{n}}
+              Saci::Record::AssocMeta.new(:has_many, {{k}}.table_name, {{poly_fk}}, nil,
+                -> { {{k}}.new.as(Saci::Record::Base) },
+                ->(id : Saci::Record::Value) { {{k}}.find(id).as(Saci::Record::Base) })
+            else
+              previous_def
+            end
+          end
+
+          def __saci_assoc_current(assoc_name : String) : Array(Saci::Record::Base)
+            if assoc_name == {{n}}
+              if __saci_assoc_cache.has_key?({{n}})
+                __saci_assoc_cache[{{n}}].as(Array(Saci::Record::Base)).dup
+              else
+                self.{{name.id}}.to_a.map(&.as(Saci::Record::Base))
+              end
+            else
+              previous_def
+            end
+          end
         {% elsif through %}
           {% through_call = through.id %}
+          {% through_s = through.id.stringify %}
           {% src = (source ? source.id.stringify : sing) %}
           {% src_fk = src + "_id" %}
+          {% src_type_col = src + "_type" %}
           def {{name.id}} : Saci::Record::Query({{k}})
-            %join_rows = self.{{through_call}}.to_a
-            %fk_vals = [] of Saci::Record::Value
-            %join_rows.each do |%jr|
-              %fk_vals << %jr.__saci_get_attr({{src_fk}})
+            if __saci_assoc_cache.has_key?({{n}})
+              %cached = __saci_assoc_cache[{{n}}].as(Array(Saci::Record::Base)).map { |%el| %el.as({{k}}) }
+              return {{k}}.where("1 = 1").__saci_with_records(%cached)
             end
-            %ids = %fk_vals.select { |%v| !%v.nil? }
-            if %ids.empty?
-              {{k}}.where("1 = 0")
+            %join_rows = self.{{through_call}}.to_a
+            # The source association can live on the join model in two
+            # directions: `belongs_to` (classic join table — the FK is on the
+            # join row) or `has_many`/`has_one` (nested through — the FK is on
+            # the target and the join row's primary key is used).
+            %jmeta = %join_rows.first?.try do |%jr|
+              %jr.class.__saci_assoc_meta({{src}}) || %jr.class.__saci_assoc_meta({{n}})
+            end
+            %source_on_join = !%jmeta.nil? && (%jmeta.kind == :has_many || %jmeta.kind == :has_one)
+            %keys = [] of Saci::Record::Value
+            %join_rows.each do |%jr|
+              {% if source_type %}
+                next unless %jr.__saci_get_attr({{src_type_col}}).to_s == {{source_type.id.stringify}}
+              {% end %}
+              if %source_on_join
+                %pk = %jr.__saci_get_attr(%jr.class.__saci_primary_key)
+                %keys << %pk unless %pk.nil?
+              else
+                %fk = %jmeta.try(&.foreign_key) || {{src_fk}}
+                %val = %jr.__saci_get_attr(%fk)
+                %keys << %val unless %val.nil?
+              end
+            end
+            %keys = %keys.uniq
+            return {{k}}.where("1 = 0") if %keys.empty?
+            %ph = Array(String).new(%keys.size, "?").join(", ")
+            %had = Saci::Record.adapter_of({{k}}.connection)
+            if %source_on_join
+              %target_fk = %jmeta.not_nil!.foreign_key
+              return {{k}}.where("1 = 0") if %target_fk.nil?
+              {{k}}.where(Saci::Record.quote(%target_fk, %had) + " IN (" + %ph + ")", %keys)
             else
-              %ph = Array(String).new(%ids.size, "?").join(", ")
-              %had = Saci::Record.adapter_of({{k}}.connection)
-              {{k}}.where(Saci::Record.quote("id", %had) + " IN (" + %ph + ")", %ids)
+              {{k}}.where(Saci::Record.quote({{k}}.primary_key_name, %had) + " IN (" + %ph + ")", %keys)
+            end
+          end
+
+          # Batched preloading (G187): one query for every owner's join rows
+          # (delegated to the `through` association's own preloader, which
+          # recurses for nested through chains), then one query for all
+          # targets. `source:` chooses the join-model association and
+          # `source_type:` filters polymorphic join rows.
+          def self.__saci_preload_{{name.id}}(records : Array(Saci::Record::Base)) : Nil
+            return if records.empty?
+            __saci_preload_assoc(records, {{through_s}})
+            %owner_join_rows = {} of UInt64 => Array(Saci::Record::Base)
+            %all_join_rows = [] of Saci::Record::Base
+            records.each do |%rec|
+              %cached = %rec.__saci_assoc_cache[{{through_s}}]?
+              %join_rows = case %cached
+                           when Array(Saci::Record::Base) then %cached
+                           when Saci::Record::Base       then [%cached]
+                           else                               [] of Saci::Record::Base
+                           end
+              %filtered = [] of Saci::Record::Base
+              %join_rows.each do |%jr|
+                {% if source_type %}
+                  next unless %jr.__saci_get_attr({{src_type_col}}).to_s == {{source_type.id.stringify}}
+                {% end %}
+                %filtered << %jr
+              end
+              %owner_join_rows[%rec.object_id] = %filtered
+              %all_join_rows.concat(%filtered)
+            end
+            %jmeta = %all_join_rows.first?.try do |%jr|
+              %jr.class.__saci_assoc_meta({{src}}) || %jr.class.__saci_assoc_meta({{n}})
+            end
+            %source_on_join = !%jmeta.nil? && (%jmeta.kind == :has_many || %jmeta.kind == :has_one)
+            %by_pk = {} of Saci::Record::Value => Saci::Record::Base
+            %by_fk = {} of Saci::Record::Value => Array(Saci::Record::Base)
+            if %source_on_join
+              %keys = %all_join_rows.map { |%jr| %jr.__saci_get_attr(%jr.class.__saci_primary_key) }.select { |%v| !%v.nil? }.uniq
+              %target_fk = %jmeta.not_nil!.foreign_key
+              if !%target_fk.nil? && !%keys.empty?
+                %ph = Array(String).new(%keys.size, "?").join(", ")
+                %had = Saci::Record.adapter_of({{k}}.connection)
+                {{k}}.where(Saci::Record.quote(%target_fk, %had) + " IN (" + %ph + ")", %keys).to_a.each do |%t|
+                  %tfk = %t.__saci_get_attr(%target_fk)
+                  unless %tfk.nil?
+                    (%by_fk[%tfk] ||= [] of Saci::Record::Base) << %t
+                  end
+                end
+              end
+            else
+              %fk = %jmeta.try(&.foreign_key) || {{src_fk}}
+              %keys = %all_join_rows.map { |%jr| %jr.__saci_get_attr(%fk) }.select { |%v| !%v.nil? }.uniq
+              unless %keys.empty?
+                %ph = Array(String).new(%keys.size, "?").join(", ")
+                %had = Saci::Record.adapter_of({{k}}.connection)
+                {{k}}.where(Saci::Record.quote({{k}}.primary_key_name, %had) + " IN (" + %ph + ")", %keys).to_a.each do |%t|
+                  %by_pk[%t.__saci_get_attr({{k}}.primary_key_name)] = %t
+                end
+              end
+            end
+            records.each do |%rec|
+              %list = [] of Saci::Record::Base
+              (%owner_join_rows[%rec.object_id]? || [] of Saci::Record::Base).each do |%jr|
+                if %source_on_join
+                  %jpk = %jr.__saci_get_attr(%jr.class.__saci_primary_key)
+                  if !%jpk.nil? && (%hits = %by_fk[%jpk]?)
+                    %hits.each { |%hit| %list << %hit }
+                  end
+                else
+                  %fk = %jmeta.try(&.foreign_key) || {{src_fk}}
+                  %val = %jr.__saci_get_attr(%fk)
+                  if !%val.nil? && (%hit = %by_pk[%val]?)
+                    %list << %hit
+                  end
+                end
+              end
+              %rec.__saci_set_assoc({{n}}, %list)
+            end
+          end
+
+          def self.__saci_preload_assoc(records : Array(Saci::Record::Base), assoc_name : String) : Nil
+            if assoc_name == {{n}}
+              __saci_preload_{{name.id}}(records)
+            else
+              previous_def
             end
           end
 
@@ -2256,6 +2712,28 @@ module Saci
             %kinds = previous_def.dup
             %kinds[{{n}}] = :through
             %kinds
+          end
+
+          def self.__saci_assoc_meta(assoc_name : String) : Saci::Record::AssocMeta?
+            if assoc_name == {{n}}
+              Saci::Record::AssocMeta.new(:through, {{k}}.table_name, {{src_fk}}, {{through_s}},
+                -> { {{k}}.new.as(Saci::Record::Base) },
+                ->(id : Saci::Record::Value) { {{k}}.find(id).as(Saci::Record::Base) })
+            else
+              previous_def
+            end
+          end
+
+          def __saci_assoc_current(assoc_name : String) : Array(Saci::Record::Base)
+            if assoc_name == {{n}}
+              if __saci_assoc_cache.has_key?({{n}})
+                __saci_assoc_cache[{{n}}].as(Array(Saci::Record::Base)).dup
+              else
+                self.{{name.id}}.to_a.map(&.as(Saci::Record::Base))
+              end
+            else
+              previous_def
+            end
           end
 
           def self.__saci_join_sql(assoc_name : String) : String?
@@ -2275,15 +2753,167 @@ module Saci
                 %fk_name = "#{Saci::Record::Inflector.underscore(self.class.name.split("::").last)}_id"
               {% end %}
               %had = Saci::Record.adapter_of(self.class.connection)
-              return {{k}}.where(Saci::Record.quote(%fk_name, %had) + " = ?", __saci_get_attr(self.class.__saci_primary_key)).__saci_with_records(%cached)
+              return {{k}}.where(Saci::Record.quote(%fk_name, %had) + " = ?", __saci_get_attr(self.class.__saci_primary_key)).__saci_with_records(%cached).__saci_with_owner(self, %fk_name, {{n}})
             end
+            {% if auto %}
+              if !@__saci_autosave_{{name.id}}.empty?
+                return __saci_autosave_{{name.id}}_merged
+              end
+            {% end %}
             {% if foreign_key %}
               %fk_name = {{foreign_key.id.stringify}}
             {% else %}
               %fk_name = "#{Saci::Record::Inflector.underscore(self.class.name.split("::").last)}_id"
             {% end %}
             %had = Saci::Record.adapter_of(self.class.connection)
-            {{k}}.where(Saci::Record.quote(%fk_name, %had) + " = ?", __saci_get_attr(self.class.__saci_primary_key))
+            {{k}}.where(Saci::Record.quote(%fk_name, %had) + " = ?", __saci_get_attr(self.class.__saci_primary_key)).__saci_with_owner(self, %fk_name, {{n}})
+          end
+
+          {% if auto %}
+            @__saci_autosave_{{name.id}} : Array({{k}}) = [] of {{k}}
+
+            def __saci_autosave_{{name.id}}_fk : String
+              {% if foreign_key %}
+                {{foreign_key.id.stringify}}
+              {% else %}
+                Saci::Record::Inflector.underscore(self.class.name.split("::").last) + "_id"
+              {% end %}
+            end
+
+            # Pending `build` children are visible in the collection before
+            # the owner is saved (Rails builds the target proxy immediately).
+            def __saci_autosave_{{name.id}}_merged : Saci::Record::Query({{k}})
+              %fk_name = __saci_autosave_{{name.id}}_fk
+              %owner_pk = __saci_get_attr(self.class.__saci_primary_key)
+              %list = [] of Saci::Record::Base
+              unless %owner_pk.nil?
+                %ad = Saci::Record.adapter_of(self.class.connection)
+                {{k}}.where(Saci::Record.quote(%fk_name, %ad) + " = ?", %owner_pk).to_a.each do |%persisted|
+                  %list << %persisted.as(Saci::Record::Base)
+                end
+              end
+              @__saci_autosave_{{name.id}}.each do |%child|
+                %list << %child.as(Saci::Record::Base) unless %list.any? { |%e| %e.same?(%child) }
+              end
+              {{k}}.where("1 = 1").__saci_with_records(%list.map(&.as({{k}}))).__saci_with_owner(self, %fk_name, {{n}})
+            end
+
+            # `author.{{name.id}} = [...]` replaces the tracked collection;
+            # the owner's save writes new/dirty children in the same
+            # transaction (G240).
+            def {{name.id}}=(children : Array({{k}})) : Array({{k}})
+              %owner_pk = __saci_get_attr(self.class.__saci_primary_key)
+              children.each do |%child|
+                %child.__saci_set_attr(__saci_autosave_{{name.id}}_fk, %owner_pk) unless %owner_pk.nil?
+              end
+              @__saci_autosave_{{name.id}} = children
+              __saci_set_assoc({{n}}, children.map(&.as(Saci::Record::Base)))
+              children
+            end
+
+            def build_{{name.id}} : {{k}}
+              %child = {{k}}.new
+              __saci_autosave_register({{n}}, %child)
+              %child
+            end
+
+            def build_{{name.id}}(attrs : NamedTuple) : {{k}}
+              %child = {{k}}.new(attrs)
+              __saci_autosave_register({{n}}, %child)
+              %child
+            end
+
+            def build_{{name.id}}(**attrs : Object) : {{k}}
+              %child = {{k}}.new(attrs)
+              __saci_autosave_register({{n}}, %child)
+              %child
+            end
+
+            def create_{{name.id}}(attrs : NamedTuple) : {{k}}
+              %owner_pk = __saci_get_attr(self.class.__saci_primary_key)
+              raise Saci::Record::RecordNotSaved.new("Cannot create {{name.id}} on an unsaved #{self.class}") if %owner_pk.nil?
+              %child = {{k}}.new(attrs)
+              %child.__saci_set_attr(__saci_autosave_{{name.id}}_fk, %owner_pk)
+              %child.save!
+              __saci_autosave_register({{n}}, %child)
+              %child
+            end
+
+            def create_{{name.id}}(**attrs : Object) : {{k}}
+              create_{{name.id}}(attrs)
+            end
+
+            def __saci_autosave_register(assoc_name : String, child : Saci::Record::Base) : Nil
+              if assoc_name == {{n}}
+                %typed = child.as({{k}})
+                @__saci_autosave_{{name.id}} << %typed unless @__saci_autosave_{{name.id}}.any? { |%c| %c.same?(%typed) }
+              else
+                previous_def
+              end
+            end
+
+            def __saci_autosave_{{name.id}}_children : Array({{k}})
+              %list = @__saci_autosave_{{name.id}}.dup
+              if %cached = __saci_assoc_cache[{{n}}]?
+                %cached.as(Array(Saci::Record::Base)).each do |%c|
+                  %typed = %c.as({{k}})
+                  %list << %typed unless %list.any? { |%e| %e.same?(%typed) }
+                end
+              end
+              %list
+            end
+
+            def __saci_assoc_writes_pending? : Bool
+              previous_def || __saci_autosave_{{name.id}}_children.any? { |%c| %c.new_record? || %c.changed? }
+            end
+
+            def __saci_assoc_validate(errors : Saci::Record::Errors) : Nil
+              previous_def
+              %bad = false
+              __saci_autosave_{{name.id}}_children.each do |%child|
+                next unless %child.new_record? || %child.changed?
+                %bad = true unless %child.valid?
+              end
+              errors.add({{n}}, "is invalid") if %bad
+            end
+
+            def __saci_assoc_write_after : Nil
+              previous_def
+              %owner_pk = __saci_get_attr(self.class.__saci_primary_key)
+              __saci_autosave_{{name.id}}_children.each do |%child|
+                next unless %child.new_record? || %child.changed?
+                %child.__saci_set_attr(__saci_autosave_{{name.id}}_fk, %owner_pk) unless %owner_pk.nil?
+                %child.save || raise Saci::Record::RecordNotSaved.new("Failed to save autosaved {{name.id}} record")
+              end
+              @__saci_autosave_{{name.id}}.clear
+            end
+          {% end %}
+
+          def __saci_assoc_current(assoc_name : String) : Array(Saci::Record::Base)
+            if assoc_name == {{n}}
+              if __saci_assoc_cache.has_key?({{n}})
+                __saci_assoc_cache[{{n}}].as(Array(Saci::Record::Base)).dup
+              else
+                self.{{name.id}}.to_a.map(&.as(Saci::Record::Base))
+              end
+            else
+              previous_def
+            end
+          end
+
+          def self.__saci_assoc_meta(assoc_name : String) : Saci::Record::AssocMeta?
+            if assoc_name == {{n}}
+              {% if foreign_key %}
+                %fk = {{foreign_key.id.stringify}}
+              {% else %}
+                %fk = Saci::Record::Inflector.underscore(self.name.split("::").last) + "_id"
+              {% end %}
+              Saci::Record::AssocMeta.new(:has_many, {{k}}.table_name, %fk, nil,
+                -> { {{k}}.new.as(Saci::Record::Base) },
+                ->(id : Saci::Record::Value) { {{k}}.find(id).as(Saci::Record::Base) })
+            else
+              previous_def
+            end
           end
 
           def self.__saci_preload_{{name.id}}(records : Array(Saci::Record::Base)) : Nil
@@ -2448,10 +3078,213 @@ module Saci
       # `has_one :moderation` returns the first matching record or nil
       # (foreign key defaults to `<owner>_id` on the target, like `has_many`).
       # Honors `includes` preloading.
-      macro has_one(name, class_name = nil, foreign_key = nil, dependent = nil)
+      macro has_one(name, class_name = nil, foreign_key = nil, dependent = nil, through = nil, source = nil, autosave = nil)
         {% n = name.id.stringify %}
         {% k = (class_name ? class_name.id.stringify : n.camelcase).id %}
+        {% if through %}
+          {% through_call = through.id %}
+          {% through_s = through.id.stringify %}
+          {% src = (source ? source.id.stringify : n) %}
+          def {{name.id}} : {{k}}?
+            if __saci_assoc_cache.has_key?({{n}})
+              return __saci_assoc_cache[{{n}}].as({{k}}?)
+            end
+            %t = self.{{through_call}}
+            return nil if %t.nil?
+            %t.{{src.id}}
+          end
+
+          # Assigns the target through the intermediate record. The FK side
+          # is resolved from the source association's metadata (`belongs_to`
+          # keeps the FK on the through record, `has_one` keeps it on the
+          # target).
+          def {{name.id}}=(obj : {{k}}?) : {{k}}?
+            %t = self.{{through_call}}
+            if obj.nil?
+              if %cur = self.{{name.id}}
+                %cur.destroy
+              end
+              __saci_set_assoc({{n}}, nil)
+              return nil
+            end
+            raise Saci::Record::RecordNotSaved.new("Cannot assign {{name.id}} without a {{through_call}} record") if %t.nil?
+            # has_one assignment replaces the current target.
+            if %existing = self.{{name.id}}
+              %existing.destroy unless %existing.same?(obj)
+            end
+            %src_meta = {{k}}.__saci_assoc_meta({{src}})
+            if %src_meta && %src_meta.kind == :belongs_to
+              %fk = %src_meta.foreign_key
+              raise Saci::Record::RecordNotSaved.new("Cannot assign {{name.id}}: #{ {{src}} } metadata has no foreign key") if %fk.nil?
+              obj.save unless obj.persisted?
+              %obj_pk = obj.__saci_get_attr({{k}}.__saci_primary_key)
+              %t.__saci_set_attr(%fk, %obj_pk)
+              %t.save || raise Saci::Record::RecordNotSaved.new("Failed to save {{through_call}} for {{name.id}}")
+            else
+              %fk = %src_meta.try(&.foreign_key) || "#{ {{through_s}} }_id"
+              %t_pk = %t.__saci_get_attr(%t.class.__saci_primary_key)
+              obj.__saci_set_attr(%fk, %t_pk)
+              obj.save || raise Saci::Record::RecordNotSaved.new("Failed to save {{name.id}}")
+            end
+            __saci_set_assoc({{n}}, obj)
+            obj
+          end
+
+          def build_{{name.id}} : {{k}}?
+            %t = self.{{through_call}}
+            return nil if %t.nil?
+            %obj = {{k}}.new
+            %src_meta = {{k}}.__saci_assoc_meta({{src}})
+            if %src_meta && %src_meta.kind != :belongs_to
+              %fk = %src_meta.foreign_key || "#{ {{through_s}} }_id"
+              %t_pk = %t.__saci_get_attr(%t.class.__saci_primary_key)
+              %obj.__saci_set_attr(%fk, %t_pk)
+            end
+            %obj
+          end
+
+          def create_{{name.id}} : {{k}}?
+            %obj = build_{{name.id}}
+            return nil if %obj.nil?
+            %obj.save!
+            self.{{name.id}} = %obj
+            %obj
+          end
+
+          def self.__saci_preload_{{name.id}}(records : Array(Saci::Record::Base)) : Nil
+            return if records.empty?
+            __saci_preload_assoc(records, {{through_s}})
+            %owner_to_through = {} of UInt64 => Saci::Record::Value
+            %through_rows = [] of Saci::Record::Base
+            records.each do |%rec|
+              %cached = %rec.__saci_assoc_cache[{{through_s}}]?
+              %t = case %cached
+                   when Saci::Record::Base then %cached
+                   when Array(Saci::Record::Base) then %cached.first?
+                   else nil
+                   end
+              next if %t.nil?
+              %tpk = %t.__saci_get_attr(%t.class.__saci_primary_key)
+              next if %tpk.nil?
+              %owner_to_through[%rec.object_id] = %tpk
+              %through_rows << %t
+            end
+            %src_meta = {{k}}.__saci_assoc_meta({{src}})
+            %by_through = {} of Saci::Record::Value => Saci::Record::Base
+            if %src_meta && %src_meta.kind == :belongs_to
+              %fk = %src_meta.foreign_key
+              if %fk
+                %ids = %through_rows.map { |%t| %t.__saci_get_attr(%fk) }.select { |%v| !%v.nil? }.uniq
+                unless %ids.empty?
+                  %ph = Array(String).new(%ids.size, "?").join(", ")
+                  %had = Saci::Record.adapter_of({{k}}.connection)
+                  %targets = {} of Saci::Record::Value => Saci::Record::Base
+                  {{k}}.where(Saci::Record.quote({{k}}.primary_key_name, %had) + " IN (" + %ph + ")", %ids).to_a.each do |%t|
+                    %targets[%t.__saci_get_attr({{k}}.primary_key_name)] = %t
+                  end
+                  %through_rows.each do |%t|
+                    %tval = %t.__saci_get_attr(%fk)
+                    %tpk = %t.__saci_get_attr(%t.class.__saci_primary_key)
+                    if !%tval.nil? && !%tpk.nil? && (%hit = %targets[%tval]?)
+                      %by_through[%tpk] = %hit
+                    end
+                  end
+                end
+              end
+            else
+              %fk = %src_meta.try(&.foreign_key) || "#{ {{through_s}} }_id"
+              %tpks = %through_rows.map { |%t| %t.__saci_get_attr(%t.class.__saci_primary_key) }.select { |%v| !%v.nil? }.uniq
+              unless %tpks.empty?
+                %ph = Array(String).new(%tpks.size, "?").join(", ")
+                %had = Saci::Record.adapter_of({{k}}.connection)
+                {{k}}.where(Saci::Record.quote(%fk, %had) + " IN (" + %ph + ")", %tpks).to_a.each do |%t|
+                  %tfk = %t.__saci_get_attr(%fk)
+                  %by_through[%tfk] = %t unless %tfk.nil? || %by_through.has_key?(%tfk)
+                end
+              end
+            end
+            records.each do |%rec|
+              %tpk = %owner_to_through[%rec.object_id]?
+              %rec.__saci_set_assoc({{n}}, %tpk.nil? ? nil : %by_through[%tpk]?)
+            end
+          end
+
+          def self.__saci_preload_assoc(records : Array(Saci::Record::Base), assoc_name : String) : Nil
+            if assoc_name == {{n}}
+              __saci_preload_{{name.id}}(records)
+            else
+              previous_def
+            end
+          end
+
+          def self.__saci_assoc_kinds : Hash(String, Symbol)
+            %kinds = previous_def.dup
+            %kinds[{{n}}] = :has_one_through
+            %kinds
+          end
+
+          def self.__saci_assoc_meta(assoc_name : String) : Saci::Record::AssocMeta?
+            if assoc_name == {{n}}
+              Saci::Record::AssocMeta.new(:has_one_through, {{k}}.table_name, "#{ {{through_s}} }_id", {{through_s}},
+                -> { {{k}}.new.as(Saci::Record::Base) },
+                ->(id : Saci::Record::Value) { {{k}}.find(id).as(Saci::Record::Base) })
+            else
+              previous_def
+            end
+          end
+
+          def __saci_assoc_current(assoc_name : String) : Array(Saci::Record::Base)
+            if assoc_name == {{n}}
+              if __saci_assoc_cache.has_key?({{n}})
+                %cached = __saci_assoc_cache[{{n}}]
+                return [%cached.as(Saci::Record::Base)] if %cached.is_a?(Saci::Record::Base)
+                return [] of Saci::Record::Base
+              end
+              if %cur = self.{{name.id}}
+                [%cur.as(Saci::Record::Base)]
+              else
+                [] of Saci::Record::Base
+              end
+            else
+              previous_def
+            end
+          end
+
+          def self.__saci_join_sql(assoc_name : String) : String?
+            if assoc_name == {{n}}
+              ad = Saci::Record.adapter_of(self.connection)
+              base = Saci::Record.quote(self.table_name, ad)
+              base_pk = Saci::Record.quote(self.__saci_primary_key, ad)
+              through_meta = self.__saci_assoc_meta({{through_s}})
+              raise ArgumentError.new("joins(:{{name.id}}) requires the #{ {{through_s}} } association to be defined with a macro") if through_meta.nil?
+              through_tbl = Saci::Record.quote(through_meta.table, ad)
+              through_pk = Saci::Record.quote("id", ad)
+              first = if through_meta.kind == :belongs_to
+                "INNER JOIN " + through_tbl + " ON " + through_tbl + "." + through_pk + " = " + base + "." + Saci::Record.quote(through_meta.foreign_key.not_nil!, ad)
+              else
+                "INNER JOIN " + through_tbl + " ON " + through_tbl + "." + Saci::Record.quote(through_meta.foreign_key.not_nil!, ad) + " = " + base + "." + base_pk
+              end
+              target = Saci::Record.quote({{k}}.table_name, ad)
+              target_pk = Saci::Record.quote({{k}}.primary_key_name, ad)
+              src_meta = {{k}}.__saci_assoc_meta({{src}})
+              second = if src_meta && src_meta.kind == :belongs_to
+                "INNER JOIN " + target + " ON " + target + "." + target_pk + " = " + through_tbl + "." + Saci::Record.quote(src_meta.foreign_key.not_nil!, ad)
+              else
+                %target_fk = src_meta.try(&.foreign_key) || "#{ {{through_s}} }_id"
+                "INNER JOIN " + target + " ON " + target + "." + Saci::Record.quote(%target_fk, ad) + " = " + through_tbl + "." + through_pk
+              end
+              first + " " + second
+            else
+              previous_def
+            end
+          end
+        {% else %}
         def {{name.id}} : {{k}}?
+          {% if autosave %}
+            if %tracked = @__saci_has_one_{{name.id}}
+              return %tracked
+            end
+          {% end %}
           if __saci_assoc_cache.has_key?({{n}})
             return __saci_assoc_cache[{{n}}].as({{k}}?)
           end
@@ -2466,6 +3299,144 @@ module Saci
           else
             %had = Saci::Record.adapter_of(self.class.connection)
             {{k}}.where(Saci::Record.quote(%fk_name, %had) + " = ?", %pk_val).first
+          end
+        end
+
+        {% if autosave %}
+          @__saci_has_one_{{name.id}} : {{k}}? = nil
+
+          def {{name.id}}=(obj : {{k}}?) : {{k}}?
+            if obj.nil?
+              {% if foreign_key %}
+                %fk = {{foreign_key.id.stringify}}
+              {% else %}
+                %fk = Saci::Record::Inflector.underscore(self.class.name.split("::").last) + "_id"
+              {% end %}
+              %cur = self.{{name.id}}
+              %cur.__saci_set_attr(%fk, nil) if %cur
+              @__saci_has_one_{{name.id}} = nil
+              return nil
+            end
+            %owner_pk = __saci_get_attr(self.class.__saci_primary_key)
+            {% if foreign_key %}
+              %fk_name = {{foreign_key.id.stringify}}
+            {% else %}
+              %fk_name = Saci::Record::Inflector.underscore(self.class.name.split("::").last) + "_id"
+            {% end %}
+            obj.__saci_set_attr(%fk_name, %owner_pk) unless %owner_pk.nil?
+            @__saci_has_one_{{name.id}} = obj
+            obj
+          end
+
+          def build_{{name.id}} : {{k}}
+            %obj = {{k}}.new
+            @__saci_has_one_{{name.id}} = %obj
+            %obj
+          end
+
+          def build_{{name.id}}(attrs : NamedTuple) : {{k}}
+            %obj = {{k}}.new(attrs)
+            @__saci_has_one_{{name.id}} = %obj
+            %obj
+          end
+
+          def build_{{name.id}}(**attrs : Object) : {{k}}
+            %obj = {{k}}.new(attrs)
+            @__saci_has_one_{{name.id}} = %obj
+            %obj
+          end
+
+          def create_{{name.id}}(attrs : NamedTuple) : {{k}}
+            %owner_pk = __saci_get_attr(self.class.__saci_primary_key)
+            raise Saci::Record::RecordNotSaved.new("Cannot create {{name.id}} on an unsaved #{self.class}") if %owner_pk.nil?
+            %obj = {{k}}.new(attrs)
+            {% if foreign_key %}
+              %obj.__saci_set_attr({{foreign_key.id.stringify}}, %owner_pk)
+            {% else %}
+              %obj.__saci_set_attr(Saci::Record::Inflector.underscore(self.class.name.split("::").last) + "_id", %owner_pk)
+            {% end %}
+            %obj.save!
+            @__saci_has_one_{{name.id}} = %obj
+            %obj
+          end
+
+          def create_{{name.id}}(**attrs : Object) : {{k}}
+            create_{{name.id}}(attrs)
+          end
+
+          def __saci_has_one_{{name.id}}_child : {{k}}?
+            if %tracked = @__saci_has_one_{{name.id}}
+              return %tracked
+            end
+            if %cached = __saci_assoc_cache[{{n}}]?
+              return %cached.as(Saci::Record::Base).as({{k}})
+            end
+            nil
+          end
+
+          def __saci_assoc_writes_pending? : Bool
+            previous_def || (%c = __saci_has_one_{{name.id}}_child; !%c.nil? && (%c.new_record? || %c.changed?))
+          end
+
+          def __saci_assoc_validate(errors : Saci::Record::Errors) : Nil
+            previous_def
+            if %c = __saci_has_one_{{name.id}}_child
+              if (%c.new_record? || %c.changed?) && !%c.valid?
+                errors.add({{n}}, "is invalid")
+              end
+            end
+          end
+
+          def __saci_assoc_write_after : Nil
+            previous_def
+            if %c = __saci_has_one_{{name.id}}_child
+              if %c.new_record? || %c.changed?
+                %owner_pk = __saci_get_attr(self.class.__saci_primary_key)
+                {% if foreign_key %}
+                  %c.__saci_set_attr({{foreign_key.id.stringify}}, %owner_pk) unless %owner_pk.nil?
+                {% else %}
+                  %c.__saci_set_attr(Saci::Record::Inflector.underscore(self.class.name.split("::").last) + "_id", %owner_pk) unless %owner_pk.nil?
+                {% end %}
+                %c.save || raise Saci::Record::RecordNotSaved.new("Failed to save autosaved {{name.id}} record")
+              end
+            end
+          end
+        {% end %}
+
+        def __saci_assoc_current(assoc_name : String) : Array(Saci::Record::Base)
+          if assoc_name == {{n}}
+            if __saci_assoc_cache.has_key?({{n}})
+              %cached = __saci_assoc_cache[{{n}}]
+              return [%cached.as(Saci::Record::Base)] if %cached.is_a?(Saci::Record::Base)
+              return [] of Saci::Record::Base
+            end
+            {% if autosave %}
+              if %tracked = @__saci_has_one_{{name.id}}
+                return [%tracked.as(Saci::Record::Base)]
+              end
+            {% end %}
+            if %cur = self.{{name.id}}
+              [%cur.as(Saci::Record::Base)]
+            else
+              [] of Saci::Record::Base
+            end
+          else
+            previous_def
+          end
+        end
+
+        def self.__saci_assoc_meta(assoc_name : String) : Saci::Record::AssocMeta?
+          if assoc_name == {{n}}
+            {% if foreign_key %}
+              %fk = {{foreign_key.id.stringify}}
+            {% else %}
+              %fk = Saci::Record::Inflector.underscore(self.name.split("::").last) + "_id"
+            {% end %}
+            Saci::Record::AssocMeta.new(:has_one, {{k}}.table_name, %fk, nil,
+              -> { {{k}}.new.as(Saci::Record::Base) },
+              ->(id : Saci::Record::Value) { {{k}}.find(id).as(Saci::Record::Base) })
+          else
+            previous_def
           end
         end
 
@@ -2579,6 +3550,7 @@ module Saci
             {% end %}
           end
         {% end %}
+        {% end %}
       end
     end
   end
@@ -2587,3 +3559,12 @@ end
 # Dirty tracking is a reopening of `Saci::Record::Base` (G10); kept in its
 # own file to keep the core class readable and the diff reviewable.
 require "./dirty"
+
+# Pessimistic/optimistic locking, transaction isolation (G20/G21).
+require "./locking"
+
+# `accepts_nested_attributes_for` (G19).
+require "./nested_attributes"
+
+# `has_and_belongs_to_many` (G33).
+require "./habtm"
