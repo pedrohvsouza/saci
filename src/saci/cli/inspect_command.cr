@@ -29,14 +29,45 @@ module Saci
             puts help
             return 0
           end
-          if bad = args.find(&.starts_with?("-"))
-            raise Error.new("Unknown option '#{bad}'. See `saci help routes`.")
+          expanded = false
+          grep : String? = nil
+          positional = [] of String
+          i = 0
+          while i < args.size
+            a = args[i]
+            case a
+            when "--expanded"
+              expanded = true
+            when "--grep"
+              grep = args[i + 1]? || raise Error.new("Missing value for --grep")
+              i += 1
+            when .starts_with?("--grep=")
+              grep = a.split("=", 2)[1]
+            else
+              if a.starts_with?("-")
+                raise Error.new("Unknown option '#{a}'. See `saci help routes`.")
+              end
+              positional << a
+            end
+            i += 1
+          end
+          unless positional.empty?
+            raise Error.new("Unexpected argument '#{positional.first}'. See `saci help routes`.")
           end
           name = Util.shard_name(Dir.current)
           source = locate!(name)
           rows = parse(File.read(source))
+          rows = filter(rows, grep) if grep
           if rows.empty?
-            puts "(no routes found in #{source})"
+            puts grep ? "(no routes matched #{grep.inspect} in #{source})" : "(no routes found in #{source})"
+          elsif expanded
+            rows.each_with_index do |r, index|
+              puts "-- Route #{index + 1}"
+              puts "Verb:   #{r.verb}"
+              puts "Path:   #{r.path}"
+              puts "Target: #{r.target}"
+              puts ""
+            end
           else
             width = rows.map(&.path.size).max
             rows.each do |r|
@@ -46,8 +77,21 @@ module Saci
           0
         end
 
+        # `--grep PATTERN` filters the combined "VERB PATH TARGET" line
+        # (case-insensitive regular expression, Rails `routes --grep`).
+        def self.filter(rows : Array(Row), pattern : String) : Array(Row)
+          regex = begin
+            Regex.new(pattern, Regex::Options::IGNORE_CASE)
+          rescue ex : ArgumentError
+            raise Error.new("Invalid --grep pattern #{pattern.inspect}: #{ex.message}")
+          end
+          rows.select do |row|
+            "#{row.verb} #{row.path} #{row.target}".matches?(regex)
+          end
+        end
+
         def self.help : String
-          "Usage: saci routes\n\nPrints VERB PATH -> Controller#action for the app without booting the server.\nReads src/routes.cr when present, otherwise src/<app>.cr."
+          "Usage: saci routes [--expanded] [--grep PATTERN]\n\nPrints VERB PATH -> Controller#action for the app without booting the server.\nReads src/routes.cr when present, otherwise src/<app>.cr.\n--expanded prints one detail block per route; --grep filters case-insensitively."
         end
 
         def self.locate!(name : String) : String
@@ -221,15 +265,23 @@ module Saci
 
         # Builds the wrapper source. The payload is appended verbatim
         # (never interpolated), so user code containing `#{}` is safe.
+        # Task files are loaded too, so `saci runner -e 'Saci::Task.run("x")'`
+        # works like `saci task x`.
         def self.wrapper_source(code_body : String? = nil, require_file : String? = nil) : String
           name = Util.shard_name(Dir.current)
           String.build do |io|
             io << framework_require_line << "\n"
+            tasks_present = Dir.exists?("lib/tasks") && !Dir.glob("lib/tasks/**/*.cr").empty?
+            if tasks_present
+              io << Util.internal_require("tasks") << "\n"
+            end
             io << "require \"file_utils\"\n"
             io << driver_require_line(name)
+            io << "require \"../config/environments/*\"\n" if Dir.exists?("config/environments")
             ["models", "controllers", "channels", "jobs", "mailers"].each do |d|
               io << "require \"../src/#{d}/*\"\n" if Dir.exists?(File.join("src", d))
             end
+            io << "require \"../lib/tasks/*\"\n" if tasks_present
             io << "\nFileUtils.mkdir_p(\"db\")\n"
             io << "env_name = ENV.fetch(\"APP_ENV\", \"development\")\n"
             io << "db_url = ENV.fetch(\"DATABASE_URL\", \"#{db_default(name)}\")\n"
