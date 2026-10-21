@@ -54,20 +54,28 @@ module Saci
   module Job
     # `perform.saci` / `enqueue.saci` (Active Job style names with the Saci
     # suffix). Payload includes the job class and queue.
-    def self.enqueue(job_class : Base.class, payload_json : String, wait : Time::Span? = nil) : Nil
+    def self.enqueue(job_class : Base.class, payload_json : String,
+                     wait : Time::Span? = nil, queue : String? = nil,
+                     priority : Int32? = nil, wait_until : Time? = nil,
+                     batch_id : String? = nil, unique_mode : Symbol? = nil,
+                     unique_key : String? = nil) : Nil
       started = Time.instant
       payload = Saci::Notifications::Payload{
         "job"   => job_class.name,
         "queue" => job_class.queue_name,
       }
       begin
-        previous_def
+        previous_def(job_class, payload_json, wait, queue, priority, wait_until,
+          batch_id, unique_mode, unique_key)
       ensure
         Saci::Notifications.publish("enqueue.saci", payload, (Time.instant - started).total_milliseconds)
       end
     end
 
-    def self.execute(job_class : Base.class, payload_json : String, attempt : Int32 = 1) : Nil
+    def self.execute(job_class : Base.class, payload_json : String, attempt : Int32 = 1,
+                     checkpoint : Array(String)? = nil,
+                     checkpoint_sink : Proc(Array(String), Nil)? = nil,
+                     enforce_in_memory_unique : Bool = true) : Nil
       started = Time.instant
       payload = Saci::Notifications::Payload{
         "job"     => job_class.name,
@@ -76,7 +84,8 @@ module Saci
       }
       begin
         Saci::Current.set(job: job_class.name) do
-          previous_def
+          previous_def(job_class, payload_json, attempt, checkpoint, checkpoint_sink,
+            enforce_in_memory_unique)
         end
       rescue ex
         payload["exception"] = ex.class.name

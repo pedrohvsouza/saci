@@ -47,6 +47,7 @@ require "./saci/audit"
 require "./saci/policy"
 require "./saci/policy_controller"
 require "./saci/openapi"
+require "./saci/support/all"
 
 module Saci
 end

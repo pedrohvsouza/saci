@@ -51,21 +51,20 @@ end
 module Saci
   module Job
     # Count one logical execution. Retries inside `execute_guarded` do not
-    # pass through here again, so a job that retries still counts once.
-    def self.execute(job_class : Base.class, payload_json : String, attempt : Int32 = 1) : Nil
-      Saci::Testing::Probes.record_performed(job_class.name, payload_json)
-      previous_def
+    # reach the observer again, so a job that retries still counts once.
+    # (`Saci::Job.execute` binds internally before this shelf is loaded, so a
+    # `previous_def` reopen would not see inline runs; the observer hook is
+    # the supported integration point.)
+    Saci::Job.perform_observer = ->(job_class : Saci::Job::Base.class, payload : String, attempt : Int32) do
+      Saci::Testing::Probes.record_performed(job_class.name, payload)
+      nil
     end
   end
 end
 
 class Saci::Job::Base
-  # `perform_now` bypasses `Job.execute`, so count it here too.
-  def self.execute_now(payload) : Nil
-    payload_json = payload.is_a?(String) ? payload : payload.to_json
-    Saci::Testing::Probes.record_performed(self.name, payload_json)
-    previous_def
-  end
+  # `perform_now` records through `Saci::Job.perform_observer` (see above);
+  # no reopen needed here.
 end
 
 class Saci::Cable::Server

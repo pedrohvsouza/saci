@@ -261,7 +261,7 @@ module Saci
       when :inline
         return false unless reserve_in_memory_unique(unique_mode, unique_key)
         begin
-          execute(job_class, payload_json)
+          Saci::Job.execute(job_class, payload_json)
           Batch.__job_finished(batch_id, false) if batch_id
         rescue ex
           Batch.__job_finished(batch_id, true) if batch_id
@@ -274,7 +274,7 @@ module Saci
         spawn do
           begin
             sleep delay if delay > Time::Span.zero
-            execute(job_class, payload_json)
+            Saci::Job.execute(job_class, payload_json)
             Batch.__job_finished(batch_id, false) if batch_id
           rescue
             Batch.__job_finished(batch_id, true) if batch_id
@@ -309,6 +309,19 @@ module Saci
       Uniqueness.reserve(mode.not_nil!, key.not_nil!)
     end
 
+    # Optional observer used by the testing shelf (and other instrumentation)
+    # to record logical executions without reopening this method. Called once
+    # per `execute`/`perform_now`, not on internal retries.
+    @@perform_observer : Proc(Base.class, String, Int32, Nil)? = nil
+
+    def self.perform_observer=(observer : Proc(Base.class, String, Int32, Nil)?) : Nil
+      @@perform_observer = observer
+    end
+
+    def self.perform_observer : Proc(Base.class, String, Int32, Nil)?
+      @@perform_observer
+    end
+
     # Runs one job with its uniqueness guard, retry/discard rules,
     # callbacks, middleware and continuation checkpoint. `attempt` starts
     # at 1; each `retry_on` rule decides against its own limit.
@@ -320,6 +333,7 @@ module Saci
                      checkpoint : Array(String)? = nil,
                      checkpoint_sink : Proc(Array(String), Nil)? = nil,
                      enforce_in_memory_unique : Bool = true) : Nil
+      @@perform_observer.try(&.call(job_class, payload_json, attempt))
       if enforce_in_memory_unique && (mode = job_class.__saci_unique_mode)
         key = job_class.__saci_unique_key(payload_json)
         return unless Uniqueness.try_start(mode, key)
@@ -381,6 +395,7 @@ module Saci
     # uniqueness reservation, matching the existing contract) but still
     # applies callbacks, middleware, rescue handlers and retry rules.
     def self.perform_now(job_class : Base.class, payload_json : String) : Nil
+      @@perform_observer.try(&.call(job_class, payload_json, 1))
       execute_guarded(job_class, payload_json, 1, nil, nil)
     end
 
@@ -939,7 +954,7 @@ module Saci
 
       # -- enqueue/perform API ---------------------------------------------
       def self.middleware : MiddlewareChain
-        Job.middleware
+        Saci::Job.middleware
       end
 
       def self.set(wait : Time::Span? = nil,
@@ -954,7 +969,7 @@ module Saci
       end
 
       def self.perform_later(payload) : Nil
-        Job.enqueue(self, Job.encode(payload).to_json)
+        Saci::Job.enqueue(self, Saci::Job.encode(payload).to_json)
       end
 
       # Enqueues each payload with this class's queue/priority defaults.
@@ -971,8 +986,8 @@ module Saci
       end
 
       def self.execute_now(payload) : Nil
-        json = payload.is_a?(String) ? JSON.parse(payload).to_json : Job.encode(payload).to_json
-        Job.perform_now(self, json)
+        json = payload.is_a?(String) ? JSON.parse(payload).to_json : Saci::Job.encode(payload).to_json
+        Saci::Job.perform_now(self, json)
       end
     end
 
@@ -984,7 +999,7 @@ module Saci
       end
 
       def perform_later(payload) : Nil
-        Job.enqueue(@klass, Job.encode(payload).to_json,
+        Saci::Job.enqueue(@klass, Saci::Job.encode(payload).to_json,
           wait: @wait, queue: @queue, priority: @priority, wait_until: @wait_until)
       end
 
@@ -1013,7 +1028,7 @@ module Saci
       def initialize(@job_class : Base.class, payload,
                      @queue : String? = nil, @priority : Int32? = nil,
                      @wait : Time::Span? = nil, @wait_until : Time? = nil)
-        @payload_json = Job.encode(payload).to_json
+        @payload_json = Saci::Job.encode(payload).to_json
       end
     end
   end

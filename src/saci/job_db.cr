@@ -235,23 +235,23 @@ module Saci
           end
           found
         when :postgres
-          found = [] of String
+          names = [] of String
           Record.query_compat(db,
             "SELECT column_name FROM information_schema.columns " \
             "WHERE table_name = ? AND table_schema = current_schema()",
             [table] of Saci::Record::Value) do |rs|
-            rs.each { found << rs.read(String) }
+            rs.each { names << rs.read(String) }
           end
-          found.includes?(column)
+          names.includes?(column)
         else
-          found = [] of String
+          names = [] of String
           Record.query_compat(db,
             "SELECT column_name FROM information_schema.columns " \
             "WHERE table_name = ? AND table_schema = DATABASE()",
             [table] of Saci::Record::Value) do |rs|
-            rs.each { found << rs.read(String) }
+            rs.each { names << rs.read(String) }
           end
-          found.includes?(column)
+          names.includes?(column)
         end
       end
 
