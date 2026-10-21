@@ -40,6 +40,13 @@ require "./saci/pagination"
 require "./saci/metrics"
 require "./saci/rich_text"
 require "./saci/turbo"
+require "./saci/mailbox"
+require "./saci/serializer"
+require "./saci/search"
+require "./saci/audit"
+require "./saci/policy"
+require "./saci/policy_controller"
+require "./saci/openapi"
 
 module Saci
 end

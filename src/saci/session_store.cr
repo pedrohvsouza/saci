@@ -314,7 +314,7 @@ module Saci
           rs.each { raw = rs.read(String) }
         end
         return nil unless raw
-        SessionPayload.new(id, JSON.parse(raw).as_h)
+        SessionPayload.new(id, JSON.parse(raw.not_nil!).as_h)
       rescue
         nil
       end

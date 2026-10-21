@@ -231,21 +231,11 @@ module Saci
     def self.mount(router : Saci::Router, path : String = Ingress::DEFAULT_PATH) : Saci::Router
       raise ConfigurationError.new("mailbox ingress path must not be empty") if path.strip.empty?
       Ingress.register_path(path)
+      # The buffer must sit in front of the router for both `listen` and
+      # `TestSession`, including sessions built with a private Configuration.
+      Saci::Application.add_pre_router_handler(Ingress::BodyBuffer.new)
       router.post(path, IngressController, :create)
       router
-    end
-  end
-
-  # Installs the raw-body buffer in front of the normal application handler
-  # chain when at least one ingress path has been mounted.
-  #
-  # Reopened from `src/saci/mailbox/ingress.cr`; no existing framework file
-  # is modified.
-  class Application
-    def self.handlers(router : Saci::Router) : Array(HTTP::Handler)
-      chain = previous_def
-      return chain unless Saci::Mailbox::Ingress.mounted?
-      [Saci::Mailbox::Ingress::BodyBuffer.new.as(HTTP::Handler)] + chain
     end
   end
 end

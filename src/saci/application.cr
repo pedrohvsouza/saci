@@ -35,6 +35,20 @@ module Saci
 
     @booted : Bool = false
 
+    # Handlers that must run after configured middleware but before the
+    # router. Components (e.g. Action Mailbox ingress body buffering) register
+    # here when they are mounted so both `listen` and custom configurations
+    # (including `TestSession` with a private `Configuration`) see them.
+    @@pre_router_handlers = [] of HTTP::Handler
+
+    def self.add_pre_router_handler(handler : HTTP::Handler) : Nil
+      @@pre_router_handlers << handler unless @@pre_router_handlers.any? { |h| h.class == handler.class }
+    end
+
+    def self.clear_pre_router_handlers : Nil
+      @@pre_router_handlers.clear
+    end
+
     def initialize(@router : Router, @config : Configuration = Saci.config)
     end
 
@@ -78,6 +92,7 @@ module Saci
       ws = HTTP::WebSocketHandler.new { |socket, ctx| @router.dispatch_ws(ctx, socket) }
       chain = [ws.as(HTTP::Handler)]
       chain.concat(@config.middleware.handlers(skip_disabled: true))
+      chain.concat(@@pre_router_handlers)
       chain << Handler.new(@router).as(HTTP::Handler)
       chain
     end
