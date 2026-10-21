@@ -4,10 +4,53 @@ A Rails-compatible (Rails-like API) web framework in Crystal. Familiar MVC
 conventions and directory-free single-shard design, implemented idiomatically
 on top of Crystal's `HTTP::Server`.
 
-**Status: 0.2.0** — Router + Controller, ORM (SQLite/PostgreSQL/MySQL),
-CLI, Cable, I18n, security, jobs, mailers, views, caching, throttle,
-storage, credentials, multidb, FTS5, page-cache — proven by two validation
-apps: Forem Lite (87 specs) and Claw, a Lobsters port (357 specs).
+**Status: 0.4.0 + 2026-10 Rails gap close-out** — Router + Controller,
+ORM (SQLite/PostgreSQL/MySQL), CLI, Cable, I18n, security, jobs, mailers,
+views, caching, throttle, storage, credentials, multidb, FTS5, page-cache,
+Action Mailbox, middleware/CORS, named routes, exact decimals, test shelf —
+proven by two validation apps: Forem Lite (87 specs) and Claw, a Lobsters
+port (357 specs). Framework suite: **1183 specs**, green plain and under
+`-Dexecution_context`.
+
+## Rails gap close-out (2026-10)
+
+The 19-workstream wave tracked by `RAILS_GAP_ANALYSIS.md` landed:
+
+- **Developer/HTTP**: middleware stack (`config.middleware.use/insert_before/
+  swap/delete`), CORS, host authorization, trusted proxies, static `public/`
+  serving, gzip, `/up`, request limits, config object + initializer lifecycle,
+  production error pages.
+- **Routing**: compile-time named helpers (`Saci::Routes.define` →
+  `posts_path`/`post_path`), runtime `path_for`/`url_for`, polymorphic routes,
+  concerns/direct/resolve/mount/shallow, `recognize_path`.
+- **ORM**: dirty tracking, exact `BigDecimal` decimals, model enums, validator
+  objects, `insert_all`/`upsert_all`, batching, relation depth (`merge`,
+  `rewhere`, `none`, `left_joins`, `find_or_create_by`, `sole`, `pick`, `ids`,
+  predicates, `explain`), locking helpers, migration/introspection depth,
+  UUID/native PG types.
+- **Controllers/views**: `around_action`, `redirect_back`, open-redirect
+  protection, HTTP auth, `render body:/file:/partial:`, `params.expect`,
+  `rate_limit`, host/subdomain helpers; asset pipeline/tag helpers,
+  `content_for`/`capture`, form tag/option helpers, text/number/date/
+  sanitizers, `dom_id`.
+- **Security**: session stores (cookie/memory/cache/DB), cookie rotations,
+  masked/per-form CSRF, CSP nonces, Permissions-Policy, HSTS.
+- **Jobs/Cable/Mail/Storage**: priorities/uniqueness/batches/GlobalID/
+  continuations/SKIP LOCKED; `stream_for`, `periodically`, identifiers,
+  remote disconnect, DB cable adapter; mail attachments/providers/DKIM/
+  parameterized mailers; Action Mailbox; blob/attachment models, direct
+  uploads, S3 signing, Action Text attachables.
+- **Testing/support**: fixtures, factories, transactional tests, assertions,
+  time travel, `assert_select`, test DB lifecycle; time zones/durations,
+  core extensions, I18n depth, notifications, structured logging; JWT/TOTP/
+  password resets; serializers/audit/policy/search.
+- **CLI/scaffold**: Rails-like `bin/*`, Dockerfile, CI, public error pages,
+  test tree; destroy/auth/task/resource generators; `db:*` task surface;
+  diagnostics; local CI; `app:update`.
+
+See [CHANGELOG.md](CHANGELOG.md) for the per-gap list. Structural gaps
+(autoloading/reload/REPL debugger, GraphQL, PDF/XLSX, GIS, Kamal) are
+documented in `RAILS_GAP_ANALYSIS.md`.
 
 ## Requirements
 

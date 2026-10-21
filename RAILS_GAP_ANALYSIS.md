@@ -1,9 +1,41 @@
 # Saci vs Ruby on Rails — Gap Analysis
 
-**Revision** — v5 (2026-10-19): removed all app-specific citations and rewrote the case study
-from the original Rails source only (anonymized). v4 added the case study and 17 case-derived
-gaps (G295–G311). v3 added the scaffold diff, gem inventory, method audit, CLI/middleware/
-config/ecosystem matrices, and 80 gaps (G215–G294). One P0 scaffold bug remains (Appendix D1).
+**Revision** — v6 (2026-10-21): added an implementation-status section after a
+19-workstream close-out wave (P0/P1 backbone plus most P2 depth; framework suite
+590 → 1183 specs, green). The gap catalogue below is unchanged so it remains a
+useful comparison against Rails 8.1. v5 (2026-10-19) removed all app-specific
+citations and rewrote the case study from the original Rails source only
+(anonymized). v4 added the case study and 17 case-derived gaps (G295–G311).
+v3 added the scaffold diff, gem inventory, method audit, CLI/middleware/
+config/ecosystem matrices, and 80 gaps (G215–G294).
+
+## Implementation status (2026-10-21)
+
+A 19-workstream wave implemented the P0/P1 backbone and much of P2. Verified by
+the framework suite (**1183 examples, 0 failures, 10 live-gated pending**, plain
+and `-Dexecution_context`) and a standalone CLI build.
+
+- **Closed P0s**: D1 scaffold `shard.yml`; G4 named route helpers (compile-time
+  `Saci::Routes.define` + runtime `path_for`/`url_for`); G5 middleware stack;
+  G6 initializers; G10 dirty tracking; G48 CORS; G297 exact `BigDecimal`-backed
+  decimals (`TEXT_DECIMAL` on SQLite, real `NUMERIC`/`DECIMAL` on PG/MySQL).
+- **Closed P1 backbone**: G7 config object, G11–G13, G19/G21 partial, G26–G27,
+  G35–G40, G42–G45, G49–G51, G58, G62, G63–G69, G77, G89, G105–G113, G115–G120,
+  G123–G131, G149–G151, G158, G185–G190, G193, G201, G245, G253, G295–G300,
+  G303–G306, G310.
+- **P2/P3 depth**: G28, G32, G52–G57, G61, G70 partial, G76, G78–G88 partial,
+  G91, G93–G103, G119, G132, G135/G138–G143, G152–G161, G163–G164, G169–G182,
+  G191–G192, G194–G200, G202–G204, G233, G252, G254–G259, G264, G266–G269,
+  G272–G275, G279, G283–G284, G286, G288–G292, G294, G307, G311.
+- **Structural / intentionally out**: G1–G3 and G207–G214 (Crystal has no
+  autoload/reload/runtime eval), G301 (GraphQL), G308 (spreadsheet/PDF),
+  G309 (GIS), G165–G166 (Kamal/Thruster), G71–G72 (importmap/Stimulus),
+  G70 (Turbo Drive), live-cloud verification for G84/G86.
+
+See `CHANGELOG.md` for the detailed per-area list. The sections below retain the
+original audit wording.
+
+---
 
 **Headline findings**
 
