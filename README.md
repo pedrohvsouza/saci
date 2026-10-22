@@ -4,7 +4,7 @@ A Rails-compatible (Rails-like API) web framework in Crystal. Familiar MVC
 conventions and directory-free single-shard design, implemented idiomatically
 on top of Crystal's `HTTP::Server`.
 
-**Status: 0.4.0 + 2026-10 Rails gap close-out** — Router + Controller,
+**Status: 0.5.0 — Rails gap close-out** — Router + Controller,
 ORM (SQLite/PostgreSQL/MySQL), CLI, Cable, I18n, security, jobs, mailers,
 views, caching, throttle, storage, credentials, multidb, FTS5, page-cache,
 Action Mailbox, middleware/CORS, named routes, exact decimals, test shelf —

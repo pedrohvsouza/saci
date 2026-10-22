@@ -135,8 +135,9 @@ green plain and with `-Dexecution_context`.
 
 ## Next
 
-The roadmap is closed and the 2026-10-21 Rails gap close-out wave landed the
-P0/P1 backbone plus most P2 depth (see [CHANGELOG.md](CHANGELOG.md)). Live
+The roadmap is closed and **0.5.0** (2026-10-21) shipped the Rails gap
+close-out wave: the P0/P1 backbone plus most P2 depth (see
+[CHANGELOG.md](CHANGELOG.md)). Live
 verification stands at **1312 framework specs** (+ 26 live PG/MySQL, Redis
 gated), green plain and under `-Dexecution_context`, with the framework CLI
 building as a standalone binary. Remaining work is structural (autoloading,

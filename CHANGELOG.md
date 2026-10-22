@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased — Rails gap close-out wave (2026-10-21)
+## 0.5.0 — Rails gap close-out wave (2026-10-21)
+
+**Minor release (0.x line).** This is the largest feature wave since the
+project started, but 0.x deliberately keeps API freedom: `1.0.0` is reserved
+for the structural developer-loop work (autoloading, in-process reload, real
+REPL/debugger) and ecosystem maturity. The APIs documented in `README.md` are
+stable in practice; see `RAILS_GAP_ANALYSIS.md` for the remaining structural
+gaps.
 
 A 19-workstream implementation wave against `RAILS_GAP_ANALYSIS.md`. Framework
 suite: **1312 specs, 0 failures** (from 590), plain and

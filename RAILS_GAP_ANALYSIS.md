@@ -11,7 +11,8 @@ config/ecosystem matrices, and 80 gaps (G215–G294).
 
 ## Implementation status (2026-10-21)
 
-A 19-workstream wave implemented the P0/P1 backbone and much of P2. Verified by
+A 19-workstream wave plus a six-workstream depth wave implemented the P0/P1
+backbone and much of P2, released as **Saci 0.5.0**. Verified by
 the framework suite (**1312 examples, 0 failures, 10 live-gated pending**, plain
 and `-Dexecution_context`) and a standalone CLI build.
 
