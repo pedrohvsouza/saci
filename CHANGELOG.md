@@ -9,9 +9,10 @@ REPL/debugger) and ecosystem maturity. The APIs documented in `README.md` are
 stable in practice; see `RAILS_GAP_ANALYSIS.md` for the remaining structural
 gaps.
 
-A 19-workstream implementation wave against `RAILS_GAP_ANALYSIS.md`. Framework
-suite: **1312 specs, 0 failures** (from 590), plain and
-`-Dexecution_context`.
+A 25-workstream (three-wave) implementation against `RAILS_GAP_ANALYSIS.md`.
+Framework suite: **1312 specs, 0 failures, 0 pending** (from 590), plain and
+`-Dexecution_context`, including a full run against live PostgreSQL 16,
+MySQL 8.0 and Redis 7. The 28-example live PG/MySQL harness is also green.
 
 - **P0**: fixed `saci new --db=postgres|mysql` invalid `shard.yml` (D1);
   dirty tracking (`changed?`/`changes`/`previous_changes`/`saved_changes`/

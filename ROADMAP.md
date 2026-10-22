@@ -138,9 +138,10 @@ green plain and with `-Dexecution_context`.
 The roadmap is closed and **0.5.0** (2026-10-21) shipped the Rails gap
 close-out wave: the P0/P1 backbone plus most P2 depth (see
 [CHANGELOG.md](CHANGELOG.md)). Live
-verification stands at **1312 framework specs** (+ 26 live PG/MySQL, Redis
-gated), green plain and under `-Dexecution_context`, with the framework CLI
-building as a standalone binary. Remaining work is structural (autoloading,
+verification stands at **1312 framework specs** (+ 28 live PG/MySQL harness
+examples), green plain and under `-Dexecution_context` with live PostgreSQL 16,
+MySQL 8.0 and Redis 7 (0 pending), and the framework CLI builds as a standalone
+binary. Remaining work is structural (autoloading,
 in-process reload, a real REPL/debugger — G1–G3/G207–G214), GIS (G309),
 live-cloud verification (S3 G84, image variants G86), a real Thruster proxy
 (config/docs landed), and P3 polish.

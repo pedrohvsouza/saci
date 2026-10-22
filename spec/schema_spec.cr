@@ -326,10 +326,9 @@ describe "Saci::Record::Schema (live PostgreSQL)" do
       schema_col(tables, "schema_pg_things", "big").logical_type.should eq(:bigint)
       schema_col(tables, "schema_pg_things", "score").logical_type.should eq(:float)
       schema_col(tables, "schema_pg_things", "score").default_value.should eq(1.5)
-      # The adapter forward map stores :decimal as DOUBLE PRECISION on
-      # PostgreSQL (Float64-backed), so it reads back as :float.
-      schema_col(tables, "schema_pg_things", "amount").logical_type.should eq(:float)
-      schema_col(tables, "schema_pg_things", "amount").default_value.should eq(2.5)
+      # Exact decimal columns map to NUMERIC on PostgreSQL.
+      schema_col(tables, "schema_pg_things", "amount").logical_type.should eq(:decimal)
+      schema_col(tables, "schema_pg_things", "amount").default_value.should eq(Saci::Record::Decimal.new("2.5"))
       schema_col(tables, "schema_pg_things", "day").logical_type.should eq(:date)
       schema_col(tables, "schema_pg_things", "meta").logical_type.should eq(:json)
       schema_col(tables, "schema_pg_things", "flag").logical_type.should eq(:boolean)
@@ -349,6 +348,7 @@ describe "Saci::Record::Schema (live PostgreSQL)" do
       rescue
       end
       db.close
+      Saci::Record.remove_connection("schema_spec_pg")
     end
   end
 end
@@ -391,11 +391,9 @@ describe "Saci::Record::Schema (live MySQL)" do
       schema_col(tables, "schema_my_things", "count").default_value.should eq(3_i64)
       schema_col(tables, "schema_my_things", "big").logical_type.should eq(:bigint)
       schema_col(tables, "schema_my_things", "score").logical_type.should eq(:float)
-      # Documented MySQL normalization: the forward map stores both
-      # :decimal and :json as DOUBLE/TEXT, so they read back as
-      # :float/:text (same as the adapter's own forward map).
-      schema_col(tables, "schema_my_things", "amount").logical_type.should eq(:float)
-      schema_col(tables, "schema_my_things", "amount").default_value.should eq(2.5)
+      # Exact decimal columns map to DECIMAL on MySQL; JSON remains TEXT.
+      schema_col(tables, "schema_my_things", "amount").logical_type.should eq(:decimal)
+      schema_col(tables, "schema_my_things", "amount").default_value.should eq(Saci::Record::Decimal.new("2.5"))
       schema_col(tables, "schema_my_things", "day").logical_type.should eq(:date)
       schema_col(tables, "schema_my_things", "meta").logical_type.should eq(:text)
       schema_col(tables, "schema_my_things", "flag").logical_type.should eq(:boolean)
@@ -415,6 +413,7 @@ describe "Saci::Record::Schema (live MySQL)" do
       rescue
       end
       db.close
+      Saci::Record.remove_connection("schema_spec_mysql")
     end
   end
 end

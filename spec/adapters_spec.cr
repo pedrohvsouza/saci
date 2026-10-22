@@ -735,6 +735,7 @@ describe "PostgreSQL enum/array/precision live" do
       rescue
       end
       db.close
+      Saci::Record.remove_connection("adapter_spec_pg")
     end
   end
 end
@@ -792,15 +793,24 @@ describe "MySQL enum/array/precision live" do
 
       # ENUM is inline on MySQL; arrays are TEXT (JSON-encoded, like
       # `:json`, because crystal-mysql cannot decode native JSON).
-      Saci::Record.scalar_compat(db,
-        "SELECT column_type FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?",
-        ["my_probe_articles", "status"] of Saci::Record::Value).should eq("enum('draft','published')")
-      Saci::Record.scalar_compat(db,
-        "SELECT data_type FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?",
-        ["my_probe_articles", "tags"] of Saci::Record::Value).should eq("text")
-      Saci::Record.scalar_compat(db,
-        "SELECT datetime_precision FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?",
-        ["my_probe_articles", "published_at"] of Saci::Record::Value).should eq(6)
+      # `SHOW COLUMNS` is used instead of information_schema.scalar: the
+      # mysql driver's untyped scalar path cannot decode every
+      # information_schema metadata column.
+      column_types = {} of String => String
+      Saci::Record.query_compat(db, "SHOW COLUMNS FROM #{tbl}") do |rs|
+        rs.each do
+          col_name = rs.read(String)
+          col_type = rs.read(String)
+          rs.read(String?) # Null
+          rs.read(String?) # Key
+          rs.read(String?) # Default
+          rs.read(String?) # Extra
+          column_types[col_name] = col_type.downcase
+        end
+      end
+      column_types["status"].should eq("enum('draft','published')")
+      column_types["tags"].should eq("text")
+      column_types["published_at"].should eq("datetime(6)")
 
       Saci::Record.connected_to("adapter_spec_mysql") do
         at = Time.utc(2024, 5, 1, 12, 30, 45, nanosecond: 123456_000)
@@ -824,6 +834,7 @@ describe "MySQL enum/array/precision live" do
       rescue
       end
       db.close
+      Saci::Record.remove_connection("adapter_spec_mysql")
     end
   end
 end

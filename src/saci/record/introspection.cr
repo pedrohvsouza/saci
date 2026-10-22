@@ -664,7 +664,7 @@ module Saci
             generation = str(rs.read)
             primary = pk_cols.includes?(name)
             logical = TypeMapping.mysql_logical(column_type, data_type, extra, primary)
-            generated = extra.includes?("generated") || !generation.nil?
+            generated = extra.includes?("generated") || !(generation.nil? || generation.empty?)
             size = logical == :bit ? mysql_type_size(column_type) : nil
             out << ColumnInfo.new(name, logical, nullable && !primary, mysql_default(dflt_raw, logical, extra), primary, generated, generation, nil, size, nil, extra.includes?("stored"))
           end

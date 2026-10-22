@@ -10,7 +10,7 @@ views, caching, throttle, storage, credentials, multidb, FTS5, page-cache,
 Action Mailbox, middleware/CORS, named routes, exact decimals, test shelf —
 proven by two validation apps: Forem Lite (87 specs) and Claw, a Lobsters
 port (357 specs). Framework suite: **1312 specs**, green plain and under
-`-Dexecution_context`.
+`-Dexecution_context`, including live PostgreSQL/MySQL/Redis (0 pending).
 
 ## Rails gap close-out (2026-10)
 
