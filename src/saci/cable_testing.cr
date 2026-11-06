@@ -17,7 +17,7 @@ class Saci::TestSession
   end
 
   # Opens a `Cable::TestClient` against this session's `/cable` endpoint.
-  def cable_client(path : String = "/cable") : Saci::Cable::TestClient
-    Saci::Cable::TestClient.new(host, port, path)
+  def cable_client(path : String = "/cable", headers : HTTP::Headers = HTTP::Headers.new) : Saci::Cable::TestClient
+    Saci::Cable::TestClient.new(host, port, path, headers)
   end
 end

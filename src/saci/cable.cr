@@ -171,6 +171,11 @@ module Saci
       # Stable per-socket id (used by `remote_connections.where(identifier:)`).
       getter identifier : String
       getter message_buffer_size : Int32
+      # The HTTP upgrade request/context (nil for connections built outside
+      # a router, e.g. unit specs). Lets `Cable.identify` read cookies,
+      # the session and the `Origin` header like Rails' `request`/`cookies`.
+      getter request : HTTP::Request?
+      getter context : HTTP::Server::Context?
 
       @track_mutex = Mutex.new
       @subscriptions : Array(Subscription) = [] of Subscription
@@ -186,10 +191,34 @@ module Saci
 
       def initialize(@socket : HTTP::WebSocket, @params : Saci::Params, @server : Server,
                      @message_buffer_size : Int32 = DEFAULT_MESSAGE_BUFFER_SIZE,
-                     @identifier : String = Random::Secure.hex(16))
+                     @identifier : String = Random::Secure.hex(16),
+                     @context : HTTP::Server::Context? = nil)
+        @request = @context.try(&.request)
         # A zero/negative buffer would make every send overflow; clamp to 1.
         @outbound = ::Channel(String?).new(@message_buffer_size < 1 ? 1 : @message_buffer_size)
         spawn { writer_loop }
+      end
+
+      # Upgrade request headers (`Origin`, `Cookie`, ...), nil without a request.
+      def headers : HTTP::Headers?
+        @request.try(&.headers)
+      end
+
+      # Cookie jar over the upgrade request (signed/encrypted readers work as
+      # in controllers). Nil when the connection has no HTTP context.
+      def cookies : Saci::CookieJar?
+        ctx = @context
+        req = @request
+        return nil if ctx.nil? || req.nil?
+        @cookies ||= Saci::CookieJar.new(req, ctx.response)
+      end
+
+      @cookies : Saci::CookieJar? = nil
+
+      # The Saci session carried by the upgrade request's cookie (read-only
+      # in practice: nothing writes Set-Cookie on a websocket).
+      def session : Saci::Session?
+        cookies.try { |jar| Saci::Session.new(jar) }
       end
 
       # Queues one JSON frame. Never blocks: when the bounded buffer is full
@@ -1309,8 +1338,9 @@ module Saci
 
     # Runs the JSON protocol for one socket. Registered channels map
     # channel names (class names) to channel classes.
-    def self.handle(socket : HTTP::WebSocket, params : Saci::Params, channels : Hash(String, Channel.class), server : Server) : Nil
-      connection = Connection.new(socket, params, server, message_buffer_size: server.message_buffer_size)
+    def self.handle(socket : HTTP::WebSocket, params : Saci::Params, channels : Hash(String, Channel.class), server : Server,
+                    context : HTTP::Server::Context? = nil) : Nil
+      connection = Connection.new(socket, params, server, message_buffer_size: server.message_buffer_size, context: context)
 
       unless server.register(connection)
         Cable.report_error(Exception.new("cable connection limit reached (#{server.max_connections})"), "connections")
@@ -1394,11 +1424,13 @@ module Saci
     # All incoming frames are buffered, so broadcasts that arrive early
     # (e.g. while `subscribe` waits for confirmation) are never lost.
     class TestClient
-      def initialize(host : String, port : Int32, path : String = "/cable")
+      # `headers` are sent with the upgrade request (e.g. `Cookie` from an
+      # HTTP login, `Origin` for allowlist specs).
+      def initialize(host : String, port : Int32, path : String = "/cable", headers : HTTP::Headers = HTTP::Headers.new)
         @buffer = [] of String
         @buffer_mutex = Mutex.new
         @wake = ::Channel(Nil).new
-        @ws = HTTP::WebSocket.new(host, path, port)
+        @ws = HTTP::WebSocket.new(host, path, port, headers: headers)
         @ws.on_message do |msg|
           @buffer_mutex.synchronize { @buffer << msg }
           @wake.send(nil)

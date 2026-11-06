@@ -917,8 +917,8 @@ module Saci
       srv = server || Cable.server
       registry = {} of String => Cable::Channel.class
       channels.each { |c| registry[c.name] = c }
-      websocket(path) do |socket, _ctx, params|
-        Cable.handle(socket, params, registry, srv)
+      websocket(path) do |socket, ctx, params|
+        Cable.handle(socket, params, registry, srv, ctx)
       end
     end
 
