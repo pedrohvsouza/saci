@@ -1,548 +1,557 @@
 # Saci
 
-A Rails-compatible (Rails-like API) web framework in Crystal. Familiar MVC
-conventions and directory-free single-shard design, implemented idiomatically
-on top of Crystal's `HTTP::Server`.
+Saci is a full-stack web framework for [Crystal](https://crystal-lang.org).
+It borrows the conventions and vocabulary of Ruby on Rails (MVC,
+`resources` routing, Active Record-style models, migrations, jobs,
+mailers, channels) and builds them on Crystal's stdlib `HTTP::Server`,
+with compile-time code generation in place of runtime metaprogramming.
 
-**Status: 0.5.0 — Rails gap close-out** — Router + Controller,
-ORM (SQLite/PostgreSQL/MySQL), CLI, Cable, I18n, security, jobs, mailers,
-views, caching, throttle, storage, credentials, multidb, FTS5, page-cache,
-Action Mailbox, middleware/CORS, named routes, exact decimals, test shelf —
-proven by two validation apps: Forem Lite (87 specs) and Claw, a Lobsters
-port (357 specs). Framework suite: **1312 specs**, green plain and under
-`-Dexecution_context`, including live PostgreSQL/MySQL/Redis (0 pending).
-
-## Rails gap close-out (2026-10)
-
-The 19-workstream wave tracked by `RAILS_GAP_ANALYSIS.md` landed:
-
-- **Developer/HTTP**: middleware stack (`config.middleware.use/insert_before/
-  swap/delete`), CORS, host authorization, trusted proxies, static `public/`
-  serving, gzip, `/up`, request limits, config object + initializer lifecycle,
-  production error pages.
-- **Routing**: compile-time named helpers (`Saci::Routes.define` →
-  `posts_path`/`post_path`), runtime `path_for`/`url_for`, polymorphic routes,
-  concerns/direct/resolve/mount/shallow, `recognize_path`.
-- **ORM**: dirty tracking, exact `BigDecimal` decimals, model enums, validator
-  objects, `insert_all`/`upsert_all`, batching, relation depth (`merge`,
-  `rewhere`, `none`, `left_joins`, `find_or_create_by`, `sole`, `pick`, `ids`,
-  predicates, `explain`), locking helpers, migration/introspection depth,
-  UUID/native PG types.
-- **Controllers/views**: `around_action`, `redirect_back`, open-redirect
-  protection, HTTP auth, `render body:/file:/partial:`, `params.expect`,
-  `rate_limit`, host/subdomain helpers; asset pipeline/tag helpers,
-  `content_for`/`capture`, form tag/option helpers, text/number/date/
-  sanitizers, `dom_id`.
-- **Security**: session stores (cookie/memory/cache/DB), cookie rotations,
-  masked/per-form CSRF, CSP nonces, Permissions-Policy, HSTS.
-- **Jobs/Cable/Mail/Storage**: priorities/uniqueness/batches/GlobalID/
-  continuations/SKIP LOCKED; `stream_for`, `periodically`, identifiers,
-  remote disconnect, DB cable adapter; mail attachments/providers/DKIM/
-  parameterized mailers; Action Mailbox; blob/attachment models, direct
-  uploads, S3 signing, Action Text attachables.
-- **Testing/support**: fixtures, factories, transactional tests, assertions,
-  time travel, `assert_select`, test DB lifecycle; time zones/durations,
-  core extensions, I18n depth, notifications, structured logging; JWT/TOTP/
-  password resets; serializers/audit/policy/search.
-- **Frontend/API/data**: importmap, minimal Turbo Drive + Stimulus, PWA
-  assets; GraphQL (schema/parser/executor/mutations/introspection/GraphiQL/
-  batching); XLSX/PDF/CSV generation; Solid Cache DB store.
-- **Deploy/config**: `config/database.yml` + per-env cache/queue/cable/
-  storage/server YAML, graceful shutdown, Kamal 2 + Thruster templates,
-  devcontainer, environment doctor.
-- **ORM depth**: nested attributes, pessimistic/optimistic locking,
-  `has_one :through`, through preloading, autosave, HABTM.
-- **CLI/scaffold**: Rails-like `bin/*`, Dockerfile, CI, public error pages,
-  test tree; destroy/auth/task/resource generators; `db:*` task surface;
-  diagnostics; local CI; `app:update`.
-
-See [CHANGELOG.md](CHANGELOG.md) for the per-gap list. Remaining gaps
-(autoloading/reload/REPL debugger, GIS, live S3/variants, a real Thruster
-proxy) are documented in `RAILS_GAP_ANALYSIS.md`.
-
-## Requirements
-
-- Crystal >= 1.0.0 (developed against 1.22.0)
-- `libpcre2`, `libssl`, `libgc`, `zlib` available to the linker
-
-## Quick start
+You get one shard and a single compiled binary. SQLite works out of the
+box, PostgreSQL and MySQL are supported, and Redis is optional. Every
+subsystem is built with the standard library: Saci vendors small
+pure-Crystal implementations instead of linking extra C libraries.
 
 ```crystal
 require "saci"
 
-class ApplicationController < Saci::Controller
-end
-
-class PostsController < ApplicationController
-  before_action :log, except: [:index]
-
+class PostsController < Saci::Controller
   def index
-    render json: [{id: 1, title: "Hello Saci"}]
-  end
-
-  def show
-    render json: {id: params["id"]? || "?", title: "Post"}
-  end
-
-  def create
-    render json: {id: 2, title: params["title"]? || "Untitled"}, status: :created
-  end
-
-  def update
-    render json: {id: params["id"]? || "?"}
-  end
-
-  def destroy
-    head :no_content
-  end
-
-  private def log
-    puts "[Posts##{action_name}] #{params.to_h}"
+    render json: Post.where(published: true).order(created_at: :desc).limit(20).to_a
   end
 end
 
 router = Saci::Router.new.draw do |r|
-  r.root PostsController, :index
-  r.resources "posts", PostsController
-  r.namespace("/api") do |api|
-    api.get "/hello", PostsController, :index
-  end
-  r.get("/ping") { |ctx, _params| ctx.response.print("pong") }
+  r.resources "posts", PostsController, only: [:index]
 end
 
 Saci::Application.new(router).listen(3000)
 ```
 
-Run the bundled example:
+- [What's included](#whats-included)
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [CLI](#cli)
+- [Configuration and middleware](#configuration-and-middleware)
+- [Routing](#routing)
+- [Controllers](#controllers)
+- [Models (`Saci::Record`)](#models-sacirecord)
+- [Databases](#databases)
+- [Schema snapshots and drift check](#schema-snapshots-and-drift-check)
+- [Views](#views)
+- [Frontend: Turbo, Stimulus, importmap](#frontend-turbo-stimulus-importmap)
+- [Rich text](#rich-text)
+- [WebSockets](#websockets)
+- [Background jobs](#background-jobs)
+- [Mailers](#mailers)
+- [Inbound email](#inbound-email)
+- [Storage and attachments](#storage-and-attachments)
+- [Caching](#caching)
+- [Rate limiting](#rate-limiting)
+- [Security](#security)
+- [Authorization, serializers, search, audit](#authorization-serializers-search-audit)
+- [GraphQL](#graphql)
+- [Spreadsheets, PDF and CSV](#spreadsheets-pdf-and-csv)
+- [Localization and time zones](#localization-and-time-zones)
+- [Logging and metrics](#logging-and-metrics)
+- [Multithreading](#multithreading)
+- [Environments, credentials, deployment](#environments-credentials-deployment)
+- [Testing](#testing)
+- [How Saci differs from Rails](#how-saci-differs-from-rails)
+- [Developing Saci](#developing-saci)
+
+## What's included
+
+| Area | What you get |
+|---|---|
+| HTTP | Router with resources, namespaces, constraints and optional segments; named route helpers; controllers with filters, `rescue_from`, `respond_to`; a configurable middleware stack (CORS, host authorization, trusted proxies, static files, gzip, `/up`, body limits) |
+| Data | `Saci::Record` ORM for SQLite, PostgreSQL and MySQL: associations, validations, callbacks, dirty tracking, exact decimals, enums, nested attributes, locking, bulk writes, migrations, introspection, schema snapshots, SQLite FTS5 |
+| Views | ECR templates, layouts, partials, form builders, asset pipeline with fingerprinting, fragment caching, Turbo Frames/Streams, Turbo Drive, Stimulus, importmap, PWA assets |
+| Background | Jobs (`:async`, `:inline`, `:test`, durable `:db`) with retries, priorities, uniqueness, batches and continuations; recurring jobs (cron); dashboard |
+| Messaging | Mailers (SMTP, sendmail, SendGrid, Mailgun, Postmark, SES, DKIM, attachments, previews); inbound email (mailboxes, routing, ingress) |
+| Realtime | ActionCable-compatible WebSocket channels, with in-process, Redis or database fan-out |
+| Security | CSRF, CSP with nonces, secure headers, signed and encrypted cookies, pluggable session stores, `has_secure_password`, auth helpers, signed IDs, JWT, TOTP 2FA, rate limiting, encrypted credentials |
+| Extras | Storage with signed URLs, blobs, attachments, direct uploads and S3; rich text; GraphQL; XLSX/PDF/CSV; serializers; policies; search; audit trail; I18n; time zones; metrics; structured logging |
+| Tooling | `saci` CLI (new app scaffold, generators, `db:*` tasks, routes, runner, console, hot reload, credentials, local CI) and a testing kit (fixtures, factories, transactional tests, assertions, time travel, `assert_select`) |
+
+## Installation
+
+Requirements:
+
+- Crystal >= 1.0.0 (developed against 1.22)
+- `libpcre2`, `libssl`, `libgc` and `zlib` available to the linker
+
+Build the CLI from a checkout:
 
 ```sh
-crystal run examples/basic_app.cr
-curl http://127.0.0.1:3000/posts/7
+git clone https://github.com/pedrohvsouza/saci.git
+cd saci
+shards install
+shards build saci      # -> bin/saci
 ```
 
-Run the test suite (46 examples: live-HTTP web specs, file-backed SQLite
-ORM specs, CLI generator specs):
+Or add Saci to an existing shard:
 
-```sh
-crystal spec
+```yaml
+dependencies:
+  saci:
+    github: pedrohvsouza/saci
 ```
 
-Validate the whole framework through a Forem-inspired demo community
-(users, articles, comments, reactions, analytics DB) — 22 live-HTTP
-examples covering every subsystem, plus a runnable server:
+`saci new` writes a `path:` dependency pointing at the checkout the CLI was
+built from, so freshly generated apps compile right away.
+
+## Quick start
 
 ```sh
-crystal spec spec/forem_lite_spec.cr
-crystal run examples/forem_lite_app.cr
-curl http://127.0.0.1:3000/
+saci new blog                     # --db=postgres|mysql, --devcontainer
+cd blog
+saci generate scaffold Post title:string body:text published:boolean
+saci db:migrate
+saci serve --watch                # http://127.0.0.1:3000
 ```
 
-Build the CLI:
+The generated app is a regular Crystal project:
+
+```text
+blog/
+  src/blog.cr                 # entrypoint: requires, configuration, routes, listen
+  src/controllers/            # ApplicationController + your controllers
+  src/models/                 # ApplicationRecord + your models
+  src/views/                  # ECR templates and layouts
+  config/                     # environments, initializers, database.yml, credentials
+  db/migrate/ db/migrations.cr db/migrate.cr db/seed.cr
+  spec/                       # model and request specs
+  bin/                        # saci, ci, docker-entrypoint, kamal, ...
+  public/ Dockerfile config/deploy.yml .github/workflows/
+```
+
+The repository also contains runnable examples:
 
 ```sh
-shards build saci   # -> bin/saci (gitignored build artifact)
+crystal run examples/basic_app.cr          # JSON API
+crystal run examples/record_example.cr     # ORM
+crystal run examples/cable_example.cr      # WebSocket chat
+crystal run examples/forem_lite_app.cr     # demo community app using most subsystems
 ```
 
 ## CLI
 
 ```sh
-saci new blog --db=sqlite            # or --db=postgres|mysql (driver deps + require + URL defaults)
-cd blog
-saci generate model Post title:string views:integer published:boolean
-saci generate controller Posts index show
-saci generate admin Post title:string published:boolean  # admin namespace scaffold (search/sort/pagination + specs)
-saci generate migration AddBioToUsers bio:text
-saci generate migration AddIndexToFollows follower_id --unique  # -> add_index
-saci generate ... --pretend            # dry run: print create/overwrite/identical + previews, write nothing
-saci generate ... --force              # overwrite conflicting files without prompting
-saci db:migrate [--all]              # --all migrates primary + named DBs
-saci db:rollback                     # rolls back the last migration
-saci db:schema:dump [--all]          # write db/schema.cr snapshot (all DBs with --all)
-saci db:schema:load                  # recreate schema from db/schema.cr
-saci db:schema:check [--all]         # warn when DB and models disagree
-saci serve --port 3000
-saci routes                          # VERB PATH -> Controller#action (no boot)
-saci runner -e 'puts Post.count'     # or: saci runner script.cr (app context, no boot)
-saci console [-e CODE]               # minimal console (per-line compile; `exit` quits)
-saci db:seed                         # run db/seed.cr (or db/seeds.cr) in app context
+saci new NAME [--db=sqlite|postgres|mysql] [--devcontainer] [--skip-git] [--skip-shards]
+saci generate KIND NAME [fields...] [--pretend] [--force]
+saci destroy KIND NAME
+saci serve [--port 3000] [--host] [--watch] [--mt [--workers N]] [-- crystal flags]
+saci test [spec paths] [-- crystal flags]
+saci routes [--grep PATTERN]
+saci runner -e CODE | saci runner FILE [args]
+saci console [-e CODE]
+saci db:migrate [--all] | db:rollback [STEPS] [--all] | db:seed
+saci db:prepare | db:setup | db:reset | db:create | db:drop | db:version | db:migrate:status
+saci db:schema:dump [--all] | db:schema:load | db:schema:check [--all]
+saci credentials:show | credentials:edit | credentials:keygen | credentials:fetch KEY
+saci task NAME | task:list
+saci importmap:install | importmap:pin | importmap:json
+saci ci | app:update | secret | about | stats | notes | middleware | initializers
 ```
 
-- `new [--db=...]` scaffolds `shard.yml` (path-dependency on the framework source),
-  `src/<app>.cr` entrypoint, controllers/models dirs, `db/migrate/` +
-  `db/migrations.cr` manifest + standalone `db/migrate.cr` runner, and specs.
-  `--db=postgres|mysql` emits driver deps (`will/crystal-pg` / `crystal-mysql`),
-  `require "pg"` / `require "mysql"` lines and URL defaults (SQLite stays default).
-- Generators write files and print next steps (routes to add). The migration
-  generator rebuilds `db/migrations.cr` from `db/migrate/*.cr`, so hand-added
-  migration files are picked up too. `AddIndex...` names (or `--unique`) emit
-  `add_index` instead of `add_column`; `g controller` request specs use real
-  verbs (create->POST, update->PATCH, destroy->DELETE); `g admin` writes a
-  namespaced `Admin::` controller (search on string columns, sortable
-  headers, `Saci::Pagination.paginate` + `paginate_nav` views, deny-by-default
-  `require_admin`) plus a namespace route hint — reruns prompt before
-  overwriting (see below).
-- Generator conflicts: a target that already exists with identical content
-  prints `identical` and is skipped; different content prompts
-  `overwrite? [y/n/a/q]` (yes / no / all / quit) when STDIN is a TTY.
-  Piped/non-TTY input never blocks — an EOF/empty answer skips with a
-  warning, so pass `--force` in CI to overwrite without prompting.
-  `--pretend` dry-runs any generator (`saci g ... --pretend`): it prints
-  `create`/`overwrite`/`identical` lines plus a ~40-line content preview per
-  file, exits 0, and writes nothing (no files, no `db/migrations.cr`
-  rebuild). `db/migrations.cr` itself is derived state rebuilt from
-  `db/migrate/*.cr`, so it always overwrites silently (no prompt).
-- `serve` execs `crystal run src/<app>.cr` with `PORT`/`HOST` set; anything
-  after `--` is forwarded to `crystal` as compiler flags
-  (e.g. `--link-flags=...`).
-- `db:migrate [--all]` / `db:rollback [STEPS] [--all]` re-sync the manifest, then run the
-  standalone runner (models only — the web server is never booted). `--all`
-  migrates every database in `Saci::Record.configuration_names`; specs use
-  `Saci::Record.clean_all!` to truncate all connections (single-DB apps keep
-  `clean_database!`). After every migrate/rollback the runner prints schema
-  drift warnings to STDERR (see `db:schema:check` below) — warnings only,
-  the migrate itself never fails on drift.
-- `db:schema:dump [--all]` writes a standalone runnable `db/schema.cr`
-  snapshot (Rails `schema.rb` equivalent, portable across SQLite /
-  PostgreSQL / MySQL — see below); `saci db:schema:load` replays it with
-  `crystal run`. `--all` dumps primary + named DBs (registered via
-  `DATABASE_URL_<NAME>` env vars) into per-database sections.
-- `db:schema:check [--all]` compares the database against the registered
-  models and prints one line per mismatch (table/columns missing on either
-  side). Exits 1 when drift is found, 0 when clean — gate it in CI.
-  `--all` checks primary + all named DBs.
-- Routes support static prefix/suffix params anywhere in a segment:
-  `/~:username`, `/@:username` (redirect to `/~%{username}`), `/avatars/:username_size.png`.
-- `routes` statically parses `src/routes.cr` when present, otherwise the
-  `src/<app>.cr` entrypoint (where `saci new` draws routes inline), and
-  prints `VERB PATH -> Controller#action` without booting the server
-  (`resources` expands to the 8 member/collection routes; per-route
-  `constraints:` shows as `[constraints]`; block routes as `(block)`).
-- `runner -e CODE` / `runner FILE [args] [-- crystal flags]` compiles a
-  temp wrapper under `tmp/` (deleted after) that loads models/controllers
-  and connects the DB, then runs the code — the Rails runner equivalent
-  for seeds and ops scripts (server never booted; extra args become ARGV).
-- `console` with no args loops on stdin, compiling and running each line
-  in app context (`exit` quits); with `-e CODE`/FILE it is exactly
-  `runner`. Crystal has no runtime eval, so loop mode recompiles per line
-  (slow but real) and multi-line definitions belong in a file instead.
-- `db:seed` runs `db/seed.cr` (or `db/seeds.cr`) through the same runner
-  mechanism; `saci new` scaffolds a commented `db/seed.cr` starter. With
-  no seed file it prints the conventional template and exits 1.
+Generators: `model`, `controller`, `migration`, `scaffold`,
+`scaffold_controller`, `resource`, `admin`, `authentication`, `channel`,
+`job`, `mailer`, `task`, `helper`, `test`, `integration_test`, `benchmark`,
+`application_record`.
 
-## ORM (ActiveRecord equivalent)
+- Generators write the files, rebuild `db/migrations.cr` from
+  `db/migrate/*.cr`, and print the routes you need to add. Routes stay
+  hand-edited. Migration names starting with `AddIndex...` (or `--unique`)
+  generate `add_index`.
+- If a target file already exists with different content, the generator
+  asks `overwrite? [y/n/a/q]` on a TTY. Piped input never blocks: EOF
+  skips with a warning. Use `--force` in CI. `--pretend` shows what would
+  be created, with a preview of each file, and writes nothing.
+- `destroy` removes only files the matching generator owns. It prompts
+  when a file differs from what the generator would produce now.
+- `db:migrate` and `db:rollback` run the standalone `db/migrate.cr`
+  runner, which loads the models but never boots the web server. `--all`
+  also covers every named database registered through
+  `DATABASE_URL_<NAME>`. After each run the runner prints schema drift
+  warnings.
+- `routes` parses the route DSL statically, with no compilation, and
+  prints `VERB PATH -> Controller#action`.
+- `runner` and `console` compile a temporary wrapper under `tmp/` with
+  models, initializers and the database connection loaded. Crystal has
+  no runtime eval, so `console` recompiles on every line. Put multi-line
+  code in a file.
+- `serve --watch` polls the source tree, rebuilds with `crystal build` and
+  restarts a single supervised binary. Build failures wait for the next
+  save. Path dependencies (such as a local Saci checkout) are watched too.
+- `ci` runs the steps declared in `config/ci.cr` with `Saci::CI.step` and
+  `Saci::CI.run`. `app:update` re-applies the scaffold, prompting before
+  it changes any file you edited.
+
+## Configuration and middleware
 
 ```crystal
-Saci::Record.connection = DB.open("sqlite3://./app.db")
+Saci.configure do |config|
+  config.hosts = ["example.com", "www.example.com"]
+  config.trusted_proxies = ["10.0.0.0/8"]
+  config.assume_ssl = true
+  config.force_ssl = true
+  config.max_request_body = 10.megabytes
+  config.cors do |cors|
+    cors.allowed_origins = ["https://app.example.com"]
+  end
 
+  config.middleware.use MyAuthHandler.new(secret: ENV["SECRET"])
+  config.middleware.use TimingHandler, header: "X-Timing"
+  config.middleware.insert_before Saci::Middleware::Static, RequestId.new
+  config.middleware.delete Saci::Middleware::HostAuthorization
+end
+```
+
+A middleware is a plain `HTTP::Handler`. Built-in handlers can be disabled
+at runtime and still work as `insert_before` / `insert_after` / `swap`
+targets. `saci middleware` prints the resolved chain.
+
+Boot hooks:
+
+```crystal
+Saci::Initializers.before_configuration { Saci.log_level = :debug }
+Saci::Initializers.to_prepare { }          # re-run on reload; keep it idempotent
+Saci::Initializers.after_initialize { }    # once, after configuration
+```
+
+Generated apps load `config/initializers/*.cr` and
+`config/environments/<APP_ENV>.cr`. Declarative YAML lives in `config/`
+(`database.yml`, `cache.yml`, `queue.yml`, `cable.yml`, `storage.yml`,
+`server.yml`). ERB-style `<%= ENV["X"] %>` tags in those files are
+interpolated before parsing. Read them with
+`Saci.config_for(:name)`.
+
+## Routing
+
+```crystal
+router = Saci::Router.new.draw do |r|
+  r.root HomeController, :index
+  r.resources "posts", PostsController do |s|
+    s.member { |m| m.post :upvote }          # POST /posts/:id/upvote
+    s.collection { |c| c.get :search }       # GET  /posts/search
+    s.resources "comments", CommentsController
+  end
+  r.resource "profile", ProfileController    # singular resource
+  r.namespace :admin do |a|
+    a.resources "posts", Admin::PostsController
+  end
+  r.get "/top(/:length(/page/:page))", StoriesController, :top
+  r.get "/~:username", UsersController, :show
+  r.constraints(id: /\d+/) { |c| c.get "/s/:id", StoriesController, :show }
+  r.redirect("/u/:username", to: "/~%{username}", status: 301)
+  r.get("/ping") { |ctx, _params| ctx.response.print("pong") }
+  r.fallback ErrorsController, :not_found
+end
+```
+
+- `resources` generates the seven REST actions (`only:` and `except:`
+  filter them). Nested resources become `/posts/:post_id/comments`.
+  `shallow`, `concern`, `direct`, `resolve` and `mount` behave as in Rails.
+- Segments can carry literal prefixes and suffixes (`/~:user`,
+  `/avatars/:name.png`). Parenthesized groups such as `(.:format)` are
+  optional. `*splat` captures the rest of the path.
+- POST forms can tunnel PUT, PATCH and DELETE through a hidden `_method`
+  parameter.
+
+Named helpers come in two flavors. Compile-time helpers are generated from
+the same DSL, so a typo is a compile error:
+
+```crystal
+Saci::Routes.define AppRoutes do |r|
+  r.resources "posts", PostsController do |s|
+    s.member { |m| m.post :upvote }
+  end
+end
+
+AppRoutes.post_path(12)          # "/posts/12"
+AppRoutes.edit_post_path(12)     # "/posts/12/edit"
+AppRoutes.upvote_post_path(4)    # "/posts/4/upvote"
+```
+
+Runtime lookup works on any drawn router and from controllers and views:
+`path_for(:post, 12)`, `url_for(...)`, `polymorphic_path(post)`,
+`polymorphic_path([post, comment])`, `dom_id(post)`, and
+`router.recognize_path("/posts/1")`.
+
+## Controllers
+
+```crystal
+class PostsController < ApplicationController
+  before_action :require_login, except: [:index, :show]
+  around_action :with_timing
+  rescue_from Saci::Record::RecordNotFound do |_ex|
+    render json: {error: "not found"}, status: :not_found
+  end
+
+  def index
+    respond_to do |f|
+      f.html { render_template :index }
+      f.json { render json: Post.all.to_a }
+      f.rss { render xml: rss_feed(title: "Posts", link: "/posts", description: "latest", items: items) }
+    end
+  end
+
+  def create
+    post = Post.new(title: params["title"]?, body: params["body"]?)
+    if post.save
+      redirect_to path_for(:post, post.id)
+    else
+      render_template :new, status: 422
+    end
+  end
+
+  private def with_timing(&)
+    elapsed = Time.measure { yield }
+    Saci.logger.info { "took #{elapsed}" }
+  end
+end
+```
+
+- Filters: `before_action`, `after_action`, `around_action`, the
+  `prepend_*` variants and `skip_*_action`, all with `only:` / `except:`.
+  A before filter that renders or redirects halts the chain.
+- Rendering: `render json:/html:/text:/plain:/xml:/body:/file:`,
+  `render_template`, `render_partial`, `render_to_string`, `head`,
+  `redirect_to`, `redirect_back(fallback_location:)`, `send_file` and
+  `send_data`. `status:` accepts integers or symbols (`:created`,
+  `:unprocessable_content`, ...).
+- `redirect_to` rejects cross-host URLs unless you pass
+  `allow_other_host: true`.
+- Params: path, query, JSON, form and multipart bodies are merged into one
+  tree: `params.require(:post).permit(:title, tags: [] of String)`,
+  `params.expect(...)`, `params.dig`, `params.array`, `params.file`.
+  `wrap_parameters` nests JSON bodies under a root key.
+- HTTP auth: `authenticate_or_request_with_http_basic`,
+  `authenticate_with_http_token`, `http_basic_authenticate_with`.
+- Also available: `rate_limit to: 10, within: 1.minute`,
+  `allow_browser versions: :modern`, request host helpers (`request.host`,
+  `request.subdomain`, `request.ssl?`), and conditional GET (see
+  [Caching](#caching)).
+- Any public method that takes no arguments is an action. Keep helpers
+  private or give them parameters (see
+  [How Saci differs from Rails](#how-saci-differs-from-rails)).
+
+## Models (`Saci::Record`)
+
+```crystal
 class CreatePosts < Saci::Record::Migration
   def change
     create_table :posts do |t|
       t.string :title, null: false
-      t.integer :views, default: 0
-      t.boolean :published, default: false
-      t.integer :user_id
+      t.decimal :price, precision: 10, scale: 2
+      t.enum :status, values: ["draft", "published"]
+      t.references :user, foreign_key: true
       t.timestamps
     end
+    add_index :posts, :title
   end
 end
 
-Saci::Record::Migrator.migrate(db, [CreatePosts] of Saci::Record::Migration.class)
-Saci::Record::Migrator.rollback(db, [CreatePosts] of Saci::Record::Migration.class)
-
-class Post < Saci::Record::Base
+class Post < ApplicationRecord
   column id : Int64, primary: true
   column title : String
-  column views : Int64
-  column published : Bool, default: false
+  column price : Decimal
+  column status : String
   column user_id : Int64
-  column score : Decimal
-  column posted_on : Date
+  column tags : Array(String)
   column meta : JSON
   timestamps
 
-  validates :title, presence: true, max_length: 200
-  validates :email, format: /@/, uniqueness: true
-  validates :score, numericality: {greater_than_or_equal_to: 0}
-  validates :kind, inclusion: {in: ["a", "b"]}, allow_nil: true
-  validates :title, presence: true, if: :published?
-  validate :title_is_fine, unless: ->(r : Post) { r.views == 0 }
+  validates :title, presence: true, length: {maximum: 200}
+  validates :title, uniqueness: {scope: :user_id, case_sensitive: false}
+  validates :price, numericality: {greater_than_or_equal_to: 0}
+  validate :title_is_fine, on: :create
 
   belongs_to :user, counter_cache: true, touch: true
-  belongs_to :notifiable, polymorphic: true   # notifiable_type + notifiable_id
-  has_many :taggings, dependent: :destroy
-  has_many :tags, through: :taggings
-  has_many :notifications, as: :notifiable    # polymorphic has_many
-  has_one :moderation, dependent: :restrict_with_exception
-
-  belongs_to :user, counter_cache: true, touch: true
-  has_many :taggings, dependent: :destroy
+  has_many :comments, dependent: :destroy
+  has_many :taggings
   has_many :tags, through: :taggings
   has_one :moderation
+  accepts_nested_attributes_for :comments, allow_destroy: true
 
-  before_validation :strip_title, on: :create
   before_save :normalize
-  after_create :notify
-  after_commit :rebuild_cache, on: :create
-  after_destroy :cleanup
+  after_commit :reindex, on: :create
+end
 
-  def title_is_fine
-    errors.add(:title, "is bad") if title == "bad"
+post = Post.create!(title: "Hi")
+post.title = "Hello"
+post.changes                                   # {"title" => ["Hi", "Hello"]}
+post.save
+post.saved_change_to_title                     # ["Hi", "Hello"]
+
+Post.where(status: "published").where("views > ?", 5).order(created_at: :desc).limit(10).to_a
+Post.where(created_at: 1.day.ago..Time.utc).or(Post.where(pinned: true))
+Post.all.not(user_id: nil).includes(:user).includes(comments: :user).to_a
+Post.joins(:user).group(:user_id).count
+Post.insert_all([{title: "a"}, {title: "b"}])
+Post.upsert_all(rows, unique_by: :slug)
+Post.find_each(batch_size: 500) { |p| ... }
+Post.find_or_create_by(title: "x")
+Post.where(status: "draft").pluck(:id)
+Post.transaction(isolation: :serializable) { post.lock!; ... }
+```
+
+- **Types**: `Int32`, `Int64`, `Float64`, `String`, `Bool`, `Time` and
+  `Bytes`, plus `Decimal` (exact, `BigDecimal`-backed), `Date`, `JSON`
+  (with `<col>_json` helpers) and `Array(String)`. Every attribute is
+  nilable. `model_enum status: {draft: 0, live: 1}` maps labels to stored
+  values. Migrations also cover UUIDs, binary, generated and virtual
+  columns, check constraints, views, and PostgreSQL native types
+  (`hstore`, `inet`, `cidr`, ranges, `interval`, `money`, ...).
+- **Queries**: `select`, `distinct`, `group` with aggregates, `having`,
+  `joins` (symbol or SQL), `left_joins`, `includes`/`preload` (batched,
+  including through and polymorphic), `merge`, `rewhere`, `unscope`,
+  `none`, `in_order_of`, `sole`, `pick`, `ids`, `explain`, `in_batches`,
+  `annotate`, `lock`.
+- **Associations**: `belongs_to` (with `polymorphic:`, `counter_cache:`,
+  `touch:`, `autosave:`), `has_many` / `has_one` (with `through:`, `as:`,
+  and `dependent:` set to `:destroy`, `:delete_all`, `:nullify` or
+  `:restrict_with_exception`), and `has_and_belongs_to_many`.
+- **Persistence**: `update_columns`, `update_column` and `touch` skip
+  validations and callbacks. `upsert` runs no validations. `increment!`,
+  `toggle!` and `destroy!` are available, and optimistic locking turns on
+  when the table has a `lock_version` column.
+- **Migrations**: `change` reverses automatically. Operations that cannot
+  be reversed raise `IrreversibleMigration`; use `up`/`down` or
+  `reversible` for those. Also available: `change_table`, `revert`,
+  `execute`, `if_not_exists:`, `disable_ddl_transaction!` and
+  `algorithm: :concurrently`.
+- **Full-text search**: `Saci::Record::FTS.setup(Post, [:title, :body])`
+  creates an FTS5 virtual table with triggers.
+  `Post.search_fts("crystal")` returns a ranked, chainable query (SQLite
+  only).
+
+## Databases
+
+```crystal
+Saci::Record.connect("sqlite3://./db/app.db")      # adapter detected from the scheme
+Saci::Record.establish_connection("analytics", "postgres://localhost/analytics")
+
+class Event < ApplicationRecord
+  connects_to database: "analytics"
+end
+
+Saci::Record.connected_to("analytics") { Event.count }
+```
+
+- Write `?` placeholders and double-quoted identifiers everywhere. Saci
+  rewrites placeholders, quoting, auto-increment keys, `RETURNING` inserts
+  and DDL for each adapter.
+- **Your app owns the drivers.** Add `will/crystal-pg` or
+  `crystal-lang/crystal-mysql` to your `shard.yml` and require them
+  yourself; `saci new --db=...` does this for you. Saci never requires a
+  driver itself, so SQLite-only apps link nothing extra.
+- SQLite connections are tuned for web workloads (WAL and
+  `busy_timeout`). Transactions are scoped per fiber and per database;
+  there is no atomicity across databases.
+- On OpenSSL ≥ 3.2, `crystal-pg` needs a two-symbol link shim (see
+  [`live/README.md`](live/README.md)). `crystal-mysql` requires the server
+  to accept `mysql_native_password`.
+
+## Schema snapshots and drift check
+
+```sh
+saci db:schema:dump [--all]   # write db/schema.cr
+saci db:schema:load           # recreate tables, indexes, checks and views
+saci db:schema:check [--all]  # exit 1 when the database and the models disagree
+```
+
+`db/schema.cr` is a standalone Crystal program. It connects the same way
+`db/migrate.cr` does and replays an embedded snapshot through
+adapter-aware DDL. The snapshot is data, not raw SQL, so one file loads on
+SQLite, PostgreSQL and MySQL. `schema_migrations` is never dumped; the
+durable job tables are. SQLite stores several logical types in the same
+storage class, so booleans reload as `:integer` and dates and JSON as
+`:text`. Saci's own `t.decimal` reloads as `:decimal`. Re-dumping a loaded
+database produces the same bytes.
+
+Every model registers itself, so `Saci::Record.check_schema!(db)` can
+return one warning per mismatch: a table without a model, a model without
+a table, or a column missing on either side. Only names are compared.
+
+## Views
+
+```crystal
+class PostsController < ApplicationController
+  def show
+    @post = Post.find(params["id"])
+    render_template :show            # src/views/posts/show.ecr inside layouts/application.ecr
   end
 end
-
-post = Post.create!(title: "Hi")          # raises RecordInvalid when invalid
-post.update(views: 10)
-post.update_columns(views: 11)            # skips validations + callbacks
-post.touch                                # bumps updated_at, skips validations
-post.destroy                              # runs dependents, then callbacks
-Post.find(1)                              # raises RecordNotFound when missing
-Post.find_by(title: "Hi")
-Post.where(published: true).where("views > ?", 5)
-    .order(views: :desc).limit(10).offset(5).to_a
-Post.where(created_at: 1.day.ago..Time.utc).to_a   # Range where
-Post.where(a: 1).or(Post.where(b: 2)).to_a         # or
-Post.where.not(published: true).to_a               # hash negation
-Post.joins("INNER JOIN users ON users.id = posts.user_id").to_a
-Post.joins(:user).where("users.email = ?", "a@b").to_a  # symbol joins via FK
-Post.includes(:user, :tags).to_a                   # preload (no N+1)
-Post.includes(story: :user).to_a                   # nested preload, 2 levels
-Post.select(:id, :title).to_a                      # partial models
-Post.select("title", "views + 1 AS more").first!.read_attribute("more")
-Post.distinct.pluck(:title)
-Post.group(:published).count                        # => {true => 2, ...}
-Post.sum(:views) / Post.average(:views) / Post.minimum(:views)
-Post.count / Post.exists?(published: true) / Post.pluck(:title)
-Post.where(published: false).update_all({published: true})
-Post.upsert({id: 1, title: "Hi"})                  # skips validations/callbacks
-Post.update_counter(1, :views)                     # atomic COALESCE + delta
-Post.reset_counters(1, :comments)                  # recount counter_cache
-Post.where(published: true).touch_all              # bump updated_at, no callbacks
-Saci::Pagination.paginate(Post.where(published: true).order(created_at: :desc), page: 1, per_page: 25)
-Saci::Record::FTS.setup(Post, [:title, :body])     # SQLite FTS5 index + triggers
-Post.search_fts("crystal").where(published: true).limit(10).to_a  # rank-ordered
-user.posts.where(published: true).to_a    # has_many returns a chainable Query
-Saci::Record.transaction { ... }          # raise DB::Rollback to roll back
 ```
 
-Notes:
+```erb
+<h1><%= h(@post.title) %></h1>
+<%= render_partial("comments/comment", collection: @post.comments.to_a) %>
+<%= cache(cache_key(@post)) { render_partial("posts/sidebar", post: @post) } %>
+<%= form_with("/posts", model: @post, scope: "post") { |f| f.text_field("title") + f.error_messages + f.submit } %>
+<%= link_to("Delete", path_for(:post, @post.id), method: :delete) %>
+```
 
-- Table names are inferred (`SpecUser` → `spec_users`, `Shelf` →
-  `shelves`); override with `table "custom"`. Column types:
-  `Int32/Int64/Float64/String/Bool/Time/Bytes` (all nilable) plus logical
-  `Decimal` (Float64-backed), `Date` (Time-backed), `JSON`
-  (String-backed, with `<col>_json` / `<col>_json=` helpers) and
-  `Array(String)` (string arrays for `t.string_array`: native `TEXT[]` on
-  PostgreSQL, JSON-encoded text on MySQL/SQLite — assign a new array to
-  change it);
-  `timestamps` maintains `created_at/updated_at`. Migrations add
-  `t.decimal` / `t.date` / `t.json` / `t.string_array` /
-  `t.enum :status, values: ["draft", "published"]` (model column stays
-  `String`: PostgreSQL creates a `<table>_<column>_enum` type idempotently
-  and drops it on rollback, MySQL renders inline `ENUM(...)`, SQLite stores
-  `TEXT` so enforce with `validates :status, inclusion: {in: [...]}`) and
-  `t.datetime :at, precision: 6` / `t.timestamps precision: 6`
-  (`TIMESTAMP(p)` on PostgreSQL, `DATETIME(fsp)` on MySQL, ignored on
-  SQLite — model `Time` keeps nanoseconds regardless).
-- Validations: `presence`, `length:` (`minimum:`/`maximum:`/`in:`/`within:`),
-  `format:`, `uniqueness:` (`true`, `:scope`, `[:scopes]`,
-  `{scope:, case_sensitive: false}` — `COLLATE NOCASE` on SQLite,
-  `LOWER()` elsewhere), `inclusion: {in: [...]}`, `numericality:`
-  (`only_integer:`, `greater_than[_or_equal_to]:`,
-  `less_than[_or_equal_to]:`, `equal_to:`), custom `validate :method` /
-  `validate { }`, `allow_nil:` / `allow_blank:`, `on: :create`/`:update`,
-  plus `if:`/`unless:` (method-name Symbol or `->(r) { }` Proc) on both
-  `validates` and `validate`.
-- Callbacks (`previous_def`-chained, parents first): `before_validation`
-  (with `on:`), `before_save`, `after_save`, `after_create`,
-  `after_commit` (with `on:`, deferred to the outermost transaction commit
-  and discarded on rollback), `after_destroy`. Each takes method names,
-  lambdas (`-> { }`) and/or a block (`|record|` optional).
-- Queries: base-table columns render qualified (`"posts"."id"`) so `joins`
-  never ambiguates; `joins(:assoc)` resolves the FK alongside raw-SQL
-  `joins("...")`; `select` symbols give partial models while raw
-  expressions land in `read_attribute`/`#[]`; `includes` preloads
-  `belongs_to`/`has_many`/`has_one` (`has_many :through` raises — preload
-  the join instead) plus nested `includes(a: :b)` to 2 levels (grouped by
-  concrete class, so polymorphic parents work); `touch`/`update_columns`/
-  `upsert`/`touch_all` skip validations and callbacks; `belongs_to`
-  supports `counter_cache:` / `touch:` plus `polymorphic: true`
-  (`<name>_type` + `<name>_id` via the polymorphic registry) with
-  `has_many ..., as: :interface`; `has_many` /
-  `has_one` support `dependent: :destroy`/`:delete_all`/`:nullify`/
-  `:restrict_with_exception` (`DeleteRestrictionError`); counters polish:
-  `update_counter`/`update_counters`/`reset_counters`/`touch_all`.
-- `change`-style migrations roll back automatically (`create_table`,
-  `add_column`, `add_index`, `add_foreign_key`, `rename_table`,
-  `rename_column`); `drop_table`/`remove_column`/`remove_index`/
-  `remove_foreign_key`/`change_column` inside `change` raise
-  `IrreversibleMigration` on rollback — use `up`/`down`.
-- Foreign keys: `t.references :user, foreign_key: true` (bigint `user_id` +
-  index + `REFERENCES users(id)`; `foreign_key:` defaults to `false` —
-  unlike Rails 5+, Saci never adds a constraint you did not ask for) or
-  `t.foreign_key :users, column: :user_id, on_delete: :cascade` inside
-  `create_table` (the only form SQLite parses — FKs are CREATE-time clauses
-  there, so standalone `add_foreign_key` raises on SQLite and table rebuilds
-  are out of scope). `add_foreign_key :stories, :users, on_delete:
-  :cascade`/`:nullify`/`:restrict` uses the same `ADD CONSTRAINT` syntax on
-  PostgreSQL and MySQL (InnoDB assumed); `rename_table`/`rename_column` work
-  on all three adapters, while `change_column` is PostgreSQL (`ALTER COLUMN
-  TYPE ... USING`) / MySQL (`MODIFY COLUMN`) only.
-- Connection state is module-global (`Saci::Record.connection`): Crystal
-  class variables are per-class, so a `@@connection` on the base class would
-  be invisible to subclasses.
-- Unset attributes are omitted from INSERTs so DB defaults apply; model-level
-  `default:` applies at `new` (like ActiveRecord).
+- `<%= %>` does **not** escape. Use `h()` for user input. Helpers that
+  build HTML escape their own arguments.
+- Layouts use `<%= content %>`. `content_for` and `capture` fill named
+  slots. `render_template(:x, layout: false)` renders without a layout.
+- Forms: `form_with`, `fields_for`, `collection_select`, the `*_tag`
+  helpers, HTML5 input types, CSRF tokens, and `_method` overrides.
+  `link_to(..., method: :delete)` renders a small form, so it works
+  without JavaScript.
+- Text and number helpers: `truncate`, `simple_format`, `sanitize`,
+  `strip_tags`, `highlight`, `pluralize`, `number_to_currency`,
+  `number_with_delimiter`, `distance_of_time_in_words`, `markdown`
+  (escape-first), `page_numbers`, `rss_feed`, `tag`, `content_tag`,
+  `button_to`, `mail_to`.
+- Assets: `Saci::Assets.build_manifest(src, out)` fingerprints files.
+  `asset_path`, `stylesheet_link_tag`, `javascript_include_tag` and
+  `image_tag` resolve through the manifest and fall back to `/assets/...`
+  in development.
+- Pagination: `Saci::Pagination.paginate(query, page:, per_page:)` returns
+  a page object, and `paginate_nav` renders windowed links.
 
-## Databases (SQLite, PostgreSQL, MySQL)
+## Frontend: Turbo, Stimulus, importmap
 
 ```crystal
-Saci::Record.connect("sqlite3://./db/app.db")          # adapter from scheme
-Saci::Record.establish_connection("warehouse", "postgres://localhost/wh")
-Saci::Record.establish_connection("legacy", "mysql://root@localhost/old")
+turbo_frame_tag("profile") { "<p>Ada</p>" }
+render turbo_stream: Saci::Turbo.append("msgs", "<p>#{h(text)}</p>")
+Saci::Turbo.broadcast_append("room:1", "msgs", "<p>hi</p>")    # over Cable
 
-class WarehouseEvent < ApplicationRecord
-  connects_to database: "warehouse"
+Saci::Importmap.draw do |map|
+  map.pin "application", to: "app/javascript/application.js", preload: true
+  map.pin_all_from "app/javascript/controllers", under: "controllers"
+end
+```
+
+In a layout: `<%= importmap_tags %>`, `<%= turbo_drive_tags %>`,
+`<%= stimulus_tags %>`, `<%= pwa_tags %>`. Turbo Drive and Stimulus ship
+as small vendored, dependency-free subsets of the Hotwire libraries. For
+the full libraries, pin them from a CDN through the importmap. Turbo
+stream payloads go into `<template>` unescaped, so escape user input
+yourself.
+
+## Rich text
+
+```crystal
+class Post < ApplicationRecord
+  column body : String
+  has_rich_text :body
 end
 
-Saci::Record.connected_to("legacy") { LegacyRow.count }
+post.body_rich_text.to_s            # sanitized HTML
+post.body_rich_text.to_plain_text   # for search indexes and notifications
 ```
 
-The adapter is detected from the URL scheme (`sqlite3://`, `postgres(ql)://`,
-`mysql://`); unknown schemes raise immediately. `?` placeholders, identifier
-quoting, boolean/timestamp binds, auto-increment PKs (`AUTOINCREMENT` /
-`BIGSERIAL` / `AUTO_INCREMENT`), `RETURNING`-based inserts and rollback
-ordering are all handled per adapter — write `?` and double quotes
-everywhere, and migrations render for the database they run against.
+The column stores raw HTML and is sanitized on every read, using an
+allowlist and escape-first approach. `rich_text_area` renders a plain
+`<textarea data-rich-text>` that Trix (loaded from a CDN) can enhance.
+`<action-text-attachment>` tags that point at storage blobs are rendered
+with `render_attachments`.
 
-Two things you must know:
-
-1. **Drivers are app-owned.** Add `will/crystal-pg` (`~> 0.30.0`) or
-   `crystal-lang/crystal-mysql` (`~> 0.17.0`) to *your* `shard.yml` and
-   `require "pg"` / `require "mysql"` yourself (`saci new` scaffolds the
-   commented lines). The framework never requires drivers: `DB.open`
-   resolves drivers through a virtual dispatch that links *every*
-   registered driver's connect path — including pg's `Digest`-based auth,
-   which cannot link on OpenSSL ≥ 3.2 systems (same reason Saci vendors its
-   GCM binding). Framework-level requires would break linking for all
-   users, including pure-SQLite ones.
-2. **No live PG/MySQL verification here.** No servers are available in this
-   environment, so PostgreSQL/MySQL support is proven by SQL-generation
-   specs (`spec/adapters_spec.cr`: scheme detection, placeholder rewriting,
-   quoting, DDL per adapter, portable rollback) plus the unchanged SQLite
-   suite. Point `DATABASE_URL` at a real server to verify live — the
-   execution paths are shared with SQLite by construction.
-
-## Schema snapshots (`schema.rb` equivalent)
-
-```sh
-saci db:schema:dump [--all]   # write db/schema.cr (all DBs with --all)
-saci db:schema:load           # recreate tables + indexes from db/schema.cr
-```
-
-`db/schema.cr` is a standalone runnable (`crystal run db/schema.cr`):
-it connects via `DATABASE_URL`-or-default (the same default expression
-as your `db/migrate.cr`, so it tracks `APP_ENV` too) and calls
-`Saci::Record::Schema.load` with an embedded snapshot. The snapshot is
-*data* (column/index definitions) plus a loader call — never raw SQL —
-so one `schema.cr` loads on SQLite, PostgreSQL and MySQL through
-adapter-aware DDL. `saci new` scaffolds nothing for this (the file is
-generated output).
-
-Table choice: every table is dumped EXCEPT `schema_migrations`
-(rebuilt by the Migrator on each database) and SQLite internals.
-Durable queue tables (`saci_jobs`, `saci_dead_jobs`) ARE included so a
-schema-loaded database boots queue workers without extra steps.
-
-Two normalizations to know:
-
-- `t.timestamps` is detected (`created_at` + `updated_at`, both
-  NOT NULL without defaults) and re-emitted as a pair on load.
-- SQLite shares storage across logical types, so BOOLEAN / DATE /
-  DATETIME / JSON reload as `:integer` / `:text` and DECIMAL / BIGINT
-  as `:float` / `:integer` (likewise `:decimal` reads back as `:float`
-  on PostgreSQL/MySQL, where the forward map itself stores doubles).
-  Re-dumping a loaded database is byte-stable. Defaults that cannot
-  round-trip exactly are normalized to no default and reported as
-  `# NOTE:` lines in the generated file.
-
-Multidb: with `--all`, the dump runner also snapshots every database
-registered through `DATABASE_URL_<NAME>` env vars (plus primary) into
-per-database sections; loading re-establishes each one the same way.
-
-Programmatic API: `Saci::Record::Schema.introspect(db)` (canonical
-`TableInfo` list), `Saci::Record::Schema.dump(db, url_default,
-others)` (renders `db/schema.cr`), `Saci::Record::Schema.load(db,
-tables)` (recreate).
-
-## Schema drift check
-
-Every `Saci::Record::Base` subclass self-registers in
-`Saci::Record.models`, so the framework can compare the database against
-the models and warn when they disagree (forgotten migration, hand-edited
-table, stale column declaration):
-
-```crystal
-Saci::Record.check_schema!.each { |w| STDERR.puts "warning: #{w}" }
-```
-
-`check_schema!` returns one warning string per mismatch and never raises
-on drift. Four kinds, compared by NAME only (types are ignored):
-
-- table in the DB with no registered model (`schema_migrations`,
-  `saci_jobs`/`saci_dead_jobs` are skipped — queue tables have no models
-  by design, as are column-less intermediates like `ApplicationRecord`);
-- model whose table is missing from the DB;
-- DB column with no mapping in the model;
-- model column missing from the DB table.
-
-`saci db:schema:check [--all]` runs the same check through your app's
-`db/migrate.cr` runner (models loaded, server never booted) and exits 1
-when drift is found. `saci db:migrate` / `saci db:rollback` print the
-same warnings to STDERR after every run.
-
-Existing apps (generated before this feature — e.g. `forem_lite`, `claw`)
-get both by copying the `print_schema_drift!` helper plus one
-`targets.each { |db_name| print_schema_drift!(db_name) }` call after the
-`up`/`down` branches of their `db/migrate.cr` (or diff against a fresh
-`saci new` scaffold's `db/migrate.cr`). One-liner for scripts/specs
-instead:
-
-```crystal
-Saci::Record.check_schema!(db).each { |w| STDERR.puts "warning: schema drift: #{w}" }
-```
-
-## Testing
-
-```sh
-saci test                        # crystal spec in the app
-saci test spec/models            # subset
-```
-
-- Apps boot with `APP_ENV` (`development` by default); specs force
-  `APP_ENV=test`, so `db/<app>_test.db` never touches development data.
-  `db:migrate` respects `APP_ENV` too (`APP_ENV=test saci db:migrate`).
-- Generated specs use two helpers:
-  - `Saci::TestSession.serve(router) { |app| ... }` — live request specs
-    over real HTTP on an ephemeral port (`app.get/post/put/patch/delete`).
-  - `Saci::Record.clean_database!` in `before_each` — truncates every table
-    except `schema_migrations`.
-- `saci g model` writes `spec/models/<name>_spec.cr`;
-  `saci g controller` writes `spec/requests/<name>_spec.cr`.
-
-## Hot-reload
-
-```sh
-saci serve --watch [--watch-interval 0.5]
-```
-
-Polling file watcher (stdlib only): rebuilds with `crystal build` into `tmp/`
-and restarts a single supervised binary. Ignores `*.db/*.log` and
-`tmp/log/lib/.git`; debounces rapid saves; build failures and crashes wait
-for the next save instead of hot-spinning; INT/TERM shuts down watcher +
-child cleanly. Supervised `build` — not `crystal run` — deliberately:
-`run` orphans a grandchild process that keeps holding the port.
-
-## WebSockets (ActionCable equivalent)
+## WebSockets
 
 ```crystal
 class ChatChannel < Saci::Cable::Channel
@@ -551,354 +560,79 @@ class ChatChannel < Saci::Cable::Channel
   end
 
   def receive(data)
-    Saci::Cable.broadcast("room:1", {text: data["text"]? || data})
+    Saci::Cable.broadcast("room:1", {text: data["text"]?})
   end
+end
+
+Saci::Cable.identify do |connection|
+  connection.reject_unauthorized_connection unless connection.session.try(&.["user_id"])
 end
 
 router = Saci::Router.new.draw do |r|
-  r.cable "/cable", ChatChannel                       # multiplexed endpoint
-  r.websocket("/live") { |ws, ctx, params| ws.send("hi") }  # raw escape hatch
+  r.cable "/cable", ChatChannel
 end
 ```
 
-- Wire protocol is an ActionCable-compatible subset (`subscribe` / `message` /
-  `unsubscribe` commands with JSON identifiers; `welcome`, `confirm_`,
-  `reject_subscription`, and `{identifier, message}` deliveries).
-- ` transmit(payload)` replies to one subscription; `stream_from` /
-  `stop_stream` / `stop_all_streams` manage stream membership;
-  `Channel.broadcast_to(stream, payload)` and `Saci::Cable.broadcast`
-  fan out. Call `reject` in `subscribed` to refuse (client gets
-  `reject_subscription`).
-- `saci g channel Chat` writes the channel plus a `TestClient`-based spec.
-  `Saci::Cable::TestClient` is a synchronous spec client (buffered frames,
-  timeouts) — see `examples/cable_example.cr` for a two-client chat demo.
-- Single-process pub/sub by default; for multi-process deploys (no sticky
-  sessions) point at Redis — no shard dependency, the client is a vendored
-  pure-socket RESP2 implementation (`Saci::Cable::RedisWire`, no OpenSSL
-  linkage, so plain builds link unchanged):
-
-  ```crystal
-  Saci::Cable.server = Saci::Cable::RedisServer.new(ENV.fetch("REDIS_URL", "redis://127.0.0.1:6379"))
-  ```
-
-  One Redis channel (default `"saci:cable"`) multiplexes every stream via a
-  `{sender, stream, message}` envelope; each server delivers locally, then
-  publishes (own echoes are skipped by sender id). A background fiber holds
-  the SUBSCRIBE connection and reconnects with backoff (0.1s → 5s),
-  resubscribing automatically (`server.subscribed?` reports the confirmed
-  state; `server.disconnect!` drops the sub connection, `server.close`
-  stops the loop). Degradation is fail-open per broadcast: Redis down drops
-  the remote hop with a STDERR warning while local delivery still happens —
-  broadcasts never raise, and the constructor never touches the network, so
-  a bad URL fails at first broadcast, not at boot. Per-app override still
-  works: `r.cable "/cable", ChatChannel, server: my_server`.
-  Opt-in per deploy with `REDIS_URL` (e.g. export it in production and pick
-  it up with the `ENV.fetch` line above; wiring a commented default into
-  the `saci new` production env template is left to the integrator —
-  `cli/` is untouched by this change).
-
-## Turbo Frames + Streams (Hotwire, server-side)
-
-```crystal
-turbo_frame_tag("profile") { "<p>Ada</p>" }
-# => <turbo-frame id="profile"><p>Ada</p></turbo-frame>
-turbo_frame_tag("feed", src: "/feed?page=2", loading: "lazy") { "" }
-
-Saci::Turbo.append("msgs", "<p>hi</p>")
-# => <turbo-stream action="append" target="msgs"><template><p>hi</p></template></turbo-stream>
-# (prepend / replace / update / before / after share the shape;
-#  remove carries no <template>: <turbo-stream action="remove" target="m1"></turbo-stream>)
-
-class MsgsController < ApplicationController
-  def create
-    render turbo_stream: Saci::Turbo.append("msgs", "<p>#{h(params["text"]? || "")}</p>")
-    # ...or arrays: render turbo_stream: [Saci::Turbo.append(...), Saci::Turbo.remove(...)]
-    # ...or: render_turbo_stream Saci::Turbo.prepend("msgs", "..."), status: :ok
-  end
-end
-```
-
-- `render turbo_stream:` replies with
-  `Content-Type: text/vnd.turbo-stream.html` (`content_type:` overrides it,
-  reusing the standard `render` override).
-- **Escaping (pinned):** ids/targets/src/loading are escaped; `html`
-  payloads go into `<template>` RAW — Turbo parses template content as
-  HTML, so escaping it would render literal tags. Escape user input
-  yourself with `h()` (as above).
-- **Cable wiring (streams ARE cable streams):** broadcast the rendered
-  element as the message payload —
-  `Saci::Turbo.broadcast_append("room:1", "msgs", "<p>hi</p>")`
-  (all seven actions have `broadcast_*` variants via
-  `Saci::Cable.broadcast`). Subscribe clients to the stream and apply the
-  received HTML with a consumer (e.g. append it to the DOM); Turbo itself
-  comes from the CDN — no JavaScript is bundled:
-  `<script type="module">import * as Turbo from "https://cdn.skypack.dev/@hotwired/turbo";</script>`.
-- Out of scope: morph / page-refresh (`turbo-refresh-method` meta,
-  `turbo:morph` attributes) — plain markup the app emits itself.
-
-## Multithreading
-
-Crystal runs single-threaded by default. Saci is thread-safe (fiber-keyed
-transactions and locales, mutex-guarded pub/sub, stateless dispatch), so to
-use all cores:
-
-```sh
-saci serve --mt [--workers 4]   # compiles -Dexecution_context, sets SACI_MT
-```
-
-Generated entrypoints call `Saci.enable_multithreading!` when `SACI_MT=1`
-(workers default to CPU count, honoring `CRYSTAL_WORKERS`). Without the flag
-the call is a harmless no-op, so the same code compiles and runs either way —
-the suite passes both plain and with `crystal spec -Dexecution_context`.
-
-Notes: `Saci::Record` auto-tunes SQLite (`WAL` + `busy_timeout`) when the
-connection is assigned, so concurrent readers/writers behave; transactions
-are per-fiber (nested blocks reuse the outer one); locales are per-fiber too.
-
-## Localization
-
-```crystal
-Saci::I18n.load_path << "config/locales/*.yml"  # default; then:
-Saci::I18n.reload!
-
-Saci::I18n.t("hello")                       # "Hello"
-Saci::I18n.t("greeting", name: "Ada")       # "Hello, Ada!"
-Saci::I18n.t("items", count: 0)             # zero/one/other (+%{count})
-Saci::I18n.with_locale(:es) { Saci::I18n.t("hello") }  # "Hola", nestable
-Saci::I18n.locale_from_header(request.headers["Accept-Language"]?)
-```
-
-- `config/locales/*.yml` mirror Rails (`en:` → nested keys, flattened to
-  dot paths at load). Missing keys fall back to the default locale, then to
-  `"translation missing: <locale>.<key>"`; missing `%{args}` raise
-  `MissingInterpolation`.
-- In controllers, `t("greeting", name: ...)` uses the current locale — set it
-  per request, e.g. `before_action { Saci::I18n.locale = Saci::I18n.parse_locale(params["locale"]?) }`.
-- Locales accept `:es` or `"es"` interchangeably (normalized internally —
-  Crystal has no runtime string-to-symbol conversion).
-
-## Security
-
-```crystal
-class ApplicationController < Saci::Controller
-  protect_from_forgery          # CSRF: 422 on forged state-changing requests
-end
-
-class User < ApplicationRecord
-  column password_digest : String
-  has_secure_password           # bcrypt + authenticate + validations
-end
-
-user.authenticate("secret")     # => user or nil
-
-class ApiKey < ApplicationRecord
-  column token : String
-  has_secure_token              # auto-generates on create (never overwrites)
-  # has_secure_token :api_token # named variant (+ regenerate_api_token!)
-end
-
-sid = user.signed_id(purpose: "login", expires_in: 15.minutes)
-User.find_signed(sid, purpose: "login")   # => user or nil (never raises)
-User.authenticate_by(email: "a@b.c", password: "secret") # => user or nil
-```
-
-- **CSRF** uses the stateless double-submit-cookie pattern: safe methods set
-  the `saci_csrf` cookie (`SameSite=Lax`); POST/PUT/PATCH/DELETE must echo it
-  via the `authenticity_token` param or `X-CSRF-Token` header (compared in
-  constant time). `form_authenticity_token` returns the token for forms.
-  Failures raise `InvalidAuthenticityToken`, rendered as 422.
-- **Secure headers** (`X-Frame-Options: SAMEORIGIN`,
-  `X-Content-Type-Options: nosniff`, `Referrer-Policy`,
-  `Content-Security-Policy: default-src 'self'`) are applied to every
-  controller response unless already set; tune via
-  `Saci::SecureHeaders.configure`. Per-action escape hatches:
-  `skip_csp only: [...]` (no CSP on those actions), `csp false` (whole
-  controller), or `csp "default-src 'none'"` (custom policy).
-- **Passwords**: `has_secure_password` digests with bcrypt on assignment,
-  validates presence-on-create, confirmation match, and the 72-byte bcrypt
-  limit. `Saci::Record.bcrypt_min_cost = true` speeds up specs (like
-  `ActiveModel::SecurePassword.min_cost`).
-- **Authentication** (devise-lite): `login(user)` is fixation-safe
-  (`reset_session` first, then stores the id under `session_key`, plus a
-  rolling `session_token` when the record has one — rotating it
-  invalidates old sessions); `logout` resets fully; `current_user`
-  (memoized via `memoize_current_user User`, `nil` when absent) and
-  `logged_in?`; `require_login` (redirects to `login_path`, remembering
-  GET targets in `session[:redirect_to]`) / `require_no_login` filters;
-  `allow_unauthenticated_access only: [...]` opens public actions.
-  Resolve users by overriding `find_current_user(id)` (e.g.
-  `User.find?(id)`) — any class with `id` works — and tune paths/keys via
-  `Saci::Auth.configure`. Note: a finder lambda cannot be assigned through
-  `configure` (Crystal cannot store `Proc(Int64, YourUser?)` in framework
-  state, so `c.user_finder = ...` raises with directions); override the
-  hook or reopen `Saci::Auth.user_finder` instead.
-- **Tokens**: `has_secure_token` (bare fills `token`, or
-  `has_secure_token :api_token`) generates a 24-byte URL-safe random token
-  in `before_validation on: :create`, only when blank — explicit values are
-  kept and updates never overwrite. `regenerate_api_token!` issues a fresh
-  token and saves. Uniqueness is validated at the model level; add a DB
-  unique index too (model validation alone races under concurrency):
-  `add_index :users, :api_token, unique: true`.
-- **Signed IDs**: `record.signed_id(purpose: "login", expires_in: 15.minutes)`
-  returns a tamper-proof string (id + class + purpose + expiry, HMAC-signed
-  with `secret_key_base`); `Model.find_signed(token, purpose:)` returns the
-  record or nil — bad signature, tampering, expiry, wrong purpose,
-  cross-model use and missing rows never raise.
-- **Login**: `Model.authenticate_by(email: "...", password: "...")` finds by
-  the non-password attributes (single query) then `authenticate`s. Unknown
-  login and wrong password both return nil (no user enumeration, matching
-  password-reset conventions); misses still cost one bcrypt digest so the
-  two failures take ~the same time. Missing `password`, no identifying
-  attributes, or unknown finder attributes raise (`ArgumentError` /
-  `UnknownAttributeError`).
-- **XSS**: `h(user_input)` (`HTML.escape`) before interpolating into
-  `render html:`; JSON rendering is escaped by construction; all SQL uses
-  bound parameters; mass-assignment goes through `assign` (unknown attributes
-  raise).
-- **Sessions & cookies**: `session[:user_id]` (HMAC-signed cookie store,
-  `reset_session` on login), `cookies` / `cookies.signed` /
-  `cookies.encrypted` (AES-256-GCM, opaque to clients) / `cookies.delete`,
-  and `flash[:notice]` (one redirect) with `flash.now`. Secret from
-  `SECRET_KEY_BASE` (`saci secret` generates one; dev fallback persisted to
-  `tmp/.dev_secret`, never commit it). Set `Saci::Session.encrypt = true`
-  for opaque sessions (generated production envs do); enabling it
-  invalidates previously signed sessions, so turn it on before launch.
-
-## Logging
-
-```crystal
-Saci.logger.info { "booted" }           # ::Log wrapper, swappable
-Saci.logger = ::Log.for("myapp")        # e.g. in specs
-Saci.log_requests = false               # silence request lines
-Saci.filter_parameters = ["password"]   # substring match, filtered in logs
-
-Saci.tagged("worker-1") do
-  Saci.logger.info { "[#{Saci.current_tags.join(" ")}] working" }
-end
-```
-
-Every request logs `Completed 200 in 3.2ms | GET /posts | params={...} |
-[req-id]` at info level with filtered params, and carries an `X-Request-Id`
-(request header honored when present, generated otherwise).
-
-## Metrics
-
-```crystal
-r.get "/metrics", Saci::Metrics::Controller, :index
-```
-
-In-process counters (mutex-guarded, no dependencies): request totals +
-per-status buckets, per-route (`Controller#action`) counts with average
-durations, job ok/failed counts, cache hits/misses, plus best-effort DB
-gauges (durable-queue pending/dead rows, database size — SQLite file
-bytes, `pg_database_size`, summed MySQL table bytes; `nil` when
-unavailable). JSON by default, Prometheus text exposition on
-`?format=prom` or `Accept: text/plain`
-(`saci_requests_total`, `saci_request_duration_ms_sum`,
-`saci_jobs_failed_total`, `saci_cache_hits_total`, …).
-
-```crystal
-Saci::Metrics.track_request("Posts#index", 200, 3.2)  # ~free no-op when disabled
-Saci::Metrics.enabled = false   # pause tracking (default true)
-Saci::Metrics.reset!            # blank slate (spec isolation)
-Saci::Job.on_error { |_, _| Saci::Metrics.job_failed! }  # decoupled job wiring
-```
-
-Request tracking is explicit (wire `track_request` from an
-`after_action` — see `Saci::Metrics` docs), as are job/cache hooks
-(`job_ok!`, `cache_hit!`/`cache_miss!`): the framework stays decoupled.
-No auth is built in — mount behind your own admin gate.
+- The wire protocol is compatible with ActionCable clients. Channels also
+  support `stream_for record`, `periodically 5.seconds { }`, `transmit`,
+  `reject`, and `identified_by`.
+- Fan-out uses a single process by default. For several processes, set
+  `Saci::Cable.server` to `Cable::RedisServer.new(ENV["REDIS_URL"])`
+  (built-in RESP2 client, no extra dependency) or to `Cable::DbServer`
+  (database polling, Solid Cable style). If Redis is down, broadcasts
+  still reach local subscribers.
+- Writes go through a shared pool of writer fibers with bounded
+  per-connection queues, so idle sockets stay cheap and slow readers get
+  disconnected instead of piling up memory.
+- `Saci::Cable::TestClient` and `Cable::TestServer` support specs, and
+  `saci g channel` generates both.
 
 ## Background jobs
 
 ```crystal
 class WelcomeJob < Saci::Job::Base
   queue_as :mailers
+  queue_with_priority 10
+  unique :until_executed
   retry_on IO::Error, attempts: 3, wait: :exponential
   discard_on Saci::Record::RecordNotFound
 
   def perform(payload : JSON::Any) : Nil
-    puts "hello #{payload["user_id"]}"
+    UserMailer.welcome(payload["email"].as_s).deliver_now
   end
 end
 
-WelcomeJob.perform_later({user_id: 1})
-WelcomeJob.set(wait: 5.minutes).perform_later({user_id: 1})
-WelcomeJob.perform_now({user_id: 1})
+Saci::Job.queue_adapter = :db
+WelcomeJob.perform_later({email: "a@b.c"})
+WelcomeJob.set(wait: 5.minutes, queue: :low).perform_later({email: "a@b.c"})
 ```
 
-- Payloads cross a JSON boundary (even in-process) — pass ids, not objects.
-- Adapters: `:async` (spawned fiber, dev default), `:inline` (immediate —
-  use in specs), `:test` (records into `Saci::Job.enqueued_jobs` without
-  running), `:db` (durable: persists to `saci_jobs`, survives restarts —
-  run `Saci::Job::Db.drain` for scripts or `work_once` in a worker loop;
-  final failures land in `saci_dead_jobs` with `retry_dead`/`drop_dead`
-  ops). `Saci::Job.with_adapter(:inline) { }` scopes the switch.
-- Retries count total tries; failures/discards report via `Saci::Job.on_error`
-  (default: STDERR line). Redis adapters remain roadmap; at-least-once
-  everywhere, so jobs MUST be idempotent.
-- `limits_concurrency to: 1, key: "cache-page"` caps concurrent runs per key
-  (extra runs skip while the slot is held); honored by `:inline`, `:async`
-  and `:db` adapters (explicit `perform_now` always runs).
-
-### Job dashboard (MissionControl-lite)
-
-```crystal
-r.get "/saci/jobs", Saci::Job::DashboardController, :index
-r.get "/saci/jobs/dead", Saci::Job::DashboardController, :dead
-r.post "/saci/jobs/dead/:id/retry", Saci::Job::DashboardController, :retry_dead
-r.post "/saci/jobs/dead/:id/drop", Saci::Job::DashboardController, :drop_dead
-```
-
-- `index` shows pending/dead counts, oldest pending age, and per-queue /
-  per-class pending breakdowns (aggregated in Ruby from `saci_jobs` rows —
-  read-only, no new tables). `dead` lists the dead-letter table (class,
-  attempts, error) with Retry/Drop buttons wiring to `Db.retry_dead` /
-  `Db.drop_dead`.
-- Dev-gated like mailer previews: `Saci::Job::Dashboard.enabled` defaults
-  to `Saci.env != "production"` and every action 404s when disabled. No
-  auth is built in — mount behind your own admin gate.
-- Requires the `:db` adapter; any other adapter renders an empty state
-  (never a 500).
-
-## Recurring jobs
-
-```crystal
-Saci::Recurring.every(5.minutes, "expire-ribbons") do
-  ExpireRibbonsJob.perform_later({})
-end
-Saci::Recurring.cron("*/5 * * * *", "refresh-stats") do
-  RefreshStatsJob.perform_later({})
-end
-
-Saci::Recurring.start            # supervised loop, 30s tick default
-Saci::Recurring.start(15.seconds)
-Saci::Recurring.stop
-```
-
-- Registry form is the only API (no `Job::Base` changes): names are unique,
-  blocks should be a single fast `perform_later` (runs inline on the tick).
-- Cron is stdlib-only, 5 fields, UTC everywhere: `*`, `*/n`, ranges,
-  steps, lists, month/DOW names; `0`/`7` both Sunday; dom+DOW restricted
-  means either may match. `L`/`W`/`#`/`?` raise `ArgumentError`, as do
-  impossible dates (Feb 30) and duplicate names.
-- Missed ticks collapse to ONE catch-up run (next due is computed from
-  now); a key already running never overlaps (extra ticks skip); block
-  errors report via `Saci::Job.on_error` without killing the loop.
-- Intervals first fire one interval after registration; cron entries are
-  due for the current minute when it matches.
-- Multi-replica: run `start` on ONE replica, or set
-  `Saci::Recurring.cache_dedup = true` with a shared `RedisStore` Cache so
-  duplicate fires for the same due-minute collapse to one (best-effort
-  under exact-tie races — jobs must stay idempotent).
+- Adapters: `:async` (fiber, the development default), `:inline`,
+  `:test` (records jobs instead of running them), and `:db` (durable,
+  persisted in `saci_jobs` with a dead-letter table and claims via
+  `FOR UPDATE SKIP LOCKED`). Run `Saci::Job::Db.work_once` in a worker
+  loop or `drain` from scripts.
+- Payloads cross a JSON boundary. Records are serialized as GlobalID
+  references. Delivery is at-least-once, so jobs must be idempotent.
+- Also available: callbacks and middleware, `limits_concurrency`, batches
+  (`Saci::Job::Batch`), and resumable jobs (`continuable` + `step`).
+- Recurring jobs:
+  `Saci::Recurring.cron("*/5 * * * *", "refresh") { RefreshJob.perform_later({}) }`
+  and `Saci::Recurring.every(1.hour, "cleanup") { ... }`, then
+  `Saci::Recurring.start`. Missed ticks collapse into a single run.
+- Dashboard: mount `Saci::Job::DashboardController` to see pending and
+  dead jobs, with retry and drop actions. It is disabled in production by
+  default.
 
 ## Mailers
 
 ```crystal
 class UserMailer < Saci::Mailer::Base
   default_from "noreply@example.com"
+  layout "mailer"
 
   def self.welcome(email : String) : Saci::Mailer::Mail
+    attachments["terms.pdf"] = {mime_type: "application/pdf", path: "public/terms.pdf"}
     mail(to: email, subject: "Welcome!") do |format|
       format.text { "Welcome, #{email}!" }
       format.html { "<h1>Welcome, #{email}!</h1>" }
@@ -906,196 +640,93 @@ class UserMailer < Saci::Mailer::Base
   end
 end
 
-UserMailer.welcome("a@b.c").deliver_now
-UserMailer.welcome("a@b.c").deliver_later            # via Saci::Job
+UserMailer.welcome("a@b.c").deliver_later
+UserMailer.with(user: user).digest.deliver_now
 ```
 
-- Adapters: `:file` (dev default, `tmp/mails/*.eml`), `:test` (inspect
-  `Saci::Mailer.deliveries` in specs), `:sendmail` (`/usr/sbin/sendmail -t`),
-  `:smtp` (dependency-free STARTTLS + AUTH LOGIN client — set
-  `MAILER_ADAPTER=smtp` plus `SMTP_HOST/PORT/USERNAME/PASSWORD`).
-- `deliver_later` renders now and delivers the rendered email later, so it
-  works with every job adapter (present and future).
-- `layout "mailer"` wraps text/html parts with a registered layout
-  (`Saci::Mailer.register_layout("mailer", text:, html:)` templates using
-  `<%= content %>`); `default_reply_to` plus per-mail `reply_to:`; threading
-  headers via `mail(..., headers: {"Message-Id" => "<..>", "In-Reply-To" => "<..>"})`
-  (a custom `Message-Id` replaces the generated one).
-- Previews (dev-only — disabled in production): register with
-  `Saci::Mailer::Preview.register("welcome") { UserMailer.welcome("demo@example.com") }`
-  and mount `Saci::Mailer::PreviewController` at `/saci/mailers` (list) plus
-  `/saci/mailers/:name` (headers + text/html parts in a debug layout);
-  deliberately not `/rails/mailers*` to avoid confusion with Rails. Toggle
-  with `Saci::Mailer::Preview.enabled` (default: `Saci.env != "production"`);
-  both actions 404 when disabled, and unknown names 404.
-- Non-ASCII subjects are RFC 2047 encoded-word encoded (`=?UTF-8?B?...?=`,
-  folded at 75 chars) on the wire (`to_mime`, hence `:file`/`:sendmail`/`:smtp`;
-  long ASCII subjects fold the same way). In-memory and `:test` deliveries keep
-  the readable string; `Mail#encoded_subject` / `Mail#decoded_subject`
-  (backed by `Saci::Mailer.encode_subject` / `decode_subject`) round-trip it.
+- Delivery adapters: `:file` (development, writes `tmp/mails/*.eml`),
+  `:test`, `:sendmail`, `:smtp` (built-in STARTTLS client), and HTTP
+  providers (SendGrid, Mailgun, Postmark, Amazon SES with SigV4). DKIM
+  signing is optional.
+- `deliver_later` renders the mail immediately and sends the result
+  through the job system.
+- Previews: register them with `Saci::Mailer::Preview.register` and mount
+  `PreviewController` (development only). Non-ASCII subjects are
+  RFC 2047-encoded on the wire.
 
-## Views
+## Inbound email
 
 ```crystal
-class PostsController < ApplicationController
-  def show
-    @post = Post.find(params["id"])
-    render_template(:show)         # views/posts/show.ecr + layout
-  end
-
-  def feed
-    respond_to do |f|
-      f.html { render_template(:index) }
-      f.json { render json: Post.all }
-      f.rss { render xml: rss_feed(title: "Posts", link: "/posts", description: "latest", items: rss_items) }
-    end
+class SupportMailbox < Saci::Mailbox::Base
+  def process
+    Ticket.create!(subject: mail.subject, body: mail.text_body)
   end
 end
-```
 
-```erb
-<!-- views/posts/show.ecr -->
-<h1><%= h(@post.title) %></h1>
-<%= render_partial("shared/meta") %>
-```
-
-- Templates live in `<app>/src/views/` (layouts in `views/layouts/`,
-  default `application` with `<%= content %>`); actions share state via
-  instance variables. `render_template("posts/show", layout: false)` skips
-  the layout; `render_template(:new, status: 422)` re-renders with an error
-  code. `<%= %>` does NOT escape — use `h()` (documented loudly).
-- `render_partial("comments/comment", comment: c)` passes locals;
-  `render_partial("comments/comment", collection: list)` renders once per
-  item (variable inferred from the partial name, `as:` overrides it).
-- `cache("sidebar") { render_partial("shared/sidebar") }` fragment-caches
-  template output in `Saci::Cache` (miss renders + stores, hit returns the
-  stored HTML, `expires_in:` TTLs, fail-open when the store is down). Keys:
-  `cache_key(record)` (`table/id-updated_at`, same etag logic as `stale?`),
-  `cache_key(records)` (count + max `updated_at`),
-  `cache_key("name", version: 2)` (`"name:v2"`). Russian-doll: nest `cache`
-  calls (inner hits are reused inside outer misses); bust outer entries with
-  `Saci::Cache.delete` or a version bump — an inner delete alone does not
-  expire an outer entry, so embed the inner key in the outer key
-  (`cache("page/#{cache_key(@post)}")`) to couple them.
-- `form_with(url) { |f| f.text_field("name") + f.submit }` builds escaped
-  forms with `_method` override + CSRF token; `link_to("Delete", url,
-  method: :delete)` renders a self-contained mini-form (works with the
-  `_method` routing override, no JavaScript). With `model:` + `scope:`,
-  fields bind to the model (`story[title]` names) and render
-  `record.errors`: `f.text_field/check_box/select/date_field/file_field` +
-  `f.error_messages` (`multipart: true` sets the upload encoding).
-- Helpers: `markdown(text)` (XSS-safe minimal: fences, code, bold/italic,
-  safe links, headings, paragraphs), `page_numbers(page, total, base)`
-  (`"/stories"` → `/stories/page/N`, `:page` placeholders honored), `Saci::Pagination.paginate_nav(page, base)`
-  (same URL conventions, windowed numbers with `aria-current`, `""` for a single page),
-  `rss_feed(title:, link:, description:, items:)` (render with
-  `render xml:`).
-
-## Rich text (ActionText equivalent, stdlib-only)
-
-```crystal
-class Post < Saci::Record::Base
-  column body : String
-  has_rich_text :body          # works on existing text columns — no migration needed
+Saci::Mailbox.router = Saci::Mailbox::Router.new.draw do |r|
+  r.route SupportMailbox, to: "support@example.com"
+  r.route all: :backup
 end
 
-post.body_rich_text.to_s          # sanitized HTML
-post.body_rich_text.to_plain_text # plain text (search index, notifications)
-post.body_rich_text.excerpt(200)  # truncated plain text ("…" when cut)
-post.body_rich_text.blank?        # true when no visible text
+router = Saci::Router.new.draw { |r| Saci::Mailbox.mount(r) }
 ```
 
-```erb
-<!-- sanitized already — <%= %> does NOT escape, so NEVER wrap in h() -->
-<!-- (h() would double-escape and show literal tags; same rule as documented above) -->
-<%= rich_text(@post.body) %>
-<%= form_with("/posts", model: @post, scope: "post") { |f| f.rich_text_area("body") } %>
-```
+Includes a MIME parser (multipart, RFC 2047/2231, charsets), persisted
+`InboundEmail` records deduplicated by Message-ID, `bounce_with` and
+`relay_to`, incineration of processed mail, an HTTP ingress endpoint for
+providers, and test helpers.
 
-- Allowlist: `p br strong em a ul ol li code pre blockquote h1-h3` (only
-  tags emitted; `script`/`style`/`iframe`/`img`/event handlers/`style`
-  attributes never survive) and `<a href>` limited to `http://`, `https://`,
-  `mailto:`, `/path`, `#anchor` (`javascript:`/`data:`/entity- and
-  case-tricks drop the href, keep the text). Escape-then-allowlist: input is
-  escaped first, then allowlisted markup is re-emitted — unknown tags render
-  as inert text, never execute.
-- Storage is a plain `String` column holding raw HTML; new fields use
-  `t.text :body` in migrations. The server accepts plain HTML from
-  `rich_text_area` and sanitizes on every READ — never trust input, and
-  never rely on write-time sanitizing (pre-fix or out-of-band rows stay
-  dangerous).
-- `rich_text_area` is a plain `<textarea data-rich-text="true">` (no
-  JavaScript required). Optional Trix enhancement — stdlib-only means the
-  Trix bundle ships via CDN, never vendored:
-
-  ```html
-  <link rel="stylesheet" href="https://unpkg.com/trix@2.0.0/dist/trix.css">
-  <script src="https://unpkg.com/trix@2.0.0/dist/trix.umd.min.js"></script>
-  <script>
-    document.querySelectorAll("textarea[data-rich-text]").forEach((el) => {
-      el.insertAdjacentHTML("afterend", `<trix-editor input="${el.id}"></trix-editor>`);
-      el.hidden = true;
-    });
-  </script>
-  ```
-
-## HTTP caching
+## Storage and attachments
 
 ```crystal
+class User < ApplicationRecord
+  column id : Int64, primary: true
+  has_one_attached :avatar
+end
+
+user.avatar.attach(io, filename: "me.png")
+user.avatar.url                                   # expiring signed URL
+
+r.get "/files/*key", Saci::Storage::FilesController, :show
+r.post "/direct_uploads", Saci::Storage::DirectUploadsController, :create
+```
+
+- `DiskService` stores files under sharded keys. Private files are served
+  through expiring HMAC-signed URLs. Signing keys can be rotated: old URLs
+  keep working until they expire. A `public/` key prefix is served
+  without signatures.
+- `S3Service` works with AWS, MinIO, R2 and other S3-compatible stores,
+  using its own SigV4 signer. `MirrorService` writes to several services
+  at once.
+- Blobs have checksums and metadata. Image dimensions come from a
+  pure-Crystal analyzer. Variants and previews go through a pluggable
+  processor; none is bundled, so without one they return the original
+  file.
+- Uploads with content types that browsers execute are rejected by
+  default, and upload size is capped.
+
+## Caching
+
+```crystal
+Saci::Cache.fetch("stats", expires_in: 5.minutes) { compute_stats }
+Saci::Cache.store = Saci::Cache::RedisStore.new(ENV["REDIS_URL"])
+Saci::Cache.store = :db                         # database-backed store (Solid Cache style)
+
 def show
   @post = Post.find(params["id"])
-  return unless stale?(@post)   # etag from table/id/updated_at
-  render json: @post
+  return unless stale?(@post)                   # ETag / Last-Modified, 304 when fresh
+  expires_in 60.seconds, public: true
+  render_template :show
 end
 ```
 
-`stale?(etag:, last_modified:)` / `fresh_when` set validators and reply 304
-when fresh (weak-etag comparison, `*` support, second-resolution IMS);
-`expires_in(60.seconds, public: true)` sets `Cache-Control`.
-File page cache (a `CachePageJob` calls these): `Saci::PageCache.write(path, html)`
-/ `.read` / `.expire` / `.expire_dir(dir)` under `tmp/page_cache`, with
-write-through `.fetch(path) { render }`.
-
-## General cache (`Rails.cache` equivalent)
-
-```crystal
-Saci::Cache.write("greeting", "hello", expires_in: 60.seconds)
-Saci::Cache.read("greeting")                    # => "hello"
-Saci::Cache.fetch("expensive", expires_in: 5.minutes) { compute }
-Saci::Cache.increment("page-views")
-Saci::Cache.namespace = "v2"                    # key prefix ("v2:...")
-
-# Multi-process deploys share entries over Redis — same vendored
-# pure-socket RESP2 client as Cable/Throttle, no new link requirements:
-Saci::Cache.store = Saci::Cache::RedisStore.new(ENV.fetch("REDIS_URL", "redis://127.0.0.1:6379"))
-```
-
-- The String fast-path (`read`/`write`/`fetch` returning `String`) is the
-  primary API; typed values (`Int64`, `Float64`, `Bool`, `Time`, `Nil`)
-  round-trip through `write` overloads plus `read_value`/`fetch_value`
-  (a stored `Nil` is present — `exist?` is true — and `fetch` treats it
-  as a hit). Values use an explicit type-tagged encoding (`S:`/`I:`/
-  `F:`/`B:`/`T:`/`N:` prefixes, spec-pinned) — no `Marshal`, no
-  deserialization gadgets; keys written by other clients read back as
-  plain Strings. `read` on a non-String entry returns nil (use
-  `read_value`).
-- Backends: `MemoryStore` (default; mutex-guarded, `max_entries: 1000`
-  with LRU eviction, entries purged on read) and `RedisStore(url,
-  prefix: "saci:cache:")` (one key per entry, `SET ... EX` TTLs).
-  `Saci::Cache.reset!` restores the default store (spec isolation).
-- `fetch` memoizes on miss; `MemoryStore#fetch` also takes
-  `race_condition_ttl:` for stampede protection (expired-within-grace
-  serves stale immediately while one background fiber refreshes —
-  concurrent fetchers keep getting stale instead of piling onto the
-  recomputation; past the grace window it recomputes synchronously).
-  `RedisStore` accepts the option for API parity but ignores it
-  (server-side TTLs drop stale values, so there is nothing to serve)
-  and its `increment` is read-modify-write (atomic per instance, not
-  across processes).
-- Fail behavior: `MemoryStore` never fails; `RedisStore` raises
-  `Saci::Cache::RedisDown` on connection failure — rescue to a miss
-  when fail-open is what you want (fragment caching does). `clear`
-  deletes only keys written through that instance (never FLUSHDB).
+- Stores: `MemoryStore` (LRU, with stampede protection through
+  `race_condition_ttl:`), `RedisStore`, and `DbStore` (one portable table;
+  `trim` and `prune_expired` handle cleanup).
+- Fragment caching: `cache(key) { ... }` in views, keyed by
+  `cache_key(record)`, `cache_key(records)` or `version:`. If the store is
+  down, the fragment is rendered but not stored.
+- `Saci::PageCache` writes whole pages to disk.
 
 ## Rate limiting
 
@@ -1104,249 +735,284 @@ Saci::Throttle.throttle("logins/ip", limit: 5, period: 1.minute) do |ctx|
   ctx.request.path == "/login" ? Saci::Throttle.client_ip(ctx) : nil
 end
 Saci::Throttle.safelist { |ctx| Saci::Throttle.client_ip(ctx) == "127.0.0.1" }
-Saci::Throttle.blocklist { |ctx| banned?(ctx) }
+Saci::Throttle.store = Saci::Throttle::RedisStore.new(ENV["REDIS_URL"])
 ```
 
-Fixed windows (nil discriminator skips); throttled → 429 + `Retry-After`,
-blocklisted → 403. Counters live in `Saci::Throttle.store` (default:
-in-process `MemoryStore`; `reset!`/`clear_counts!` for specs). For
-multi-process deploys (same sticky-session caveat as Cable) share the
-windows over Redis — same vendored pure-socket client, no new link
-requirements:
+Fixed windows. Throttled requests get 429 with `Retry-After`; blocklisted
+requests get 403. If the store is unreachable, requests are allowed and a
+warning is logged. In controllers, `rate_limit to:, within:` uses the
+same store.
+
+## Security
 
 ```crystal
-Saci::Throttle.store = Saci::Throttle::RedisStore.new(ENV.fetch("REDIS_URL", "redis://127.0.0.1:6379"))
+class ApplicationController < Saci::Controller
+  protect_from_forgery
+end
+
+class User < ApplicationRecord
+  column password_digest : String
+  has_secure_password
+  has_secure_token :api_token
+  generates_token_for :password_reset, expires_in: 15.minutes do |user|
+    user.password_salt
+  end
+end
+
+User.authenticate_by(email: params["email"], password: params["password"])
+user.signed_id(purpose: "login", expires_in: 15.minutes)
 ```
 
-Each bucket is one key (`saci:throttle:<rule>:<key>:<window>`, prefix
-overridable) bumped by an atomic INCR + conditional-EXPIRE Lua script, so
-concurrent processes never lose expirations; keys rotate every window and
-expire on their own. 429 + `Retry-After` and safelist/blocklist behavior are
-unchanged. `RedisStore#clear` deletes only keys written through that
-instance (never FLUSHDB). Degradation is fail-open: a dead store logs a
-STDERR warning and the request is allowed (an outage must not become a
-self-inflicted site-wide 429); direct `increment` calls raise the explicit
-`Saci::Throttle::RedisDown` (Cable's equivalent: `Saci::Cable::RedisDown`,
-raised from direct client use — broadcasts degrade to local-only instead).
-Prefer fail-closed? Subclass `Store` and raise from your backend.
+- **CSRF**: double-submit cookie, with masked and per-form tokens checked
+  in constant time.
+- **Headers**: secure defaults (`X-Frame-Options`, `nosniff`,
+  `Referrer-Policy`, CSP `default-src 'self'`), CSP nonces
+  (`content_security_policy_nonce`), Permissions-Policy, and HSTS. Change
+  them per action with `csp` / `skip_csp`.
+- **Sessions and cookies**: `session`, `flash`, `cookies.signed` and
+  `cookies.encrypted` (AES-256-GCM). Signing keys can be rotated. Session
+  stores: cookie (the default), memory, cache, or database.
+- **Authentication helpers**: `login(user)` resets the session first to
+  prevent fixation. Also `logout`, `current_user`
+  (`memoize_current_user User`), `require_login`,
+  `allow_unauthenticated_access`, and `after_authentication_url`.
+  `saci g authentication` generates a complete flow with password
+  resets.
+- **Tokens**: `Saci::JWT` (HS256/384/512), `Saci::TOTP` (codes,
+  provisioning URIs, backup codes), and `has_two_factor` for models.
+- **Secrets**: `SECRET_KEY_BASE` or encrypted credentials. Production
+  refuses to boot without a secret.
 
-## Storage
+Saci vendors a small AES-GCM binding and pure-Crystal digests. On systems
+with OpenSSL ≥ 3.2, the stdlib `OpenSSL::Cipher` and `Digest` modules
+fail to link because they reference symbols that were removed.
+
+## Authorization, serializers, search, audit
 
 ```crystal
-key = Saci::Storage.upload(data, filename: "pic.png", content_type: "image/png")
-Saci::Storage.download(key) # => Bytes
-r.get "/files/*key", Saci::Storage::FilesController, :show
-Saci::Storage.signed_url(key) # => "/files/ab/cd/…?expires=…&sig=…"
+class PostPolicy < Saci::Policy
+  resource Post
+  allow :read
+  role :editor do
+    can :update, Post
+  end
+  scope { scope.where(status: "published") }
+end
+
+authorize!(:update, post)                      # in a controller
+policy_scope(Post)
+
+class PostSerializer < Saci::Serializer(Post)
+  attributes :id, :title
+  has_many :comments, serializer: CommentSerializer
+end
+render json: PostSerializer.new(post, root: "post", key_transform: :camel)
+
+class Post < ApplicationRecord
+  searchable_attributes :title, :status, :created_at
+  include Saci::Auditable
+  audited only: [:title, :status]
+end
+Post.search(params).page                       # Ransack-style q[title_cont]=...
+post.audits
 ```
 
-Disk service with sharded keys + JSON sidecars (type/filename/size);
-`send_file`/`send_data` stream downloads; `FilesController` serves private
-files through expiring HMAC-signed URLs (tampered/expired/missing → 404,
-path traversal rejected).
+## GraphQL
 
 ```crystal
-Saci::Storage.rotate_signing_key!("new-secret") # old URLs verify till expiry
-Saci::Storage.signing_keys = ["primary", "old", "older"] # explicit form
-Saci::Storage.reset_signing_keys! # back to [Secrets.secret_key_base]
+class PostType < Saci::GraphQL::ObjectType
+  source Post
+  field :id, Saci::GraphQL::ID, null: false
+  field :title, String
+end
+
+class QueryType < Saci::GraphQL::ObjectType
+  graphql_name "Query"
+  field :posts, [PostType], null: false do |_source, _args, _ctx|
+    Post.order(id: :asc).to_a
+  end
+end
+
+class AppSchema < Saci::GraphQL::Schema
+  query QueryType
+end
+
+Saci::GraphQL.mount(router, path: "/graphql", schema: AppSchema)
 ```
 
-Rotation grace is the URL's natural `expires`: `verified_url?` tries every
-known key, so pre-rotation URLs keep working until they expire and unknown
-keys never verify.
+Supports queries, mutations, input objects, enums, variables, fragments,
+introspection, batched requests and GraphiQL. Types are compile-time
+classes and resolvers are typed blocks.
+
+## Spreadsheets, PDF and CSV
 
 ```crystal
-pub = Saci::Storage::DiskService.new("storage", public: true)
-key = pub.upload(data, filename: "a.png", public: true) # per-upload override
-pub.public_url(key) # => "/files/public/ab/cd/…" (stable, unsigned)
+require "saci/office"
+
+xlsx = Saci::Office::XLSX.from_records(User.all, columns: [:id, :email, :created_at])
+send_xlsx xlsx, filename: "users.xlsx"
+
+pdf = Saci::Office::PDF.table(title: "Users", headers: ["Name", "Email"], rows: rows)
+send_pdf pdf, filename: "users.pdf"
+
+send_csv rows, filename: "users.csv"
 ```
 
-Public mode is per-service (`DiskService.new(root, public: true)`) with a
-per-upload `public:` override (`nil` inherits the service default). Public
-files live under a `public/` key prefix and are served without expiry/sig;
-private keys still require a signature. No directory listing is served.
+XLSX is written as a ZIP package using the stdlib DEFLATE implementation.
+PDFs use the standard Helvetica fonts. CSV follows RFC 4180.
 
-## Credentials
+## Localization and time zones
+
+```crystal
+Saci::I18n.load_path << "config/locales/*.yml"
+Saci::I18n.t("greeting", name: "Ada")
+Saci::I18n.t("items", count: 3)
+Saci::I18n.with_locale(:es) { Saci::I18n.t("hello") }
+Saci::I18n.l(Time.utc, format: :short)
+
+Time.use_zone("America/Sao_Paulo") { Time.current }
+3.days.from_now
+Date.current
+```
+
+Locale files use the same nested YAML layout as Rails. Features include
+fallback chains, pluralization rules, localized date and time formats,
+and the `Accept-Language` header. Durations, calendar helpers, a small
+`Date` type, inflections and `CurrentAttributes` are included too.
+
+## Logging and metrics
+
+```crystal
+Saci.logger.info { "booted" }
+Saci.filter_parameters += ["token"]
+Saci.tagged("worker-1") { ... }
+
+r.get "/metrics", Saci::Metrics::Controller, :index    # JSON, or Prometheus with ?format=prom
+```
+
+Every request logs one line with the status, duration, method, path,
+filtered params and request id. Set `SACI_LOG_FORMAT=json` for structured
+output. `Saci::Notifications` publishes instrumentation events
+(`process_action.saci`, `sql.saci`, `perform.saci`, ...) and the
+slow-query logger subscribes to them. Metrics are kept in process
+(requests, routes, jobs, cache, database gauges) and have no built-in
+auth, so mount them behind your own gate.
+
+## Multithreading
 
 ```sh
-saci credentials:show | credentials:edit [EDITOR] | credentials:keygen
+saci serve --mt [--workers 4]     # compiles with -Dexecution_context
 ```
 
-AES-256-GCM encrypted `config/credentials.yml.enc` + gitignored
-`config/master.key` (or `RAILS_MASTER_KEY`); `saci new` seeds both including
-a `secret_key_base` that sessions pick up automatically.
-`Saci::Credentials.dig("aws.access_key")` reads dot paths.
+Generated entrypoints call `Saci.enable_multithreading!`. Without the
+compile flag the call does nothing, so the same code runs single-threaded.
+Transactions, locales, time zones and the auth context are scoped per
+fiber, and shared registries are mutex-guarded.
 
-> Implementation note: stdlib `OpenSSL::Cipher` binds symbols removed in
-> OpenSSL ≥ 3.2 and cannot link there, so Saci vendors a minimal GCM binding
-> (`Saci::MessageEncryptor`) using only long-stable EVP symbols. `Digest::*`
-> is unavailable for the same reason — ETags use pure-Crystal FNV-1a.
+## Environments, credentials, deployment
 
-## Environments & multidatabase
+- `APP_ENV` selects `config/environments/<env>.cr` (`development`,
+  `test`, `production`, `staging`). `Saci.env`, `Saci.production?` and
+  `Saci.staging?` are available. Production and staging refuse to boot
+  without a secret and never show detailed errors.
+- `config/credentials.yml.enc` plus `config/master.key` (or
+  `RAILS_MASTER_KEY`). Read values with
+  `Saci::Credentials.dig("aws.access_key")` and edit them with
+  `saci credentials:edit`.
+- `saci new` generates a multi-stage Dockerfile, `bin/docker-entrypoint`,
+  a Kamal 2 configuration (`config/deploy.yml`, `.kamal/secrets`), a
+  GitHub Actions workflow, `config/server.yml`, public error pages and an
+  optional devcontainer. `bin/thrust` documents the proxy setup; Saci
+  does not bundle an HTTP/2 proxy.
+- `app.listen_gracefully(port, host, shutdown: Saci::Deploy::GracefulShutdown.new(timeout: 10.seconds))`
+  waits for in-flight requests on SIGTERM. `Saci::Deploy.doctor` checks
+  the secret, the database URL and writable directories.
 
-- `APP_ENV` (`Saci.env`, `production?`, `staging?`…) with `config/environments/*.cr`
-  (development/test/production/staging; `log_level`, `force_ssl` with localhost
-  bypass, detailed HTML error pages outside production/staging, test env silences
-  logs + cheap bcrypt; staging mirrors production with `:info` logs and refuses
-  to boot without `SECRET_KEY_BASE`, like production — `APP_ENV=staging`).
-- Named databases: `Saci::Record.establish_connection("analytics", url)`,
-  `connects_to database: "analytics"` per model,
-  `Saci::Record.connected_to("analytics") { }` scoping, per-database
-  transactions (no cross-DB atomicity).
+## Testing
 
-## API notes (web)
+```crystal
+require "saci/testing"
 
-- **Routes**: `get/post/put/patch/delete(path, Controller, :action)`,
-  `root`, `resources` (index/new/show/create/update/destroy/edit, with
-  `only:`/`except:`; block form adds `member` (`m.post :upvote` →
-  `POST /base/:id/upvote`), `collection` (`c.get :search`), and nested
-  `resources` → `/base/:parent_id/...`), `namespace`/`scope` (Symbol or
-  String, `mod:` documents the controller module), and block routes via
-  `add`/arity overloads. Segment regexes via per-route `constraints:` or a
-  `constraints({...}) do` block; `(...)` groups are optional
-  (`/top(/:length(/page/:page))`, `(.:format)` → `params["format"]`);
-  `*splat` wildcards plus a `fallback` catch-all. Redirects:
-  `r.redirect("/u/:username", to: "/~%{username}", status: 301)` (`:name`
-  and `%{name}` interpolation). Unknown routes render JSON 404.
-- **Params**: path + query + JSON/form/multipart body merged into `params`,
-  with `require` (raises `Saci::ParameterMissing` → 400),
-  `permit`, `int`, `to_h`. Nested bracket keys and JSON bodies build a
-  tree: `params.require(:story).permit(:title, tags: [] of String)`
-  (bare `[]` needs the annotation — Crystal can't infer empty literals),
-  `params.dig(:story, :title)`, `params.array("tags")`, and
-  `params.file("avatar")` (multipart uploads: filename, content type,
-  bytes; repeated field names keep the last file).
-- **Rendering**: `render json:/html:/text:/plain:/xml:` with `status:`
-  (integer or `:ok`, `:created`, `:no_content`, `:unauthorized`,
-  `:unprocessable_content`, …) and `content_type:` override,
-  `render_template :x, status: 422`, `redirect_to`, `head`.
-  `respond_to do |f| f.html/json/rss/xml/text/any end` negotiates via
-  `params["format"]` (`.json` URLs, `?format=`) then the `Accept` header
-  (no match → `UnknownFormat` → 406).
-- **Filters**: `before_action :name, only: [...], except: [...]`,
-  `after_action` (symbol or block form; child-first, runs even when a
-  before filter halts), `skip_before/after_action` (with `only:`/`except:`).
-  Parent before-filters run before child filters; rendering/redirecting
-  inside a before filter halts the chain (the action is skipped).
-  `rescue_from ErrorClass do ... end` handles filter/action exceptions per
-  controller (child handlers first).
-- **Errors**: `params.require` failures → 400 JSON; unhandled exceptions →
-  500 JSON; actions that never render → 500 JSON hint.
+load_fixtures :all
+fixture :users, User
 
-## Crystal constraints (vs Rails)
+factory :post, Post do
+  title { "Post #{Saci::Testing::Factory.sequence(:post)}" }
+end
 
-Because Crystal is statically compiled, dynamic `send(:action)` is
-impossible. Saci generates dispatch code at compile time
-(`inherited` hook + deferred `{% verbatim %}` expansion, the same technique
-`JSON::Serializable` uses), so plain `def show ... end` actions just work —
-including inherited and overridden actions. Two consequences:
+describe "posts" do
+  transactional_tests
 
-1. Any **public zero-argument** instance method is dispatchable (same rule as
-   Rails, effectively). Keep helpers private or give them parameters.
-2. Avoid public zero-argument `&block` methods and public zero-argument
-   `def self.x` methods in controllers; they confuse dispatcher codegen.
+  it "publishes" do
+    post = Saci::Testing::Factory.create_post
+    assert_enqueued_jobs(1) { PublishJob.perform_later({id: post.id}) }
+    travel_to(Time.utc(2026, 1, 1)) { Time.utc.year.should eq(2026) }
+  end
 
-## Layout
-
-```text
-src/saci.cr             # entrypoint
-src/saci/router.cr      # Saci::Router
-src/saci/controller.cr  # Saci::Controller
-src/saci/params.cr      # Saci::Params
-src/saci/application.cr # Saci::Application / Handler (rails server equiv.)
-src/saci/record.cr      # Saci::Record entrypoint + coercions
-src/saci/job.cr           # background jobs (+ limits_concurrency)
-src/saci/page_cache.cr  # file page cache (CachePageJob-friendly)
-src/saci/job_db.cr        # durable DB-backed queue (:db adapter)
-src/saci/logging.cr       # logger, tags, filtering, request lines
-src/saci/metrics.cr       # in-process metrics + /metrics endpoint (JSON/Prometheus)
-src/saci/mailer.cr        # mailers + delivery (+ layouts, reply_to, headers)
-src/saci/smtp.cr          # dependency-free SMTP client (STARTTLS + AUTH)
-src/saci/views.cr         # ECR templates, forms, links, caching, files
-src/saci/throttle.cr      # rate limiting
-src/saci/cache.cr         # general cache (Rails.cache equivalent)
-src/saci/storage.cr       # disk uploads + signed serving
-src/saci/crypto.cr        # vendored AES-256-GCM (see note)
-src/saci/credentials.cr   # encrypted credentials file
-src/saci/record/base.cr # Saci::Record::Base (models)
-src/saci/record/fts.cr        # SQLite FTS5 search (setup + search_fts)
-src/saci/record/query.cr      # chainable queries
-src/saci/record/migration.cr  # migrations + Migrator
-src/saci/record/schema.cr     # db:schema:dump/load (schema.rb equivalent)
-src/saci/record/errors.cr     # validation errors
-src/saci/record/inflector.cr  # table-name inflection
-src/saci/cable.cr         # ActionCable-style channels + TestClient
-src/saci/turbo.cr         # Turbo frames + streams (Hotwire, server-side; Cable wiring)
-src/saci/concurrency.cr   # enable_multithreading!
-src/saci/csrf.cr          # double-submit CSRF tokens
-src/saci/secure_headers.cr  # secure response headers
-src/saci/secrets.cr       # secret_key_base + signed values
-src/saci/cookies.cr       # cookie jar + signed/encrypted cookies
-src/saci/session.cr       # cookie sessions (signed or encrypted) + flash
-src/saci/i18n.cr          # localization
-src/saci/test_session.cr  # live request specs helper
-src/saci/version.cr
-src/saci/exceptions.cr
-spec/saci_spec.cr       # web unit + live-server integration specs
-spec/record_spec.cr     # ORM specs (file-backed SQLite)
-spec/adapters_spec.cr   # PG/MySQL SQL generation (no servers needed)
-spec/jobs_spec.cr       # job adapters, retry/discard, test recording
-spec/jobs_db_spec.cr    # durable :db adapter (persist, drain, dead letters)
-spec/logging_spec.cr    # filtering, tags, request lines/ids
-spec/metrics_spec.cr    # counters, JSON/Prometheus shapes, endpoint mount
-spec/mailers_spec.cr    # building, adapters, deliver_later round-trip
-spec/smtp_spec.cr       # SMTP framing/auth/errors against a fake server
-spec/views_spec.cr      # templates, layouts, partials, forms, links
-spec/fragment_spec.cr   # fragment caching (cache/cache_key, russian-doll)
-spec/caching_spec.cr    # etag/last-modified flows, expires_in, records
-spec/throttle_spec.cr   # limits, safelist, blocklist, windows
-spec/cache_spec.cr      # general cache (memory + fake/live redis)
-spec/storage_spec.cr    # disk service, signed URLs, FilesController
-spec/credentials_spec.cr  # AES-GCM, credentials file, CLI commands
-spec/multidb_spec.cr    # named DBs, connects_to, connected_to, tx routing
-spec/env_spec.cr        # env, log levels, force_ssl, error pages
-spec/cli_spec.cr        # CLI generator specs (temp dirs, no compilation)
-spec/schema_spec.cr     # schema dump/load round-trips (SQLite + live PG/MySQL when URLs present)
-spec/test_session_spec.cr  # TestSession request specs (ephemeral ports)
-spec/cable_spec.cr      # Cable specs (live two-client broadcast, reject, unsubscribe)
-spec/turbo_spec.cr      # Turbo frames/streams, render content-type, cable payloads
-spec/security_spec.cr   # CSRF/headers/escaping/bcrypt specs
-spec/csp_spec.cr        # CSP default + skip_csp/csp escape hatches
-spec/fts_spec.cr        # FTS5 setup/triggers/ranked search
-spec/page_cache_spec.cr # file page-cache writer
-spec/job_concurrency_spec.cr # limits_concurrency skip-if-running
-spec/mailer_layout_spec.cr   # layouts, reply_to, threading headers
-spec/session_spec.cr    # session/flash/cookie/secret specs
-spec/forem_lite_spec.cr # Forem Lite validation app (all subsystems, live HTTP)
-examples/basic_app.cr   # runnable web example
-examples/forem_lite_app.cr  # runnable Forem Lite demo (DEV.to-style community)
-examples/record_example.cr  # runnable ORM example
+  it "renders the index" do
+    Saci::TestSession.serve(router) do |app|
+      response = app.get("/posts")
+      assert_select response, "h1", text: "Posts"
+    end
+  end
+end
 ```
 
-## Roadmap
+- `Saci::TestSession.serve(router)` starts the full middleware and
+  router stack over real HTTP on an ephemeral port.
+- Includes YAML fixtures (label references, ERB), factories with traits
+  and associations, transactional tests with savepoints, assertions for
+  mail, jobs, cable, changes and queries, time travel, `assert_select`,
+  test database preparation, and per-worker databases for parallel runs.
+- Generated apps run their specs with `APP_ENV=test` against a separate
+  database.
 
-- [x] Router + Controller
-- [x] ORM: models, queries, validations, associations, migrations
-- [x] CLI: new / generate / serve / db:migrate / db:rollback / test / --watch
-- [x] WebSockets (ActionCable-style channels)
-- [x] Turbo Frames + Streams (Hotwire server-side; Cable broadcast wiring)
-- [x] Multithreading (`serve --mt`, fiber-safe state) + localization (I18n)
-- [x] Basic security (CSRF, secure headers, has_secure_password, escaping)
-- [x] Sessions, signed cookies, flash + `saci secret`
-- [x] Encrypted cookies (`cookies.encrypted`) + opt-in encrypted sessions
-- [x] Logging, background jobs, mailers (+ `g job/mailer`)
-- [x] Views (ECR templates/layouts/partials, forms), HTTP caching
-- [x] Rate limiting, disk storage, encrypted credentials, env config, multidb
-- [x] PostgreSQL + MySQL adapters (SQL generation specced; live servers needed)
-- [x] SMTP delivery (STARTTLS + AUTH LOGIN, verified live via Ethereal)
-- [x] ORM upgrades: `has_one` / `has_many :through`, callbacks
-  (`before_validation` … `after_commit`), extended validations (case-insensitive
-  uniqueness, inclusion, numericality, custom `validate`, `allow_nil` /
-  `allow_blank`, `on:`), query surface (`select`, `distinct`, `group` +
-  aggregates, `or`, `where.not`, ranges, `joins`, `includes`, `upsert`,
-  `update_columns`, `touch`), `decimal` / `date` / `json` columns,
-  `counter_cache` / `touch:` / `dependent:` (`:destroy`, `:delete_all`, `:nullify`)
-- ECR-based views / layouts
-- ActiveJob durable Redis adapters; encrypted cookies
+## How Saci differs from Rails
 
-> The living plan — framework, CLI, Forem Lite app and ops, prioritized
-> P0/P1/P2 with the validation story behind each item — is [ROADMAP.md](ROADMAP.md).
+Crystal is compiled and statically typed, which changes a few things:
+
+- **No autoloading or in-process reload.** Files are required explicitly
+  (generated apps use globs) and `saci serve --watch` rebuilds and
+  restarts the binary. `saci console` compiles every line.
+- **No `send`, `constantize` or `method_missing`.** Controllers, routes,
+  jobs, mailboxes and models generate their dispatch code at compile time
+  through macros and `inherited` hooks. Any public method on a controller
+  that takes no arguments becomes an action. Avoid public zero-argument
+  methods that take a block, and public zero-argument class methods, in
+  controllers.
+- **Templates are compiled.** ECR is compiled into the binary and
+  `<%= %>` does not escape.
+- **Static types at the edges.** Columns, route helpers and job payloads
+  are typed, and job arguments cross a JSON boundary.
+- **No gem ecosystem.** Features that Rails apps usually get from gems
+  (pagination, authorization, serializers, search, audit, fixtures and
+  factories, JWT, 2FA, rate limiting, GraphQL) ship with the framework.
+
+[COMING_FROM_RAILS.md](COMING_FROM_RAILS.md) maps Rails APIs and common
+gems to their Saci equivalents and lists what is not supported.
+
+## Developing Saci
+
+```sh
+shards install
+crystal spec                                   # full suite (SQLite)
+CRYSTAL_WORKERS=4 crystal spec -Dexecution_context
+crystal tool format --check src spec
+live/run.sh                                    # live PostgreSQL + MySQL harness
+```
+
+Specs that need Redis, PostgreSQL or MySQL are skipped unless
+`REDIS_URL`, `PG_URL` or `MYSQL_URL` is set. See
+[`live/README.md`](live/README.md) for the live database harness,
+[ROADMAP.md](ROADMAP.md) for planned work and
+[CHANGELOG.md](CHANGELOG.md) for release notes.
+
+Source layout: `src/saci.cr` requires everything. Each subsystem lives in
+`src/saci/<name>.cr`, with larger ones in a matching directory
+(`record/`, `cli/`, `storage/`, `mailer/`, `mailbox/`, `graphql/`,
+`office/`, `testing/`, `support/`, `middleware/`, `deploy/`). Specs
+mirror that layout under `spec/`.
+
+## License
+
+MIT
