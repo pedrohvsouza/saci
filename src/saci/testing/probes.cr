@@ -23,7 +23,13 @@ module Saci
       end
 
       def self.record_broadcast(stream : String, payload) : Nil
-        @@broadcasts_mutex.synchronize { @@broadcasts << {stream: stream, payload: encode(payload)} }
+        record_encoded_broadcast(stream, encode(payload))
+      end
+
+      # `payload_json` is the broadcast's already-encoded payload, so
+      # probing never serialises a payload a second time.
+      def self.record_encoded_broadcast(stream : String, payload_json : String) : Nil
+        @@broadcasts_mutex.synchronize { @@broadcasts << {stream: stream, payload: payload_json} }
       end
 
       def self.broadcasts : Array(NamedTuple(stream: String, payload: String))
@@ -68,8 +74,10 @@ class Saci::Job::Base
 end
 
 class Saci::Cable::Server
-  def broadcast(stream : String, payload) : Nil
-    Saci::Testing::Probes.record_broadcast(stream, payload)
+  # Every server (in-process, Redis, DB adapter) calls this exactly once per
+  # broadcast with the payload already encoded, so probing adds no encode.
+  protected def record_broadcast(stream : String, payload, message_json : String?) : Nil
+    Saci::Testing::Probes.record_encoded_broadcast(stream, message_json || Saci::Testing::Probes.encode(payload))
     previous_def
   end
 
@@ -89,11 +97,3 @@ class Saci::Cable::Server
   end
 end
 
-class Saci::Cable::RedisServer
-  # `RedisServer` overrides `broadcast`; record before its local+remote
-  # fan-out so `assert_broadcasts` sees one entry per call.
-  def broadcast(stream : String, payload) : Nil
-    Saci::Testing::Probes.record_broadcast(stream, payload)
-    previous_def
-  end
-end
