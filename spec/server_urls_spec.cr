@@ -3,7 +3,7 @@ require "../src/saci/server_urls"
 
 describe Saci::ServerUrls do
   it "lists Local and Network URLs when bound to every interface" do
-    banner = Saci::ServerUrls.banner("0.0.0.0", 3000, ["192.168.15.10", "10.8.0.2"])
+    banner = Saci::ServerUrls.banner("0.0.0.0", 3000, ["192.168.15.10", "10.8.0.2"], container: false)
     banner.should eq <<-TEXT
       Saci listening on:
         Local:   http://localhost:3000/
@@ -11,7 +11,14 @@ describe Saci::ServerUrls do
         Network: http://10.8.0.2:3000/
 
       TEXT
-    Saci::ServerUrls.banner("::", 8080, [] of String).should contain("Network: no network interface found")
+    Saci::ServerUrls.banner("::", 8080, [] of String, container: false).should contain("Network: no network interface found")
+  end
+
+  it "does not list a container's own addresses" do
+    banner = Saci::ServerUrls.banner("0.0.0.0", 3000, ["172.23.0.5"], container: true)
+    banner.should contain("Local:   http://localhost:3000/")
+    banner.should contain("inside a container")
+    banner.should_not contain("172.23.0.5")
   end
 
   it "explains how to expose a loopback-only server" do

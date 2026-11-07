@@ -73,6 +73,12 @@ module Saci::ServerUrls
     (real.empty? ? interfaces : real).map(&.[1]).uniq
   end
 
+  # Docker and Podman leave these behind: inside a container the interface
+  # addresses are the container's own, which other devices cannot reach.
+  def self.container? : Bool
+    File.exists?("/.dockerenv") || File.exists?("/run/.containerenv")
+  end
+
   def self.wildcard?(host : String) : Bool
     WILDCARD_HOSTS.includes?(host)
   end
@@ -81,14 +87,17 @@ module Saci::ServerUrls
     host == "localhost" || host == "::1" || host == "[::1]" || host.starts_with?("127.")
   end
 
-  def self.banner(host : String, port : Int32, addresses : Array(String)? = nil, scheme : String = "http") : String
+  def self.banner(host : String, port : Int32, addresses : Array(String)? = nil, scheme : String = "http",
+                  container : Bool = container?) : String
     local = "#{scheme}://localhost:#{port}/"
     String.build do |io|
       io << "Saci listening on:\n"
       if wildcard?(host)
         io << "  Local:   " << local << '\n'
         list = addresses || network_addresses
-        if list.empty?
+        if container
+          io << "  Network: inside a container: open the port it publishes on the host's address\n"
+        elsif list.empty?
           io << "  Network: no network interface found\n"
         else
           list.each { |ip| io << "  Network: " << scheme << "://" << ip << ':' << port << "/\n" }
