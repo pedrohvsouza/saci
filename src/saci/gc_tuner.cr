@@ -13,6 +13,13 @@
 # still fits in `limit`: collections stay rare while there is room, and get
 # more frequent only as live data approaches the budget.
 #
+# A divisor cannot go below 1, so with a small live heap (an HTTP server's
+# per-request garbage over a few MB of caches) collections would still
+# come every few MB allocated, however large the budget. Past that point
+# the tuner raises Boehm's floor on bytes allocated between collections
+# (`GC_set_min_bytes_allocd`) instead, keeping
+# live + MARGIN * allocated <= limit (and allocated <= limit / 2).
+#
 # Configured per process (with several processes, divide the container's
 # memory among them), in bytes or with a K/M/G suffix:
 #
@@ -28,6 +35,8 @@ module Saci::GCTuner
   lib LibGCTune
     fun set_free_space_divisor = GC_set_free_space_divisor(value : LibGC::Word)
     fun get_free_space_divisor = GC_get_free_space_divisor : LibGC::Word
+    fun set_min_bytes_allocd = GC_set_min_bytes_allocd(value : LibC::SizeT)
+    fun get_min_bytes_allocd = GC_get_min_bytes_allocd : LibC::SizeT
   end
 
   MIN_DIVISOR =  1_u64
@@ -72,6 +81,24 @@ module Saci::GCTuner
     wanted.to_u64.clamp(MIN_DIVISOR, MAX_DIVISOR)
   end
 
+  # Bytes to let accumulate between collections once the divisor is at its
+  # minimum: what keeps live + MARGIN * allowance within the limit, capped at
+  # half the limit (1 when there is no more room than the divisor gives).
+  def self.allowance_for(live : UInt64, limit : UInt64) : UInt64
+    return 1_u64 if live >= limit
+    room = ((limit - live).to_f64 / MARGIN).to_u64
+    room = Math.min(room, limit // 2)
+    room > live ? room : 1_u64
+  end
+
+  def self.min_bytes_allocd : UInt64
+    {% if flag?(:gc_none) %}
+      0_u64
+    {% else %}
+      LibGCTune.get_min_bytes_allocd.to_u64
+    {% end %}
+  end
+
   def self.start_from_env : Nil
     {"SACI_MEMORY_LIMIT" => true, "SACI_GC_HEAP_LIMIT" => false}.each do |name, rss|
       raw = ENV[name]?
@@ -106,12 +133,17 @@ module Saci::GCTuner
       @@rss_mode = rss && !self.rss.nil?
       adjust
       spawn(name: "saci-gc-tuner") do
-        loop do
+        while @@started.get
           sleep interval
-          adjust
+          adjust if @@started.get
         end
       end
     {% end %}
+  end
+
+  # Stops the sampling fiber (the settings it applied stay in effect).
+  def self.stop : Nil
+    @@started.set(false)
   end
 
   # Samples the heap once and applies the divisor for it.
@@ -128,6 +160,8 @@ module Saci::GCTuner
       end
       wanted = divisor_for(live, budget)
       LibGCTune.set_free_space_divisor(wanted) if wanted != divisor
+      allowance = wanted == MIN_DIVISOR ? allowance_for(live, budget) : 1_u64
+      LibGCTune.set_min_bytes_allocd(allowance) if allowance != min_bytes_allocd
     {% end %}
   end
 end

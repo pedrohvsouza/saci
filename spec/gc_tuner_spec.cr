@@ -20,13 +20,28 @@ describe Saci::GCTuner do
     Saci::GCTuner.divisor_for(400_u64 * mb, 300_u64 * mb).should eq(Saci::GCTuner::MAX_DIVISOR)
   end
 
-  it "applies the divisor for the current heap" do
+  it "lets garbage accumulate up to the budget once the divisor is at 1" do
+    mb = 1024_u64 * 1024
+    # 20 MB live, 380 MB budget: (380 - 20) / 1.25 = 288 MB, capped at 190.
+    Saci::GCTuner.allowance_for(20_u64 * mb, 380_u64 * mb).should eq(190_u64 * mb)
+    # 150 MB live: (380 - 150) / 1.25 = 184 MB, above live.
+    Saci::GCTuner.allowance_for(150_u64 * mb, 380_u64 * mb).should eq(184_u64 * mb)
+    # No more room than collecting every `live` bytes already gives.
+    Saci::GCTuner.allowance_for(200_u64 * mb, 380_u64 * mb).should eq(1)
+    Saci::GCTuner.allowance_for(400_u64 * mb, 380_u64 * mb).should eq(1)
+  end
+
+  it "applies the divisor and the allowance for the current heap" do
     previous = Saci::GCTuner.divisor
+    previous_min = Saci::GCTuner.min_bytes_allocd
     begin
-      Saci::GCTuner.start(1024_u64 ** 4) # 1 TiB: always plenty of room
+      Saci::GCTuner.start(1024_u64 ** 3) # 1 GiB: plenty of room for a spec run
       Saci::GCTuner.divisor.should eq(1)
+      Saci::GCTuner.min_bytes_allocd.should be > 100_u64 * 1024 * 1024
     ensure
+      Saci::GCTuner.stop
       Saci::GCTuner::LibGCTune.set_free_space_divisor(previous)
+      Saci::GCTuner::LibGCTune.set_min_bytes_allocd(previous_min)
     end
   end
 end
