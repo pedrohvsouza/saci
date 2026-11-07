@@ -30,7 +30,7 @@ module Saci
       @host = host
       @application = Application.new(router, config)
       @application.boot
-      @server = HTTP::Server.new(@application.handler)
+      @server = Saci::HTTPServer.new(@application.handler, Saci.config.socket_buffer_size)
       @port = @server.bind_tcp(host, port).port
       @client = HTTP::Client.new(host, @port)
       spawn { @server.listen }

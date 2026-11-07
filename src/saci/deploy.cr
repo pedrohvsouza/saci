@@ -32,7 +32,7 @@ module Saci
       settings = Deploy::ServerConfig.current
       graceful = shutdown || Deploy::GracefulShutdown.new(timeout: settings.shutdown_timeout)
 
-      server = HTTP::Server.new(graceful.handler(handler))
+      server = Saci::HTTPServer.new(graceful.handler(handler), @config.socket_buffer_size)
       if size = @config.max_headers_size
         server.max_headers_size = size
       end

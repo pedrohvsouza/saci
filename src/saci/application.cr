@@ -89,7 +89,8 @@ module Saci
     # then enabled built-ins + app middleware, then the router. Shared by
     # `listen` and `TestSession` so tests exercise the exact production stack.
     def handlers : Array(HTTP::Handler)
-      ws = HTTP::WebSocketHandler.new { |socket, ctx| @router.dispatch_ws(ctx, socket) }
+      HTTP::WebSocket.read_buffer_size = @config.websocket_buffer_size
+      ws = Saci::WebSocketHandler.new { |socket, ctx| @router.dispatch_ws(ctx, socket) }
       chain = [ws.as(HTTP::Handler)]
       chain.concat(@config.middleware.handlers(skip_disabled: true))
       chain.concat(@@pre_router_handlers)
@@ -110,7 +111,7 @@ module Saci
 
     def listen(port : Int32 = 3000, host : String = "127.0.0.1") : Nil
       boot
-      server = HTTP::Server.new(handler)
+      server = Saci::HTTPServer.new(handler, @config.socket_buffer_size)
       if size = @config.max_headers_size
         server.max_headers_size = size
       end

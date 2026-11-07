@@ -54,6 +54,16 @@ module Saci
 
     # Maximum request body in bytes; `nil` means no framework limit.
     @max_request_body : Int64? = nil
+    # Per-socket read/write buffer for the HTTP server (`Saci::HTTPServer`).
+    # Small buffers keep idle WebSocket connections cheap. 4000 (not 4096)
+    # on purpose: the GC rounds a 4096-byte block plus its header up to two
+    # pages, so 4096 would cost 8 KiB per buffer. `nil` restores the
+    # stdlib's 32 KiB.
+    property socket_buffer_size : Int32? = 4000
+    # Read buffer of each `HTTP::WebSocket` (stdlib: 4096, i.e. two pages
+    # once the GC header is added). Larger messages are still assembled
+    # across reads.
+    property websocket_buffer_size : Int32 = 2000
     # Optional stdlib HTTP server limits (applied by `Application#listen`).
     @max_headers_size : Int32? = nil
     @max_request_line_size : Int32? = nil
