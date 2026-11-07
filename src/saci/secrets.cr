@@ -74,9 +74,26 @@ module Saci
     # `"session"`) from the app secret via HMAC-SHA256. Purpose separation
     # means a value encrypted for one use never decrypts for another.
     # (HMAC, not `Digest`, because stdlib digests can't link on OpenSSL ≥ 3.2.)
+    #
+    # Memoized per (secret, purpose): the derivation costs an HMAC, and
+    # every encrypted cookie read and write needs the key. Callers must not
+    # mutate the returned bytes.
     def self.encrypted_key(purpose : String) : Bytes
-      OpenSSL::HMAC.digest(:sha256, secret_key_base, "saci-encrypted-v1/#{purpose}")
+      secret = secret_key_base
+      cache_key = {secret, purpose}
+      if key = @@key_mutex.synchronize { @@derived_keys[cache_key]? }
+        return key
+      end
+      key = OpenSSL::HMAC.digest(:sha256, secret, "saci-encrypted-v1/#{purpose}")
+      @@key_mutex.synchronize do
+        @@derived_keys.clear if @@derived_keys.size >= 64
+        @@derived_keys[cache_key] = key
+      end
+      key
     end
+
+    @@key_mutex = Mutex.new
+    @@derived_keys = {} of {String, String} => Bytes
 
     # `payload--hmac(payload)` with a URL-safe payload encoding.
     def self.sign(payload : String) : String

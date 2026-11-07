@@ -271,6 +271,30 @@ describe "cookie rotations" do
   end
 end
 
+describe "encrypted cookie decrypt cache" do
+  it "serves repeat reads but never across a secret change or for tampered values" do
+    previous = ENV["SECRET_KEY_BASE"]?
+    begin
+      ENV["SECRET_KEY_BASE"] = "decrypt-cache-secret-a"
+      Saci::Secrets.reset_secret_key_base!
+      sealed = Saci::Cookies.encrypt("payload-a", "cache")
+      Saci::Cookies.decrypt(sealed, "cache").should eq("payload-a")
+      Saci::Cookies.decrypt(sealed, "cache").should eq("payload-a")
+      Saci::Cookies.decrypt(sealed, "other").should be_nil
+
+      tampered = sealed[0...-2] + (sealed[-2] == 'A' ? "B" : "A") + sealed[-1]
+      Saci::Cookies.decrypt(tampered, "cache").should be_nil
+
+      ENV["SECRET_KEY_BASE"] = "decrypt-cache-secret-b"
+      Saci::Secrets.reset_secret_key_base!
+      Saci::Cookies.decrypt(sealed, "cache").should be_nil
+    ensure
+      previous ? (ENV["SECRET_KEY_BASE"] = previous) : ENV.delete("SECRET_KEY_BASE")
+      Saci::Secrets.reset_secret_key_base!
+    end
+  end
+end
+
 describe "session stores" do
   after_each do
     Saci::Session.reset!

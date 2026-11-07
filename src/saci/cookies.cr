@@ -237,9 +237,29 @@ module Saci
       MessageEncryptor.encrypt_and_sign(derive_key(secret, purpose), payload.to_slice)
     end
 
+    # Ciphertexts already verified with the current key, and their
+    # plaintext: a browser sends the same session cookie on every request,
+    # and each AES-GCM open costs a full OpenSSL cipher setup. Only exact
+    # ciphertexts that decrypted under the key in use are served from here
+    # (the key is part of the entry, so a new secret misses), and only for
+    # the primary secret.
+    DECRYPTED_CACHE_SIZE = 8192
+    @@decrypted = {} of {String, String} => {Bytes, String}
+    @@decrypted_mutex = Mutex.new
+
     def self.decrypt_with_rotation(raw : String, purpose : String = DEFAULT_PURPOSE) : Tuple(String, Bool)?
+      key = Secrets.encrypted_key(purpose)
+      cache_key = {purpose, raw}
+      if hit = @@decrypted_mutex.synchronize { @@decrypted[cache_key]? }
+        return {hit[1], false} if hit[0] == key
+      end
       begin
-        return {String.new(MessageEncryptor.decrypt_and_verify(Secrets.encrypted_key(purpose), raw)), false}
+        plaintext = String.new(MessageEncryptor.decrypt_and_verify(key, raw))
+        @@decrypted_mutex.synchronize do
+          @@decrypted.clear if @@decrypted.size >= DECRYPTED_CACHE_SIZE
+          @@decrypted[cache_key] = {key, plaintext}
+        end
+        return {plaintext, false}
       rescue
       end
       rotations.each do |secret|
