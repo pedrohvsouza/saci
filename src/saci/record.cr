@@ -1,4 +1,5 @@
 require "db"
+require "./record/pool_fix"
 require "sqlite3"
 require "json"
 require "big"
