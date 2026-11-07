@@ -14,7 +14,55 @@ class CableHandshakeWhoChannel < Saci::Cable::Channel
   end
 end
 
+class CableHandshakeEchoChannel < Saci::Cable::Channel
+  def subscribed
+    stream_from "handshake:echo"
+  end
+
+  def receive(data)
+    text = data["text"].as_s
+    transmit({size: text.bytesize, text: text * 3})
+  end
+end
+
 describe "Saci::Cable handshake access" do
+  it "keeps large frames intact in both directions on a compacted socket" do
+    router = Saci::Router.new.draw { |r| r.cable "/cable", CableHandshakeEchoChannel }
+    Saci::TestSession.serve(router) do |app|
+      client = app.cable_client
+      begin
+        identifier = client.subscribe("CableHandshakeEchoChannel")
+        [10, 400, 3000, 70_000].each do |n|
+          text = String.build { |io| n.times { |i| io << ('a' + i % 26) } }
+          client.send_message(identifier, {text: text})
+          reply = client.next_message
+          until reply["message"]?
+            reply = client.next_message
+          end
+          reply["message"]["size"].as_i.should eq(n)
+          reply["message"]["text"].as_s.should eq(text * 3)
+        end
+      ensure
+        client.close
+      end
+    end
+  end
+
+  it "encodes text frames with every length form" do
+    [0, 125, 126, 65_535, 65_536].each do |n|
+      io = IO::Memory.new
+      text = "x" * n
+      Saci::Cable.write_text_frame(io, text)
+      io.rewind
+      ws = HTTP::WebSocket::Protocol.new(io, masked: true)
+      buf = Bytes.new(n + 1)
+      info = ws.receive(buf)
+      info.opcode.should eq(HTTP::WebSocket::Protocol::Opcode::TEXT)
+      info.final.should be_true
+      String.new(buf[0, info.size]).should eq(text)
+    end
+  end
+
   it "exposes request, headers, cookies and session to the identify hook" do
     router = Saci::Router.new.draw { |r| r.cable "/cable", CableHandshakeWhoChannel }
     seen = [] of String

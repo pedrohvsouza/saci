@@ -106,3 +106,41 @@ describe "Saci::Cable.trim_fiber_stack" do
     Saci::Cable.trim_fiber_stack.should eq(0)
   end
 end
+
+describe "Saci::Cable.run_detached" do
+  it "runs on the bounded pool, re-raises failures and runs nested calls inline" do
+    names = [] of String?
+    Saci::Cable.run_detached { names << Fiber.current.name }
+    names.should eq([Saci::Cable::DetachedPool::FIBER_NAME])
+
+    expect_raises(Exception, "boom") { Saci::Cable.run_detached { raise "boom" } }
+
+    nested = false
+    Saci::Cable.run_detached { Saci::Cable.run_detached { nested = true } }
+    nested.should be_true
+  end
+
+  it "queues work beyond the pool size instead of spawning more fibers" do
+    size = Saci::Cable.detached_pool.size
+    gate = Channel(Nil).new
+    running = Atomic(Int32).new(0)
+    peak = Atomic(Int32).new(0)
+    finished = Channel(Nil).new(size * 2)
+    (size * 2).times do
+      spawn do
+        Saci::Cable.run_detached do
+          now = running.add(1) + 1
+          peak.max(now)
+          gate.receive
+          running.sub(1)
+        end
+        finished.send(nil)
+      end
+    end
+    cable_writer_wait { running.get == size }
+    sleep 10.milliseconds
+    peak.get.should eq(size)
+    (size * 2).times { gate.send(nil) }
+    (size * 2).times { finished.receive }
+  end
+end
