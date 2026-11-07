@@ -13,9 +13,16 @@
 # still fits in `limit`: collections stay rare while there is room, and get
 # more frequent only as live data approaches the budget.
 #
-# Enabled by `SACI_GC_HEAP_LIMIT` (bytes, or with a K/M/G suffix): a
-# per-process budget, so with several processes divide the container's
-# memory among them. Without it nothing changes (Boehm's own setting, e.g.
+# Configured per process (with several processes, divide the container's
+# memory among them), in bytes or with a K/M/G suffix:
+#
+# * `SACI_MEMORY_LIMIT`: budget for the whole resident set. Memory outside
+#   the GC heap (fiber stacks, buffers, libraries) is measured from
+#   /proc/self/statm and subtracted, so the heap gets what is left: the
+#   right choice when that part grows too (e.g. thousands of WebSockets).
+# * `SACI_GC_HEAP_LIMIT`: budget for the GC heap alone.
+#
+# Without either nothing changes (Boehm's own setting, e.g.
 # `GC_FREE_SPACE_DIVISOR`, stays in effect).
 module Saci::GCTuner
   lib LibGCTune
@@ -29,6 +36,7 @@ module Saci::GCTuner
 
   @@started = Atomic(Bool).new(false)
   @@limit = 0_u64
+  @@rss_mode = false
 
   def self.limit : UInt64
     @@limit
@@ -65,19 +73,37 @@ module Saci::GCTuner
   end
 
   def self.start_from_env : Nil
-    raw = ENV["SACI_GC_HEAP_LIMIT"]?
-    return if raw.nil? || raw.empty?
-    if limit = parse_size(raw)
-      start(limit)
-    else
-      STDERR.puts "saci: ignoring invalid SACI_GC_HEAP_LIMIT=#{raw.inspect}"
+    {"SACI_MEMORY_LIMIT" => true, "SACI_GC_HEAP_LIMIT" => false}.each do |name, rss|
+      raw = ENV[name]?
+      next if raw.nil? || raw.empty?
+      if limit = parse_size(raw)
+        return start(limit, rss: rss)
+      else
+        STDERR.puts "saci: ignoring invalid #{name}=#{raw.inspect}"
+      end
     end
   end
 
-  def self.start(limit : UInt64, interval : Time::Span = 200.milliseconds) : Nil
+  # Resident set size of this process (nil where /proc is unavailable).
+  def self.rss : UInt64?
+    fields = File.read("/proc/self/statm").split
+    pages = fields[1]?.try(&.to_u64?)
+    pages.try { |n| n * LibC.sysconf(LibC::SC_PAGESIZE).to_u64 }
+  rescue File::Error
+    nil
+  end
+
+  # Heap budget once memory outside the heap is accounted for.
+  def self.heap_budget(limit : UInt64, rss : UInt64, heap_mapped : UInt64) : UInt64
+    outside = rss > heap_mapped ? rss - heap_mapped : 0_u64
+    limit > outside ? limit - outside : 0_u64
+  end
+
+  def self.start(limit : UInt64, interval : Time::Span = 200.milliseconds, rss : Bool = false) : Nil
     {% unless flag?(:gc_none) %}
       return if @@started.swap(true)
       @@limit = limit
+      @@rss_mode = rss && !self.rss.nil?
       adjust
       spawn(name: "saci-gc-tuner") do
         loop do
@@ -96,7 +122,11 @@ module Saci::GCTuner
       # Bytes allocated since the last collection are mostly garbage the
       # next one reclaims: what remains is the live-data estimate.
       live = used > s.bytes_since_gc ? used - s.bytes_since_gc : used
-      wanted = divisor_for(live, @@limit)
+      budget = @@limit
+      if @@rss_mode && (resident = rss)
+        budget = heap_budget(@@limit, resident, s.heap_size - s.unmapped_bytes)
+      end
+      wanted = divisor_for(live, budget)
       LibGCTune.set_free_space_divisor(wanted) if wanted != divisor
     {% end %}
   end

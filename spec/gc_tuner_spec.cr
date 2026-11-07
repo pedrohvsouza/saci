@@ -30,3 +30,18 @@ describe Saci::GCTuner do
     end
   end
 end
+
+describe "Saci::GCTuner memory limit" do
+  it "gives the heap what the rest of the process leaves" do
+    mb = 1024_u64 * 1024
+    Saci::GCTuner.heap_budget(400_u64 * mb, 300_u64 * mb, 100_u64 * mb).should eq(200_u64 * mb)
+    Saci::GCTuner.heap_budget(400_u64 * mb, 80_u64 * mb, 100_u64 * mb).should eq(400_u64 * mb)
+    Saci::GCTuner.heap_budget(400_u64 * mb, 600_u64 * mb, 100_u64 * mb).should eq(0)
+  end
+
+  it "reads the resident set on Linux" do
+    {% if flag?(:linux) %}
+      Saci::GCTuner.rss.not_nil!.should be > 0
+    {% end %}
+  end
+end
