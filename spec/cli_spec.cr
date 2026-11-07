@@ -583,9 +583,16 @@ describe "saci runner" do
   it "builds wrappers with app context and verbatim code" do
     with_tmp_app(name: "cli_runner_src") do |dir|
       Dir.cd(dir) do
+        Dir.mkdir_p("src/services")
+        File.write("src/services/greeter.cr", "module Greeter; end\n")
+        Dir.mkdir_p("config/initializers")
+        File.write("config/initializers/x.cr", "X = 1\n")
         src = Saci::CLI::Inspect::Runner.wrapper_source(code_body: "puts \"#{40 + 2} \#{x}\"")
         src.should contain("Saci::Record.connect")
         src.should contain("require \"../src/models/*\"")
+        src.should contain("require \"../src/services/*\"")
+        src.should contain("require \"../config/initializers/*\"")
+        src.index("../src/services/*").not_nil!.should be < src.index("../src/models/*").not_nil!
         src.should contain("puts \"#{40 + 2} \#{x}\"")
       end
     end

@@ -278,7 +278,10 @@ module Saci
             io << "require \"file_utils\"\n"
             io << driver_require_line(name)
             io << "require \"../config/environments/*\"\n" if Dir.exists?("config/environments")
-            ["models", "controllers", "channels", "jobs", "mailers"].each do |d|
+            # Like Rails' runner: initializers and app/services-style dirs
+            # are part of the app context (models often call services).
+            io << "require \"../config/initializers/*\"\n" if Dir.exists?("config/initializers") && !Dir.glob("config/initializers/*.cr").empty?
+            ["services", "models", "controllers", "channels", "jobs", "mailers"].each do |d|
               io << "require \"../src/#{d}/*\"\n" if Dir.exists?(File.join("src", d))
             end
             io << "require \"../lib/tasks/*\"\n" if tasks_present
