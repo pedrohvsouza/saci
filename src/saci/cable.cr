@@ -188,7 +188,10 @@ module Saci
     # timer while subscribed. There is no shared worker pool — the bound is
     # the per-connection buffer plus `Server#max_connections`.
     class Connection
-      DEFAULT_MESSAGE_BUFFER_SIZE = 1024
+      # Frames a slow peer may lag behind before it is disconnected. The
+      # queue is preallocated per connection (8 bytes a slot), so it is kept
+      # modest; raise it per server for bursty streams.
+      DEFAULT_MESSAGE_BUFFER_SIZE = 256
 
       getter socket : HTTP::WebSocket
       getter params : Saci::Params
@@ -213,6 +216,9 @@ module Saci
       @closing = Atomic(Bool).new(false)
       @rejected = Atomic(Bool).new(false)
       @overflowed = Atomic(Bool).new(false)
+      # The writer fiber only exists while frames are queued (see
+      # `#ensure_writer`): an idle socket costs no extra fiber stack.
+      @writer_active = Atomic(Bool).new(false)
 
       def initialize(@socket : HTTP::WebSocket, @params : Saci::Params, @server : Server,
                      @message_buffer_size : Int32 = DEFAULT_MESSAGE_BUFFER_SIZE,
@@ -221,7 +227,6 @@ module Saci
         @request = @context.try(&.request)
         # A zero/negative buffer would make every send overflow; clamp to 1.
         @outbound = ::Channel(String?).new(@message_buffer_size < 1 ? 1 : @message_buffer_size)
-        spawn { writer_loop }
       end
 
       # Upgrade request headers (`Origin`, `Cookie`, ...), nil without a request.
@@ -264,6 +269,7 @@ module Saci
         @pending.add(1)
         select
         when @outbound.send(text)
+          ensure_writer
         else
           @pending.sub(1)
           @overflowed.set(true)
@@ -290,6 +296,12 @@ module Saci
         @rejected.get
       end
 
+      # :nodoc:
+      # True while a writer fiber exists (it only does while frames are queued).
+      def writer_running? : Bool
+        @writer_active.get
+      end
+
       # True when the last outbound enqueue hit a full buffer.
       def overflowed? : Bool
         @overflowed.get
@@ -299,12 +311,18 @@ module Saci
       # Safe to call from any fiber and idempotent.
       def close : Nil
         return if @closing.swap(true)
+        # The close sentinel counts as pending so an idling writer cannot
+        # exit while it is still queued.
+        @pending.add(1)
         select
         when @outbound.send(nil)
+          ensure_writer
         else
+          @pending.sub(1)
           force_close
         end
       rescue ::Channel::ClosedError
+        @pending.sub(1)
         force_close
       end
 
@@ -375,27 +393,61 @@ module Saci
         end
       end
 
-      private def writer_loop : Nil
+      # Hands the connection to the process-wide writer pool unless it is
+      # already scheduled. At most one pool worker drains a connection at a
+      # time (CAS), which keeps its frames in order.
+      private def ensure_writer : Nil
+        _, won = @writer_active.compare_and_set(false, true)
+        Cable.writer_pool.schedule(self) if won
+      end
+
+      # :nodoc:
+      # Called by a `WriterPool` worker: drains the queue and returns once it
+      # is empty (the connection keeps no fiber while idle). A close
+      # sentinel, a closed queue or a socket error (including a write
+      # timeout from a peer that stopped reading) ends the connection.
+      def drain : Nil
+        finished = false
         loop do
-          text = @outbound.receive?
-          break if text.nil? # nil sentinel or channel closed
-          begin
-            @socket.send(text)
-          rescue IO::Error
-            break
-          rescue ex
-            Cable.report_error(ex, "writer")
-            break
-          ensure
-            @pending.sub(1)
+          select
+          when text = @outbound.receive?
+            if text.nil? # close sentinel or queue closed
+              @pending.sub(1) unless @outbound.closed?
+              finished = true
+              break
+            end
+            begin
+              @socket.send(text)
+            rescue IO::Error
+              finished = true
+              break
+            rescue ex
+              Cable.report_error(ex, "writer")
+              finished = true
+              break
+            ensure
+              @pending.sub(1)
+            end
+          else
+            # Queue looks empty: go idle, unless a producer counted a frame
+            # it has not finished queueing (or queued it after our check
+            # but before we stood down) and we win the writer role back.
+            @writer_active.set(false)
+            break if @pending.get <= 0
+            _, won = @writer_active.compare_and_set(false, true)
+            break unless won
+            Fiber.yield
           end
         end
       ensure
-        begin
-          @socket.close
-        rescue
+        if finished
+          begin
+            @socket.close
+          rescue
+          end
+          @closed.set(true)
+          @writer_active.set(false)
         end
-        @closed.set(true)
       end
 
       # Hard close used by overflow/close races; drops queued frames.
@@ -1541,7 +1593,16 @@ module Saci
       # Authentication/origin hook runs before the welcome frame and before
       # any subscribe frame can be processed (G203). Rejection closes the
       # socket; no welcome is sent.
-      unless Cable.run_identify(connection)
+      if (timeout = Cable.write_timeout) && (raw_io = socket.@ws.@io) && raw_io.responds_to?(:write_timeout=)
+        raw_io.write_timeout = timeout
+      end
+
+      # Identification (cookie crypto, DB lookups) runs on a short-lived
+      # fiber: the connection fiber lives as long as the socket and keeps
+      # every stack page it ever touched resident.
+      identified = false
+      Cable.run_detached { identified = Cable.run_identify(connection) }
+      unless identified
         server.unregister(connection)
         connection.close
         return
@@ -1550,7 +1611,9 @@ module Saci
       connection.send_json({type: "welcome"})
       socket.on_message do |raw|
         begin
-          handle_frame(server, connection, channels, raw)
+          # Channel callbacks (subscribed/receive) may go deep (DB, crypto);
+          # keep that off the long-lived connection fiber's stack.
+          Cable.run_detached { handle_frame(server, connection, channels, raw) }
         rescue RejectedError
           connection.close
         rescue
@@ -1558,9 +1621,115 @@ module Saci
         end
       end
       socket.on_close do |_code, _message|
-        server.unsubscribe_connection(connection)
+        begin
+          Cable.run_detached { server.unsubscribe_connection(connection) }
+        rescue
+        end
         connection.close
         server.unregister(connection)
+      end
+      # The socket now idles in the read loop: release the stack pages the
+      # HTTP request and upgrade path touched on the way here.
+      trim_fiber_stack
+    end
+
+    # Returns to the kernel the stack pages of the current fiber that lie
+    # below the stack pointer (minus `margin`). Those pages belong to calls
+    # that have already returned, so dropping them is safe; the next deep
+    # call simply faults fresh zero pages in. A WebSocket connection's fiber
+    # touches its stack deeply once (HTTP parsing, upgrade, handshake) and
+    # then idles in the read loop for hours: without this, every such page
+    # stays resident per socket. Returns the bytes released (0 when the
+    # fiber's stack is not a pooled 8 MiB stack, e.g. the main fiber).
+    def self.trim_fiber_stack(margin : Int32 = 4 * 1024) : Int64
+      {% if flag?(:linux) || flag?(:darwin) || flag?(:freebsd) %}
+        stack = Fiber.current.@stack
+        return 0_i64 unless stack.reusable?
+        low = stack.pointer.address
+        marker = 0_u8
+        sp = pointerof(marker).address
+        return 0_i64 unless low < sp && sp <= stack.bottom.address
+        page = 4096_u64
+        top = (sp - margin.to_u64) & ~(page - 1)
+        start = (low + page - 1) & ~(page - 1)
+        return 0_i64 if top <= start
+        len = top - start
+        LibC.madvise(Pointer(Void).new(start), len, LibC::MADV_DONTNEED)
+        len.to_i64
+      {% else %}
+        0_i64
+      {% end %}
+    end
+
+    # Fixed set of fibers that write queued frames to sockets. Connections
+    # with pending frames are scheduled here instead of owning a writer
+    # fiber each: a broadcast to N idle sockets then costs no N fibers (and
+    # N stacks), only queue entries. A peer that stops reading cannot pin a
+    # worker for long: sockets get `Cable.write_timeout`.
+    class WriterPool
+      getter size : Int32
+
+      def initialize(@size : Int32)
+        @queue = Deque(Connection).new
+        @mutex = Mutex.new
+        # Buffered wake-ups: a signal sent while every worker is busy is not
+        # lost, and workers re-check the queue before waiting again.
+        @wake = ::Channel(Nil).new(@size)
+        @size.times { |i| spawn(name: "saci-cable-writer-#{i}") { work } }
+      end
+
+      def schedule(connection : Connection) : Nil
+        @mutex.synchronize { @queue.push(connection) }
+        select
+        when @wake.send(nil)
+        else
+          # Every worker already has a pending wake-up.
+        end
+      end
+
+      private def work : Nil
+        loop do
+          if connection = @mutex.synchronize { @queue.shift? }
+            begin
+              connection.drain
+            rescue ex
+              Cable.report_error(ex, "writer")
+            end
+          else
+            @wake.receive
+          end
+        end
+      end
+    end
+
+    @@writer_pool : WriterPool? = nil
+    @@writer_pool_mutex = Mutex.new
+    class_property writer_pool_size : Int32 = 32
+    # Max time one frame write may block before the peer is dropped.
+    class_property write_timeout : Time::Span? = 10.seconds
+
+    def self.writer_pool : WriterPool
+      @@writer_pool || @@writer_pool_mutex.synchronize { @@writer_pool ||= WriterPool.new(writer_pool_size) }
+    end
+
+    # Runs `block` on a fresh short-lived fiber and waits for it, re-raising
+    # its exception. Used for per-frame work on WebSocket connections: a
+    # connection's own fiber lives as long as the socket, and every stack
+    # page it touches once (deep handlers, DB drivers, crypto) stays resident
+    # for that whole time. A detached fiber's stack goes back to the pool.
+    def self.run_detached(&block : -> _) : Nil
+      done = ::Channel(Exception?).new(1)
+      spawn(name: "saci-cable-work") do
+        failure = nil.as(Exception?)
+        begin
+          block.call
+        rescue ex
+          failure = ex
+        end
+        done.send(failure)
+      end
+      if failure = done.receive
+        raise failure
       end
     end
 
