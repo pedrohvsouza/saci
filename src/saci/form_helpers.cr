@@ -378,9 +378,6 @@ module Saci
       Views.datetime_select(field_name(name), value || model_time_value(name), **attributes)
     end
 
-    # Rich-text editing uses `rich_text_area` from `Saci::RichText`
-    # (`data-rich-text="true"` textarea, progressive Trix enhancement).
-
     # `select` with a prebuilt options string (e.g. `options_for_select`).
     def select(name : String, options_html : String, selected : Object? = nil, **attributes) : String
       attrs = Views.attributes_hash(attributes)
@@ -396,8 +393,6 @@ module Saci
       current = selected.nil? ? model_string(name) : selected
       self.select(name, Views.options_for_select(options, current), current, **attributes)
     end
-
-    # -- internals ---------------------------------------------------------
 
     private def apply_error_class(attrs : Hash, name : String) : Nil
       model = @model
@@ -446,7 +441,6 @@ module Saci
       Views.form_tag(action, method, token, multipart, **attributes, &block)
     end
 
-    # -- form tag helpers ----------------------------------------------------
     def text_field_tag(name : String, value : String? = nil, **attributes) : String
       Views.text_field_tag(name, value, **attributes)
     end

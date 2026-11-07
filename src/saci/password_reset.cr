@@ -71,8 +71,6 @@ module Saci
   end
 
   class Record::Base
-    # -- stateless, purpose-scoped tokens (Rails `generates_token_for`) ----
-
     # Generates a signed, purpose-scoped token for this record. The record
     # must be persisted (its primary key is embedded in the payload).
     #
@@ -237,8 +235,6 @@ module Saci
       end
     end
 
-    # -- has_secure_password reset integration ----------------------------
-    #
     # Recommended controller flow (no generated app code required; the
     # `saci g authentication` generator can emit this shape):
     #

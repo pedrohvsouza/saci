@@ -26,8 +26,6 @@ module Saci
       Saci.raise_on_open_redirects = value
     end
 
-    # -- URL building (G300) ----------------------------------------------
-
     # Overridable defaults for `full_url_for` (Rails `default_url_options`).
     # Return `{"protocol" => ..., "host" => ...}`; the default reflects the
     # current request.
@@ -172,8 +170,6 @@ module Saci
       end
     end
 
-    # -- render file confinement ------------------------------------------
-
     # Root that `render file:` may read from (defaults to the process
     # working directory, i.e. the app root). Absolute paths outside this
     # root are rejected with `UnsafeFilePath`.
@@ -233,8 +229,6 @@ module Saci
       end
       diff == 0
     end
-
-    # -- HTTP authentication (G189/G60) -----------------------------------
 
     # Parses `Authorization: Basic ...` and yields user/password. Returns
     # false when the header is missing or malformed; never responds.
@@ -335,8 +329,6 @@ module Saci
       before_action :{{filter_name.id}}, only: {{options[:only]}}, except: {{options[:except]}}
     end
 
-    # -- browser gating (G59) ---------------------------------------------
-
     # Blocks requests from unsupported browsers with a 406. Supports the
     # Rails preset, per-browser minimum versions, an explicit allowlist of
     # UA substrings, or a blocklist:
@@ -429,8 +421,6 @@ module Saci
       end
     end
 
-    # -- controller rate limiting (G58) -----------------------------------
-
     # `rate_limit to: 10, within: 1.minute` installs a before filter backed
     # by `Saci::Throttle` (same store as the global Rack::Attack-style
     # rules). Buckets are keyed by controller + action + discriminator +
@@ -510,8 +500,6 @@ module Saci
       retry_after = (window + 1) * period_secs - now
       retry_after > 0 ? retry_after.to_i : 0
     end
-
-    # -- parameter wrapping (G55) -----------------------------------------
 
     struct WrapParameters
       getter format : Array(Symbol)
@@ -626,8 +614,6 @@ module Saci
       root = opts.name || Saci::Controller.infer_wrap_name(self.class.name)
       params.wrap!(root, opts.included_keys, opts.excluded_keys)
     end
-
-    # -- rescue_responses (G61) -------------------------------------------
 
     # Registers the HTTP status used for an exception class name. This is a
     # registry/helper: the built-in router renders `ParameterMissing`/

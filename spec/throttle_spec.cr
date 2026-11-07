@@ -108,7 +108,6 @@ describe Saci::Throttle do
     Saci::Throttle.reset!
     Saci::Throttle.throttle_login(limit: 1, period: 60.seconds)
     Saci::TestSession.serve(throttle_router) do |app|
-      # non-login paths are ignored by the discriminator
       2.times { app.get("/limited").status_code.should eq(200) }
       2.times { app.get("/open").status_code.should eq(200) }
     end
@@ -124,25 +123,11 @@ describe Saci::Throttle do
       over = app.post("/login", HTTP::Headers.new, "")
       over.status_code.should eq(429)
       over.headers["Retry-After"]?.should_not be_nil
-      # GETs still pass under a login-only throttle
       app.get("/open").status_code.should eq(200)
     end
   end
 end
 
-# ---------------------------------------------------------------------------
-# Redis store (Saci::Throttle::RedisStore).
-#
-# Same dependency story as Cable (see cable_spec.cr): no shard dep, the
-# vendored pure-socket `Saci::Cable::RedisWire` client is reused, default
-# builds link unchanged. `Throttle.store` defaults to the in-process
-# `MemoryStore`; swap in `RedisStore` to share fixed windows across
-# processes. Live specs gate on `REDIS_URL`; degradation is fail-open
-# (allow + STDERR warning), spec-pinned below.
-# ---------------------------------------------------------------------------
-
-# Minimal in-spec Redis stand-in for the throttle path: PING / AUTH /
-# SELECT plus the atomic INCR+EXPIRE Lua step (EVAL) and DEL for resets.
 class FakeThrottleRedis
   getter port : Int32
 
@@ -257,10 +242,8 @@ describe "Saci::Throttle::RedisStore" do
       b = Saci::Throttle::RedisStore.new(fake.url, prefix: "saci:spec-a:")
       begin
         a.increment("r:k:1", 1_i64, 60_i64, 60).should eq(1)
-        # Second checker on the same Redis sees the first checker's count.
         b.increment("r:k:1", 1_i64, 60_i64, 60).should eq(2)
         a.increment("r:k:1", 1_i64, 60_i64, 60).should eq(3)
-        # Independent buckets stay independent.
         b.increment("r:other:1", 1_i64, 60_i64, 60).should eq(1)
       ensure
         a.clear

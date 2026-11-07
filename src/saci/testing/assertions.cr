@@ -21,8 +21,6 @@ module Saci
 
       UNSET = UnsetValue.new
 
-      # -- mailer ------------------------------------------------------------
-
       # Number of mails delivered inside the block (forces the `:test`
       # delivery adapter for the duration, restoring the previous one).
       def assert_emails(count : Int, file : String = __FILE__, line : Int32 = __LINE__, &) : Nil
@@ -60,8 +58,6 @@ module Saci
           end
         end
       end
-
-      # -- jobs --------------------------------------------------------------
 
       # Jobs enqueued inside the block (forces the `:test` queue adapter).
       def assert_enqueued_jobs(count : Int, file : String = __FILE__, line : Int32 = __LINE__, &) : Nil
@@ -136,8 +132,6 @@ module Saci
         end
       end
 
-      # -- cable -------------------------------------------------------------
-
       def assert_broadcasts(stream : String, count : Int, file : String = __FILE__, line : Int32 = __LINE__, &) : Nil
         before = Probes.broadcasts.size
         yield
@@ -171,8 +165,6 @@ module Saci
           __saci_fail("Expected no active streams, got #{names.inspect}", file, line)
         end
       end
-
-      # -- value changes -----------------------------------------------------
 
       # `from`/`to` are compared with `==`; omit a keyword to leave that side
       # unasserted. When both are omitted the expression must change.
@@ -218,8 +210,6 @@ module Saci
         assert_difference(expression, 0, file, line) { yield }
       end
 
-      # -- queries -----------------------------------------------------------
-
       # Number of SQL statements executed inside the block (all ORM reads
       # and writes flow through the `Record` execution choke points).
       def assert_queries(count : Int, file : String = __FILE__, line : Int32 = __LINE__, &) : Nil
@@ -232,8 +222,6 @@ module Saci
       def assert_no_queries(file : String = __FILE__, line : Int32 = __LINE__, &) : Nil
         assert_queries(0, file, line) { yield }
       end
-
-      # -- internals ---------------------------------------------------------
 
       private def with_mailer_test_adapter(& : -> T) : T forall T
         previous = Mailer.delivery_adapter

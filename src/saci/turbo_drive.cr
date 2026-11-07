@@ -51,7 +51,6 @@ module Saci
     end
   end
 
-  # Reopened (not edited in configuration.cr) so this feature owns its knob.
   class Configuration
     property turbo_drive : Bool = true
 

@@ -55,12 +55,9 @@ module Saci
       !key.empty? && KEY_RE.matches?(key) && !key.includes?("..")
     end
 
-    # True for keys under the public prefix (`public/...`).
     def self.public_key?(key : String) : Bool
       key == "public" || key.starts_with?(PUBLIC_PREFIX)
     end
-
-    # -- service registry -------------------------------------------------
 
     @@service : Service? = nil
     @@services = {} of String => Service
@@ -98,8 +95,6 @@ module Saci
       @@service_mutex.synchronize { @@services.dup }
     end
 
-    # -- low-level default-service API ------------------------------------
-
     # Uploads through the active service and returns the storage key.
     def self.upload(data : Bytes | IO | String, filename : String, content_type : String = "application/octet-stream", public : Bool? = nil) : String
       service.upload(data, filename: filename, content_type: content_type, public: public)
@@ -134,8 +129,6 @@ module Saci
       end
     end
 
-    # -- upload limits ----------------------------------------------------
-
     @@max_upload_size : Int64 = 100_i64 * 1024_i64 * 1024_i64
     @@block_unsafe_content_types : Bool = true
 
@@ -158,8 +151,6 @@ module Saci
     def self.block_unsafe_content_types=(value : Bool) : Nil
       @@block_unsafe_content_types = value
     end
-
-    # -- image variants ---------------------------------------------------
 
     @@variant_processor : Variant::Processor? = nil
 
@@ -198,8 +189,6 @@ module Saci
         raise UnsafeContentType.new("refusing to store executable/inline content type #{content_type.inspect}")
       end
     end
-
-    # -- keys / filenames / content types ---------------------------------
 
     def self.generate_key(public : Bool = false) : String
       hex = Random::Secure.hex(16)
@@ -265,8 +254,6 @@ module Saci
     private def self.webp?(bytes : Bytes) : Bool
       bytes.size >= 12 && String.new(bytes[0, 4]) == "RIFF" && String.new(bytes[8, 4]) == "WEBP"
     end
-
-    # -- signing ----------------------------------------------------------
 
     # Signing keys for expiring URLs. `keys.first` signs new URLs;
     # every entry verifies old ones, so rotation never invalidates

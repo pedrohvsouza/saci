@@ -169,9 +169,6 @@ module Saci
 
   module CLI
     module Generate
-      # Template-only generator helper. Wiring `saci generate stimulus_controller`
-      # is a one-line call to this from generate_command.cr (coordinator owns
-      # that file); no file is written here.
       def self.stimulus_controller(name : String, actions : Array(String) = ["greet"]) : String
         Stimulus.controller_template(name, actions)
       end

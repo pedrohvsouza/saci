@@ -8,8 +8,6 @@ require "../src/saci/policy_controller"
 require "../src/saci/search"
 require "../src/saci/openapi"
 
-# -- schema -----------------------------------------------------------------
-
 class CreateExtrasSchema < Saci::Record::Migration
   def change
     create_table :extras_users do |t|
@@ -37,8 +35,6 @@ class CreateExtrasSchema < Saci::Record::Migration
     Saci::Audit.create_table(self)
   end
 end
-
-# -- models -----------------------------------------------------------------
 
 class ExtrasUser < Saci::Record::Base
   table "extras_users"
@@ -77,8 +73,6 @@ class ExtrasComment < Saci::Record::Base
   timestamps
 end
 
-# -- serializers ------------------------------------------------------------
-
 class ExtrasUserSerializer < Saci::Serializer(ExtrasUser)
   attributes :id, :name
 end
@@ -104,8 +98,6 @@ class ExtrasRootedSerializer < Saci::Serializer(ExtrasPost)
   root "post"
   key_transform :camel
 end
-
-# -- policy -----------------------------------------------------------------
 
 class ExtrasPostPolicy < Saci::Policy
   resource ExtrasPost
@@ -140,8 +132,6 @@ class ExtrasPostsController < Saci::Controller
   end
 end
 
-# -- helpers ----------------------------------------------------------------
-
 EXTRAS_DB_PATH = "/tmp/opencode/saci_extras_test.db"
 
 def extras_controller : ExtrasPostsController
@@ -161,8 +151,6 @@ def create_extras_post(title : String, status : String = "draft", views : Int64 
     user_id: user.try(&.id),
   )
 end
-
-# -- specs ------------------------------------------------------------------
 
 describe "Saci::Serializer" do
   before_all do
@@ -303,7 +291,6 @@ describe "Saci::Audit" do
       post.audit_changes.has_key?("title").should be_true
       updated.to_json.should contain("\"update\"")
 
-      # A save with no audited-column change writes nothing.
       post.update!(views: 9_i64)
       post.audits.size.should eq(2)
 

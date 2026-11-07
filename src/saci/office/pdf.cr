@@ -43,7 +43,6 @@ module Saci
         556, 556, 333, 500, 278, 556, 500, 722, 500, 500, 500, 334, 260, 334, 584,
       ]
 
-      # Internal page buffer. Kept private to the writer.
       class Page
         # IO::Memory (unlike String::Builder) can be converted to a String
         # repeatedly, which keeps `#to_bytes` idempotent.
@@ -69,7 +68,6 @@ module Saci
         @cursor_y = @page_height - @margin
       end
 
-      # Number of pages generated so far (before `#to_bytes`).
       def page_count : Int32
         @pages.size
       end
@@ -139,7 +137,6 @@ module Saci
         paragraph(text, size: size, font: :bold, color: color, space_after: space_after)
       end
 
-      # Draws a straight line.
       def line(x1 : Number, y1 : Number, x2 : Number, y2 : Number,
                width : Number = 0.5, color : Color = {0.0, 0.0, 0.0}) : Nil
         @pages.last.content << String.build do |io|
@@ -149,7 +146,6 @@ module Saci
         end
       end
 
-      # Draws a rectangle, optionally filled and/or stroked.
       def rectangle(x : Number, y : Number, width : Number, height : Number,
                     fill : Color? = nil, stroke : Color? = nil,
                     line_width : Number = 0.5) : Nil

@@ -2,8 +2,6 @@ require "spec"
 require "../src/saci"
 require "../src/saci/cable_testing"
 
-# The websocket upgrade request is exposed on the connection so the
-# identify hook can authenticate with cookies/session and check Origin.
 class CableHandshakeWhoChannel < Saci::Cable::Channel
   def subscribed
     stream_from "handshake:who"
@@ -100,7 +98,6 @@ describe "Saci::Cable handshake access" do
         client.close
       end
 
-      # Connection-level rejection closes the socket before `welcome`.
       expect_raises(Exception) do
         app.cable_client(headers: HTTP::Headers{"Origin" => "http://good.test"}).subscribe("CableHandshakeWhoChannel", timeout: 300.milliseconds)
       end

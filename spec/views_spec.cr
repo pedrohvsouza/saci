@@ -88,8 +88,6 @@ describe "views" do
   end
 end
 
-# -- framework web upgrades (partials, model forms, pagination, markdown, rss)
-
 class SpecFormStory < Saci::Record::Base
   table "spec_form_stories"
 

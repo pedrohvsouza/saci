@@ -92,7 +92,6 @@ describe "Saci::Importmap" do
           %r{\A/assets/controllers/hello_controller-[0-9a-f]{64}\.js\z}
         )
 
-        # Explicit /assets paths are digest-aware too.
         manifest.pin("explicit", to: "/assets/application.js")
         Saci::Importmap.resolve(manifest.pins.last).should eq(imports["application"].as_s)
       end

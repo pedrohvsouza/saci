@@ -3,18 +3,8 @@ require "file_utils"
 require "../src/saci"
 require "../src/saci/cable_testing"
 
-# ---------------------------------------------------------------------------
-# Cable extras: record-derived streams (G94), periodically timers (G95),
-# remote disconnect (G96), test helpers (G97), identifiers (G203), DB
-# adapter (G93/G164), PostgreSQL entry point (G282) and the concurrency
-# model (G281). No live Redis/PostgreSQL needed: the DB adapter runs on
-# SQLite and the Postgres LISTEN/NOTIFY stub is asserted via its raise path.
-# ---------------------------------------------------------------------------
-
 CABLE_EXTRAS_DB_PATH = "/tmp/opencode/saci_cable_extras_test.db"
 
-# Models used by G94: one with default `saci:Model:id` naming, one declaring
-# a Rails-like `broadcasts_for :articles` prefix.
 class CableExtrasPost < Saci::Record::Base
   column id : Int64, primary: true
   column title : String
@@ -31,7 +21,6 @@ class CableExtrasBare < Saci::Record::Base
   broadcasts_for
 end
 
-# Non-ORM record-like object (generic fallback path).
 struct CableFakeRecord
   getter id : Int64
 
@@ -133,7 +122,6 @@ class CableDbProbeChannel < Saci::Cable::Channel
   end
 end
 
-# Instance-level harness for the included test-helper module.
 class CableExtrasHelperHarness
   include Saci::Cable::TestHelpers
 end
@@ -448,14 +436,11 @@ describe "Saci::Cable DB adapter (G93/G164) and PostgreSQL entry (G282)" do
       channel_b.should_not be_nil
 
       server_a.broadcast("db:probe", {n: 1})
-      # The publisher delivers locally without waiting for a poll...
       CableDbProbeChannel.received.should eq([%({"n":1})])
-      # ...and the peer picks the row up on its next poll.
       server_b.poll.should eq(1)
       CableDbProbeChannel.received.size.should eq(2)
       CableDbProbeChannel.received.last.should eq(%({"n":1}))
 
-      # A server never re-delivers its own rows.
       server_a.poll.should eq(0)
       server_b.poll.should eq(0)
       CableDbProbeChannel.received.size.should eq(2)

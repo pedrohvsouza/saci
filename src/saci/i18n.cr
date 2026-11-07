@@ -138,8 +138,6 @@ module Saci
       end
     end
 
-    # -- fallbacks / missing translations / enforcement ---------------------
-
     # `fallbacks = true` enables per-locale chains plus the default locale.
     def self.fallbacks : Bool
       @@config_mutex.synchronize { @@fallbacks_enabled }

@@ -2,8 +2,6 @@ require "spec"
 require "http/client"
 require "../src/saci"
 
-# -- test controllers -------------------------------------------------------
-
 class SpecAppController < Saci::Controller
   before_action :set_default_header
 
@@ -168,7 +166,6 @@ describe "Saci integration" do
   before_all do
     server.bind_tcp("127.0.0.1", port)
     spawn { server.listen }
-    # Give the server a moment to boot
     sleep 0.2.seconds
   end
 
@@ -188,7 +185,6 @@ describe "Saci integration" do
     resp = client.get("/posts")
     resp.status_code.should eq(200)
     JSON.parse(resp.body).as_a.size.should eq(1)
-    # index is excluded from log_write filter
     resp.headers["X-Filtered"]?.should be_nil
   end
 
@@ -254,9 +250,6 @@ describe "Saci integration" do
     JSON.parse(resp.body)["error"].as_s.should contain("Not Found")
   end
 end
-
-# -- framework web upgrades (constraints, member/collection, redirects,
-#    optional segments, format, rescue/after/respond_to, nested params) ----
 
 class SpecWidgetError < Exception
 end
@@ -788,8 +781,6 @@ describe "params upgrades" do
     params.file("pic").not_nil!.filename.should eq("two.png")
   end
 end
-
-# -- router static prefix/suffix params (Lobsters-style tilde/at/avatar) ---
 
 class SpecTildeController < SpecAppController
   def show

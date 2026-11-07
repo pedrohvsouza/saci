@@ -7,10 +7,6 @@ require "../src/saci/mailbox"
 
 include Saci::Mailbox::TestHelpers
 
-# ---------------------------------------------------------------------------
-# Spec mailboxes (compile-time registered for symbol/string resolution)
-# ---------------------------------------------------------------------------
-
 class MailboxSpecBackupMailbox < Saci::Mailbox::Base
   @@subjects = [] of String
 
@@ -217,10 +213,6 @@ class MailboxSpecInferenceMailbox < Saci::Mailbox::Base
   end
 end
 
-# ---------------------------------------------------------------------------
-# Raw emails
-# ---------------------------------------------------------------------------
-
 SIMPLE_EMAIL = <<-EMAIL
 From: "Jane Doe" <jane@example.com>
 To: Support <support@example.com>, ops@example.com
@@ -279,10 +271,6 @@ aGVsbG8=
 --outer--
 EMAIL
 
-# ---------------------------------------------------------------------------
-# Suite
-# ---------------------------------------------------------------------------
-
 MAILBOX_DB_PATH = "/tmp/opencode/saci_mailbox_spec.db"
 
 describe Saci::Mailbox do
@@ -319,7 +307,6 @@ describe Saci::Mailbox do
     Saci::Mailer.delivery_adapter = :test
   end
 
-  # -------------------------------------------------------------------------
   describe "Message (MIME parsing)" do
     it "parses headers, addresses, dates and threading headers" do
       mail = Saci::Mailbox::Message.parse(SIMPLE_EMAIL)
@@ -409,7 +396,6 @@ EMAIL
     end
   end
 
-  # -------------------------------------------------------------------------
   describe "Router" do
     it "matches the first route in registration order" do
       router = Saci::Mailbox::Router.new.draw do |r|
@@ -501,7 +487,6 @@ EMAIL
     end
   end
 
-  # -------------------------------------------------------------------------
   describe "processing" do
     it "routes, processes and persists an inbound email" do
       Saci::Mailbox.router = Saci::Mailbox::Router.new.draw do |r|
@@ -588,7 +573,6 @@ EMAIL
       inbound.reload.incinerated?.should be_true
       inbound.raw_email.should be_nil
       inbound.processed?.should be_true
-      # Metadata survives incineration.
       inbound.mail_message.subject.should eq("Réponse needed")
       inbound.mail_message.attachments.should be_empty
     end
@@ -616,7 +600,6 @@ EMAIL
     end
   end
 
-  # -------------------------------------------------------------------------
   describe "InboundEmail persistence" do
     it "creates the schema idempotently" do
       Saci::Mailbox::InboundEmail.table_exists?.should be_true
@@ -660,7 +643,6 @@ EMAIL
     end
   end
 
-  # -------------------------------------------------------------------------
   describe "ingress" do
     it "mounts the default Rails-style ingress path" do
       router = Saci::Router.new
@@ -810,7 +792,6 @@ EMAIL
     end
   end
 
-  # -------------------------------------------------------------------------
   describe "test helpers" do
     it "creates inbound emails from mail fields" do
       inbound = create_inbound_email_from_mail(

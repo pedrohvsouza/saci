@@ -30,8 +30,6 @@ module Saci
       # or the next save).
       @__saci_previously_new_record : Bool = false
 
-      # -- public API -------------------------------------------------------
-
       def changed? : Bool
         !@__saci_dirty_changes.empty?
       end
@@ -102,8 +100,6 @@ module Saci
         persisted? && !@__saci_previously_new_record
       end
 
-      # -- per-attribute helpers (called by generated column methods) ------
-
       def __saci_attribute_changed?(name : String) : Bool
         @__saci_dirty_changes.has_key?(name)
       end
@@ -141,8 +137,6 @@ module Saci
       def __saci_will_save_change_to?(name : String) : Bool
         __saci_attribute_changed?(name)
       end
-
-      # -- internal hooks ---------------------------------------------------
 
       # Called by every column setter (and `__saci_set_attr`).
       def __saci_track_write(name : String, old_value : Value, new_value : Value) : Nil

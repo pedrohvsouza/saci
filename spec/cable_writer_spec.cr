@@ -1,7 +1,6 @@
 require "spec"
 require "../src/saci"
 
-# Decodes unmasked server text frames written by HTTP::WebSocket into `io`.
 private def cable_writer_frames(io : IO::Memory) : Array(String)
   bytes = io.to_slice
   frames = [] of String

@@ -188,8 +188,6 @@ module Saci
       end
     end
 
-    # -- context ---------------------------------------------------------
-
     def self.context : Context
       key = Fiber.current.object_id
       @@context_mutex.synchronize { @@contexts[key] ||= Context.new }
@@ -282,8 +280,6 @@ module Saci
       Saci::Record.to_i64(record.__saci_get_attr(pk))
     end
 
-    # -- schema ----------------------------------------------------------
-
     # Adds the audit table to a migration. Call from `change`:
     # `Saci::Audit.create_table(self)`.
     def self.create_table(migration : Saci::Record::Migration) : Nil
@@ -330,8 +326,6 @@ module Saci
         SQL
     end
 
-    # -- writes ----------------------------------------------------------
-
     # Inserts one audit row. Public so applications can add custom actions
     # (`"publish"`, `"approve"`, ...) from service objects.
     def self.record(
@@ -372,8 +366,6 @@ module Saci
         Saci::Record.exec_compat(db, sql, values).last_insert_id
       end
     end
-
-    # -- reads -----------------------------------------------------------
 
     def self.for(record : Saci::Record::Base) : Array(Entry)
       type = record.class.name
@@ -459,7 +451,6 @@ module Saci
       {} of String => JSON::Any
     end
 
-    # JSON value -> `Record::Value` using the model column's logical type.
     def self.decode_value(type : String, any : JSON::Any) : Saci::Record::Value
       raw = any.raw
       value = case raw
@@ -491,7 +482,6 @@ module Saci
       end
     end
 
-    # Convert a column value into JSON for the `changes` payload.
     def self.dump_value(value : Saci::Record::Value?) : JSON::Any
       case v = value
       when Nil

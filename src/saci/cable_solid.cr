@@ -307,7 +307,6 @@ module Saci
       end
     end
 
-    # Solid Cable naming alias (the gem is called Solid Cable).
     alias SolidCable = DbServer
 
     # PostgreSQL entry point (G282).

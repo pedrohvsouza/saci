@@ -28,7 +28,6 @@ module Saci
     # `Record.query_compat` (catalog queries return text/int/nil on all
     # three drivers), so requiring this file never pulls in pg/mysql.
     module Schema
-      # Index snapshot (name, ordered columns, uniqueness).
       struct IndexInfo
         getter name : String
         getter columns : Array(String)
@@ -227,8 +226,6 @@ module Saci
         end
       end
 
-      # -- emission -----------------------------------------------------
-
       private def self.emit_table(io : IO, t : TableInfo) : Nil
         io << "  Saci::Record::Schema::TableInfo.new(\n"
         io << "    " << t.name.inspect << ",\n"
@@ -265,9 +262,6 @@ module Saci
         io << "  Saci::Record::Schema::ViewInfo.new(" << v.name.inspect << ", " << v.sql.inspect << "),\n"
       end
 
-      # Time/Bytes (the `else` branch) cannot round-trip through the
-      # snapshot (datetime defaults are already normalized to nil at
-      # introspection); nil keeps the file loading.
       private def self.parse_decimal(s : String) : Saci::Record::Decimal?
         Saci::Record::Decimal.new(s)
       rescue
@@ -292,8 +286,6 @@ module Saci
       private def self.crystal_escape(s : String) : String
         s.gsub("\\", "\\\\").gsub("\"", "\\\"")
       end
-
-      # -- introspection --------------------------------------------------
 
       private def self.introspect_with_notes(db : DB::Database | DB::Connection) : Tuple(Array(TableInfo), Array(String))
         notes = [] of String
@@ -323,8 +315,6 @@ module Saci
         end
         {cols, false}
       end
-
-      # -- value coercions (catalog reads vary by driver) -----------------
 
       private def self.any_to_str(v) : String?
         case v
@@ -357,8 +347,6 @@ module Saci
         else false
         end
       end
-
-      # -- SQLite ---------------------------------------------------------
 
       private def self.introspect_sqlite(db : DB::Database | DB::Connection, notes : Array(String)) : Array(TableInfo)
         names = [] of String
@@ -494,8 +482,6 @@ module Saci
         end
       end
 
-      # -- PostgreSQL -----------------------------------------------------
-
       private def self.introspect_postgres(db : DB::Database | DB::Connection, notes : Array(String)) : Array(TableInfo)
         names = [] of String
         Record.query_compat(db, "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename != 'schema_migrations' ORDER BY tablename") do |rs|
@@ -603,8 +589,6 @@ module Saci
         return nil if cols.any?(&.empty?) || cols.any? { |c| c.includes?("(") || c.includes?(")") }
         cols
       end
-
-      # -- MySQL ----------------------------------------------------------
 
       private def self.introspect_mysql(db : DB::Database | DB::Connection, notes : Array(String)) : Array(TableInfo)
         names = [] of String

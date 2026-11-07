@@ -3,8 +3,6 @@ require "http/client"
 require "compress/gzip"
 require "../src/saci"
 
-# -- shared test fixtures ----------------------------------------------------
-
 class MiddlewareDemoController < Saci::Controller
   def index
     render json: {ok: true}
@@ -30,7 +28,6 @@ class MiddlewareEchoController < Saci::Controller
   end
 end
 
-# Records the order middleware ran in through a response header.
 class MiddlewareRecorder
   include HTTP::Handler
 
@@ -44,8 +41,6 @@ class MiddlewareRecorder
   end
 end
 
-# Class-based middleware with a named-argument constructor, exercised through
-# `stack.use MiddlewareTag, tag: "x"`.
 class MiddlewareTag
   include HTTP::Handler
 
@@ -58,7 +53,6 @@ class MiddlewareTag
   end
 end
 
-# Class-based middleware with an options-hash constructor.
 class MiddlewareHashOptions
   include HTTP::Handler
 
@@ -167,8 +161,6 @@ def with_force_ssl(value : Bool, &)
   end
 end
 
-# -- middleware stack --------------------------------------------------------
-
 describe Saci::Middleware::Stack do
   it "appends instances and class+options middleware" do
     stack = Saci::Middleware::Stack.new
@@ -222,7 +214,6 @@ describe Saci::Middleware::Stack do
     config.hosts = [] of String
     stack = config.middleware
     stack.build(MiddlewareTerminal.new, skip_disabled: true)
-    # HostAuthorization stays a valid insertion target even while disabled.
     stack.insert_before(Saci::Middleware::HostAuthorization, MiddlewareRecorder.new("host-check"))
     stack.entries.any? { |entry| entry.is_a?(Saci::Middleware::HostAuthorization) }.should be_true
   end
@@ -276,8 +267,6 @@ describe "Saci::Application middleware integration" do
     end
   end
 end
-
-# -- CORS --------------------------------------------------------------------
 
 describe Saci::Middleware::CORS do
   it "answers allowed preflights with 204 and the negotiated headers" do
@@ -347,8 +336,6 @@ describe Saci::Middleware::CORS do
   end
 end
 
-# -- host authorization ------------------------------------------------------
-
 describe Saci::Middleware::HostAuthorization do
   it "allows listed hosts and rejects others with 403" do
     config = Saci::Configuration.new
@@ -390,8 +377,6 @@ describe Saci::Middleware::HostAuthorization do
   end
 end
 
-# -- remote ip ---------------------------------------------------------------
-
 describe Saci::Middleware::RemoteIp do
   it "resolves the client from X-Forwarded-For behind a trusted proxy" do
     config = Saci::Configuration.new
@@ -431,8 +416,6 @@ describe Saci::Middleware::RemoteIp do
     Saci::Middleware::Net.trusted_proxy?("2001:db9::1", ["2001:db8::/32"]).should be_false
   end
 end
-
-# -- static files ------------------------------------------------------------
 
 describe Saci::Middleware::Static do
   static_dir = File.join(Dir.tempdir, "saci-static-spec-#{Random::Secure.hex(4)}")
@@ -526,8 +509,6 @@ describe Saci::Middleware::Static do
   end
 end
 
-# -- compression -------------------------------------------------------------
-
 describe Saci::Middleware::Compression do
   it "gzips large compressible responses with the right headers" do
     Saci::TestSession.serve(middleware_router, config: middleware_compression_config) do |app|
@@ -562,8 +543,6 @@ describe Saci::Middleware::Compression do
   end
 end
 
-# -- health endpoint ---------------------------------------------------------
-
 describe Saci::Middleware::HealthCheck do
   it "serves /up by default without an app route" do
     Saci::TestSession.serve(middleware_router, config: Saci::Configuration.new) do |app|
@@ -594,8 +573,6 @@ describe Saci::Middleware::HealthCheck do
   end
 end
 
-# -- request body limit ------------------------------------------------------
-
 describe Saci::Middleware::RequestBodyLimit do
   it "rejects oversized bodies with 413 and passes small ones through" do
     config = Saci::Configuration.new
@@ -617,8 +594,6 @@ describe Saci::Middleware::RequestBodyLimit do
     end
   end
 end
-
-# -- initializers lifecycle --------------------------------------------------
 
 describe Saci::Initializers do
   it "runs before_configuration, to_prepare and after_initialize once" do
@@ -664,8 +639,6 @@ describe Saci::Initializers do
     Saci::Initializers.reset!
   end
 end
-
-# -- configuration object ----------------------------------------------------
 
 describe Saci::Configuration do
   it "has safe defaults" do
@@ -720,8 +693,6 @@ describe Saci::Configuration do
     end
   end
 end
-
-# -- exceptions app + error reporting ---------------------------------------
 
 describe "exceptions app and error reporting" do
   it "applies a custom exceptions_app to error responses" do
@@ -781,8 +752,6 @@ describe "exceptions app and error reporting" do
     end
   end
 end
-
-# -- SSL / assume_ssl --------------------------------------------------------
 
 describe Saci::Middleware::SSL do
   it "adds HSTS on secure responses when force_ssl is on" do

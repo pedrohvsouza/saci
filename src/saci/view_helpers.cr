@@ -13,8 +13,6 @@ module Saci
   # treated as already-built HTML (same idea as Rails' safe buffers, but
   # explicit rather than tracked).
   module Views
-    # -- tag builders --------------------------------------------------------
-
     # Builds an HTML tag:
     #
     # ```
@@ -114,8 +112,6 @@ module Saci
       end
       build_tag("div", attrs, block.call, escape_content: false)
     end
-
-    # -- text / sanitization helpers ----------------------------------------
 
     # Escapes text except for existing HTML entities (`&amp;` stays
     # `&amp;`, a bare `&` becomes `&amp;`).
@@ -291,8 +287,6 @@ module Saci
         .gsub("\u2028", "\\u2028").gsub("\u2029", "\\u2029")
     end
 
-    # -- number helpers ------------------------------------------------------
-
     def self.number_with_delimiter(number : Int | Float, delimiter : String = ",", separator : String = ".") : String
       number_with_delimiter(number.to_s, delimiter: delimiter, separator: separator)
     end
@@ -400,8 +394,6 @@ module Saci
       "#{sign}#{amount} #{name}"
     end
 
-    # -- date / time helpers -------------------------------------------------
-
     def self.distance_of_time_in_words(from_time : Time, to_time : Time = Time.utc, include_seconds : Bool = false) : String
       seconds = (to_time - from_time).total_seconds.abs
       if include_seconds
@@ -468,8 +460,6 @@ module Saci
       I18n.t(value, locale: locale.try(&.to_s))
     end
 
-    # -- URL helpers ---------------------------------------------------------
-
     def self.link_to(text : String, url : String, **attributes) : String
       attrs = attributes_hash(attributes)
       attrs["href"] = url
@@ -531,8 +521,6 @@ module Saci
       tag("a", attrs, &block)
     end
 
-    # -- DOM identifiers -----------------------------------------------------
-
     # `post_12` / `new_post` (Rails `dom_id`). `prefix` may be a String or
     # Symbol (`dom_id(post, :edit)` -> `edit_post_12`).
     def self.dom_id(record : Saci::Record::Base, prefix : String | Symbol | Nil = nil) : String
@@ -553,8 +541,6 @@ module Saci
       pre = prefix.try(&.to_s)
       pre ? "#{pre}_#{base}" : base
     end
-
-    # -- meta tags -----------------------------------------------------------
 
     def self.csrf_meta_tags(authenticity_token : String) : String
       %(<meta name="csrf-param" content="#{HTML.escape(CSRF::PARAM_NAME)}">\n) +
@@ -618,8 +604,6 @@ module Saci
       end
     end
 
-    # -- cache helpers -------------------------------------------------------
-
     # Fragment-cache the block only when `condition` is true.
     def self.cache_if(condition : Bool, key, expires_in : Time::Span? = nil, version : Int? = nil, &block : -> String) : String
       condition ? cache(key, expires_in, version, &block) : block.call
@@ -636,8 +620,6 @@ module Saci
     rescue Cache::RedisDown
       false
     end
-
-    # -- tag internals -------------------------------------------------------
 
     private def self.build_tag(name : String, options, content : String?, *, escape_content : Bool, defaults : Hash(String, String)? = nil) : String
       String.build do |io|
@@ -806,7 +788,6 @@ module Saci
       Views.escape_once(text)
     end
 
-    # -- cache helpers -------------------------------------------------------
     def cache_if(condition : Bool, key, expires_in : Time::Span? = nil, version : Int? = nil, &block : -> String) : String
       condition ? cache(key, expires_in, version, &block) : block.call
     end
@@ -822,7 +803,6 @@ module Saci
       false
     end
 
-    # -- meta tags -----------------------------------------------------------
     def csrf_meta_tags : String
       Views.csrf_meta_tags(form_authenticity_token)
     end
@@ -831,7 +811,6 @@ module Saci
       Views.csp_meta_tag(nonce: nonce, policy: policy)
     end
 
-    # -- number/date/text/url/DOM conveniences ------------------------------
     def number_to_currency(number : Int | Float, **options) : String
       Views.number_to_currency(number, **options)
     end

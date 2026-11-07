@@ -68,8 +68,6 @@ class PgLivePostTag < Saci::Record::Base
   belongs_to :tag, class_name: PgLiveTag, foreign_key: :tag_id
 end
 
-# -- migrations (domain tables + a dedicated schema-probe table) --
-
 class PgLiveM1 < Saci::Record::Migration
   def change
     create_table :pg_live_authors do |t|
@@ -142,12 +140,6 @@ class PgLiveDropMe < Saci::Record::Migration
     drop_table :pg_live_tmp
   end
 end
-
-# -- Task B (migration depth): FK / rename / change_column coverage --
-#
-# `PgLiveFkSetup` uses the `create_table` block forms (`t.references` with
-# `foreign_key: true`, `t.foreign_key`); `PgLiveFkAdd` exercises the
-# standalone `add_foreign_key` (ADD CONSTRAINT — PostgreSQL syntax).
 
 class PgLiveFkSetup < Saci::Record::Migration
   def change
@@ -263,7 +255,6 @@ describe "PostgreSQL live" do
     ran = Saci::Record::Migrator.migrate(db, [PgLiveSchema1, PgLiveSchema2] of Saci::Record::Migration.class)
     ran.should eq(["PgLiveSchema2"])
 
-    # String DEFAULT rendering + UNIQUE index enforcement, live.
     Saci::Record.exec_compat(db,
       "INSERT INTO #{widgets} (#{c_name}, #{c_created}, #{c_updated}) VALUES (?, ?, ?)",
       ["w1", stamp, stamp] of Saci::Record::Value)
@@ -280,7 +271,6 @@ describe "PostgreSQL live" do
     end
     Saci::Record.exec_compat(db, "DELETE FROM #{widgets}")
 
-    # drop_table via a custom down migration.
     Saci::Record::Migrator.rollback(db, [PgLiveDropMe] of Saci::Record::Migration.class, 1).should eq(["PgLiveDropMe"])
     expect_raises(Exception) do
       Saci::Record.exec_compat(db, "SELECT * FROM #{tmp}")
@@ -322,7 +312,6 @@ describe "PostgreSQL live" do
     end
     Saci::Record::Migrator.migrate(db, [PgLiveFkSetup] of Saci::Record::Migration.class)
     begin
-      # Block-form FK (`t.references ... foreign_key: true`) is enforced.
       expect_raises(Exception) do
         Saci::Record.exec_compat(db,
           "INSERT INTO #{pets} (#{c_name}, #{c_owner}) VALUES (?, ?)",
@@ -336,11 +325,9 @@ describe "PostgreSQL live" do
         "INSERT INTO #{pets} (#{c_name}, #{c_owner}) VALUES (?, ?)",
         ["fido", owner_id] of Saci::Record::Value)
 
-      # ON DELETE CASCADE (block form): deleting the owner removes pets.
       Saci::Record.exec_compat(db, "DELETE FROM #{owners}")
       Saci::Record.scalar_compat(db, "SELECT COUNT(*) FROM #{pets}").should eq(0)
 
-      # Standalone add_foreign_key (ON DELETE SET NULL) is enforced.
       Saci::Record::Migrator.migrate(db, [PgLiveFkSetup, PgLiveFkAdd] of Saci::Record::Migration.class)
       expect_raises(Exception) do
         Saci::Record.exec_compat(db,
@@ -355,7 +342,6 @@ describe "PostgreSQL live" do
         "INSERT INTO #{chews} (#{c_name}, #{c_owner}) VALUES (?, ?)",
         ["chewy", owner2] of Saci::Record::Value)
 
-      # Renames applied: new column/table names accept writes.
       Saci::Record::Migrator.migrate(db, [PgLiveFkSetup, PgLiveFkAdd, PgLiveFkRenames] of Saci::Record::Migration.class)
       Saci::Record.exec_compat(db,
         "INSERT INTO #{pets} (#{c_label}, #{c_owner}) VALUES (?, ?)",
@@ -364,13 +350,10 @@ describe "PostgreSQL live" do
         "INSERT INTO #{treats} (#{c_name}, #{c_owner}) VALUES (?, ?)",
         ["treat", owner2] of Saci::Record::Value)
 
-      # change_column kept the column usable (VARCHAR -> TEXT).
       Saci::Record::Migrator.migrate(db, PG_LIVE_FK_MANIFEST)
       Saci::Record.exec_compat(db,
         "INSERT INTO #{owners} (#{c_name}) VALUES (?)", ["second"] of Saci::Record::Value)
 
-      # Rollback inverts change_column (custom down) and renames
-      # (table + column names restored).
       Saci::Record::Migrator.rollback(db, PG_LIVE_FK_MANIFEST, 2)
       Saci::Record.exec_compat(db,
         "INSERT INTO #{owners} (#{c_name}) VALUES (?)", ["third"] of Saci::Record::Value)
@@ -378,7 +361,6 @@ describe "PostgreSQL live" do
         "INSERT INTO #{chews} (#{c_name}, #{c_owner}) VALUES (?, ?)",
         ["back", nil] of Saci::Record::Value)
 
-      # Rollback drops the added FK: dangling references now insert fine.
       Saci::Record::Migrator.rollback(db, PG_LIVE_FK_MANIFEST, 1)
       Saci::Record.exec_compat(db,
         "INSERT INTO #{chews} (#{c_name}, #{c_owner}) VALUES (?, ?)",

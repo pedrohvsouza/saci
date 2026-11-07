@@ -306,7 +306,6 @@ module Saci
     # mail.attachments.each { |a| puts "#{a.filename} (#{a.content_type})" }
     # ```
     class Message
-      # Convenience alias (`Message::ParseError`).
       ParseError = Saci::Mailbox::ParseError
 
       getter raw : String
@@ -460,8 +459,6 @@ module Saci
           content_type: content_type.downcase
         )
       end
-
-      # -- parsing internals ------------------------------------------------
 
       # Collects the first text/plain and text/html bodies plus every
       # attachment while walking the MIME tree.

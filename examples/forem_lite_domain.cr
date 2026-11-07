@@ -9,10 +9,6 @@
 # `spec/forem_lite_spec.cr` (full validation suite).
 require "../src/saci"
 
-# ---------------------------------------------------------------------------
-# Migrations
-# ---------------------------------------------------------------------------
-
 class LiteCreatePrimary < Saci::Record::Migration
   def change
     create_table :lite_users do |t|
@@ -56,10 +52,6 @@ class LiteCreateAnalytics < Saci::Record::Migration
     end
   end
 end
-
-# ---------------------------------------------------------------------------
-# Models (Forem core: User → Articles → Comments / Reactions)
-# ---------------------------------------------------------------------------
 
 class LiteUser < Saci::Record::Base
   column id : Int64, primary: true
@@ -116,8 +108,6 @@ class LiteReaction < Saci::Record::Base
   validates :category, presence: true
 end
 
-# Analytics database (separate SQLite file, like Forem's read-replica /
-# analytics store): every article view is tracked here.
 class LitePageView < Saci::Record::Base
   connects_to database: "analytics"
 
@@ -127,12 +117,6 @@ class LitePageView < Saci::Record::Base
   timestamps
 end
 
-# ---------------------------------------------------------------------------
-# Background jobs + mailers
-# ---------------------------------------------------------------------------
-
-# Recalculates `articles.score` from reactions + comments (Forem's
-# `Articles::ScoreCalcWorker` equivalent).
 class LiteScoreJob < Saci::Job::Base
   queue_as :scores
   discard_on Saci::Record::RecordNotFound
@@ -159,10 +143,6 @@ class LiteUserMailer < Saci::Mailer::Base
   end
 end
 
-# ---------------------------------------------------------------------------
-# WebSocket channel (live comment stream per article)
-# ---------------------------------------------------------------------------
-
 class LiteCommentsChannel < Saci::Cable::Channel
   def subscribed
     stream_from "lite_article_#{params["article_id"]?.try(&.as_s?) || "lobby"}"
@@ -175,10 +155,6 @@ class LiteCommentsChannel < Saci::Cable::Channel
     )
   end
 end
-
-# ---------------------------------------------------------------------------
-# Controllers
-# ---------------------------------------------------------------------------
 
 class LiteApplicationController < Saci::Controller
   protect_from_forgery
@@ -399,10 +375,6 @@ class LiteHealthController < LiteApplicationController
     }
   end
 end
-
-# ---------------------------------------------------------------------------
-# Router + setup + seed
-# ---------------------------------------------------------------------------
 
 def forem_lite_router : Saci::Router
   Saci::Router.new.draw do |r|

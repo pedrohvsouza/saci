@@ -31,8 +31,6 @@ module Saci
         end
       end
 
-      # -- option parsing ----------------------------------------------------
-
       alias ActionOptions = NamedTuple(
         all: Bool,
         force: Bool,
@@ -122,8 +120,6 @@ module Saci
       def self.sqlite_only?(targets : Array(Target)) : Bool
         targets.all? { |t| t.adapter == :sqlite }
       end
-
-      # -- prepare / setup / reset -------------------------------------------
 
       def self.prepare(args : Array(String)) : Int32
         ctx = app_context!
@@ -239,8 +235,6 @@ module Saci
         run_generated("db:prepare", source, ["--all"].select { |_| all }, opts[:flags], test_env(test))
       end
 
-      # -- version / migrate:status ------------------------------------------
-
       def self.version(args : Array(String)) : Int32
         ctx = app_context!
         opts = parse_action_args(args)
@@ -289,8 +283,6 @@ module Saci
           db.close
         end
       end
-
-      # -- schema cache / fixtures -------------------------------------------
 
       def self.schema_cache_dump(args : Array(String)) : Int32
         ctx = app_context!
@@ -352,8 +344,6 @@ module Saci
         ["spec/fixtures", "test/fixtures"].find { |dir| Dir.exists?(dir) }
       end
 
-      # -- seed:replant ------------------------------------------------------
-
       def self.seed_replant(args : Array(String)) : Int32
         ctx = app_context!
         opts = parse_action_args(args)
@@ -383,8 +373,6 @@ module Saci
         end
         run_generated("db:seed:replant", source, ["--all"].select { |_| opts[:all] }, opts[:flags])
       end
-
-      # -- create / drop -----------------------------------------------------
 
       def self.create(args : Array(String)) : Int32
         ctx = app_context!
@@ -452,8 +440,6 @@ module Saci
         end
         {primary: primary_created}
       end
-
-      # -- external (PG/MySQL) runners ---------------------------------------
 
       private def self.external_run(action : String, ctx, opts) : Int32
         source = external_source(action, ctx[:name], ctx[:kind], opts)

@@ -2,13 +2,6 @@ require "spec"
 require "file"
 require "../src/saci"
 
-# Migration DSL depth, column helpers, idempotent DDL, PG concurrency,
-# introspection, UUID/native types, views/checks/generated columns.
-# Everything executes on SQLite; PostgreSQL/MySQL assertions cover the
-# generated SQL strings (no live servers in this environment).
-
-# -- fixtures ---------------------------------------------------------------
-
 def with_mx_db(& : DB::Database -> T) : T forall T
   path = File.join("/tmp/opencode", "saci_mx_#{Random.rand(1_000_000_000)}.db")
   File.delete(path) if File.exists?(path)
@@ -28,8 +21,6 @@ end
 def mx_col(db : DB::Database, table : String, column : String) : Saci::Record::Introspection::ColumnInfo
   Saci::Record::Introspection.columns(db, table).find! { |c| c.name == column }
 end
-
-# -- migration classes ------------------------------------------------------
 
 class MxExecute < Saci::Record::Migration
   def change
@@ -271,8 +262,6 @@ class MxRenameIndex < Saci::Record::Migration
   end
 end
 
-# -- specs ------------------------------------------------------------------
-
 describe "migration DSL depth (G35)" do
   it "executes raw SQL and refuses to invert execute inside change" do
     with_mx_db do |db|
@@ -372,7 +361,6 @@ describe "column helpers (G36)" do
       mx_col(db, "mx_cols", "name").null.should be_false
       Saci::Record::Introspection.index_exists?(db, "mx_cols", :name).should be_true
 
-      # Reversible by construction.
       m.change_column_null(:mx_cols, :name, true)
       mx_col(db, "mx_cols", "name").null.should be_true
 
@@ -645,7 +633,6 @@ describe "introspection (P1)" do
       Saci::Record.check_constraints(:mx_intro_children, db).size.should eq(1)
       Saci::Record.views(db).map(&.name).should eq(["mx_intro_view"])
 
-      # db-first overloads mirror `Introspection.*`.
       Saci::Record.table_exists?(db, :mx_intro_children).should be_true
       Saci::Record.index_exists?(db, :mx_intro_children, :label).should be_true
       Saci::Record.index_exists?(:mx_intro_children, column: :label, db: db).should be_true
@@ -734,7 +721,6 @@ describe "native PostgreSQL types (G284/G286)" do
       Saci::Record.native_db_type(:range, :postgres, subtype: :nope)
     end
 
-    # Exact decimals: SQLite uses a TEXT-affine type, PG/MySQL real NUMERIC.
     Saci::Record.db_type(:decimal, :sqlite).should eq("TEXT_DECIMAL")
     Saci::Record.db_type(:decimal, :postgres).should eq("NUMERIC(38,18)")
     Saci::Record.db_type(:decimal, :mysql).should eq("DECIMAL(38,18)")

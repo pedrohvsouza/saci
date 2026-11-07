@@ -3,8 +3,6 @@ require "http/client"
 require "base64"
 require "../src/saci"
 
-# -- shared helpers ---------------------------------------------------------
-
 class SpecExtrasBoomError < Exception
 end
 
@@ -13,8 +11,6 @@ module SpecExtrasEvents
     response.headers["X-Events"] = (response.headers["X-Events"]? || "") + name + ";"
   end
 end
-
-# -- around_action ----------------------------------------------------------
 
 class SpecExtrasAroundController < Saci::Controller
   include SpecExtrasEvents
@@ -133,8 +129,6 @@ class SpecExtrasBeforeBlockController < Saci::Controller
   end
 end
 
-# -- prepend filters --------------------------------------------------------
-
 class SpecExtrasPrependParentController < Saci::Controller
   include SpecExtrasEvents
 
@@ -189,8 +183,6 @@ class SpecExtrasPrependChildController < SpecExtrasPrependParentController
   end
 end
 
-# -- redirect_back / open redirects -----------------------------------------
-
 class SpecExtrasRedirectController < Saci::Controller
   rescue_from Saci::Controller::UnsafeRedirectError do
     render plain: "blocked", status: :bad_request
@@ -228,8 +220,6 @@ class SpecExtrasRedirectController < Saci::Controller
     redirect_to "//evil.example/x"
   end
 end
-
-# -- HTTP auth ---------------------------------------------------------------
 
 class SpecExtrasAuthController < Saci::Controller
   @basic_user : String? = nil
@@ -282,8 +272,6 @@ class SpecExtrasBasicMacroController < Saci::Controller
     render json: {ok: true}
   end
 end
-
-# -- render variants ---------------------------------------------------------
 
 class SpecExtrasRenderController < Saci::Controller
   rescue_from Saci::Controller::UnsafeFilePath do
@@ -338,8 +326,6 @@ class SpecExtrasRenderController < Saci::Controller
     head :no_content
   end
 end
-
-# -- params.expect / wrap_parameters ----------------------------------------
 
 class SpecExtrasParamsController < Saci::Controller
   wrap_parameters format: :json, include: [:name, :email, :role], exclude: [:role], name: :user
@@ -401,8 +387,6 @@ class SpecExtrasUsersController < Saci::Controller
   end
 end
 
-# -- rate_limit ---------------------------------------------------------------
-
 class SpecExtrasRateController < Saci::Controller
   rate_limit to: 2, within: 1.minute, only: [:limited],
     by: ->(req : HTTP::Request) { req.headers["X-Client"]? || "anon" }
@@ -426,8 +410,6 @@ end
 class SpecExtrasRateSkipController < SpecExtrasRateController
   skip_rate_limit
 end
-
-# -- request host helpers -----------------------------------------------------
 
 class SpecExtrasRequestController < Saci::Controller
   def info
@@ -453,8 +435,6 @@ class SpecExtrasRequestOverrideController < Saci::Controller
   end
 end
 
-# -- allow_browser ------------------------------------------------------------
-
 class SpecExtrasBrowserController < Saci::Controller
   allow_browser versions: :modern, only: [:modern]
   allow_browser allow: ["Friendly"], only: [:allowlist]
@@ -477,8 +457,6 @@ class SpecExtrasBrowserController < Saci::Controller
   end
 end
 
-# -- rescue_from with: / rescue_responses ------------------------------------
-
 class SpecExtrasRescueWithController < Saci::Controller
   rescue_from SpecExtrasBoomError, with: :handle_boom
 
@@ -498,8 +476,6 @@ class SpecExtrasResponsesController < Saci::Controller
     render json: {ok: true}
   end
 end
-
-# -- router -------------------------------------------------------------------
 
 def spec_extras_router : Saci::Router
   Saci::Router.new.draw do |r|
@@ -582,8 +558,6 @@ end
 def events(resp : HTTP::Client::Response) : String
   resp.headers["X-Events"]? || ""
 end
-
-# -- integration specs --------------------------------------------------------
 
 describe "controller extras (integration)" do
   session = nil
@@ -805,7 +779,6 @@ describe "controller extras (integration)" do
     wrapped = JSON.parse(parsed["wrapped"].as_s)
     wrapped.as_h.keys.sort.should eq(["email", "name"])
 
-    # Non-JSON bodies are not wrapped.
     resp = session.not_nil!.post(
       "/params/users-form",
       HTTP::Headers{"Content-Type" => "application/x-www-form-urlencoded"},
@@ -868,10 +841,8 @@ describe "controller extras (integration)" do
     resp.status_code.should eq(429)
     resp.headers["Retry-After"].to_i.should be > 0
 
-    # Another client has its own bucket.
     session.not_nil!.get("/rate/limited", HTTP::Headers{"X-Client" => "client-b"}).status_code.should eq(200)
 
-    # Actions without the filter are untouched.
     session.not_nil!.get("/rate/open").status_code.should eq(200)
   end
 
@@ -947,8 +918,6 @@ describe "controller extras (integration)" do
     session.not_nil!.get("/responses").status_code.should eq(200)
   end
 end
-
-# -- params unit specs --------------------------------------------------------
 
 describe "Saci::Params#expect" do
   it "requires and permits hash keys" do

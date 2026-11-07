@@ -3,8 +3,6 @@ require "db"
 require "sqlite3"
 require "../src/saci"
 
-# -- schema-check fixtures (custom table names, like real apps) ---------------
-
 class SchemaCheckWidget < Saci::Record::Base
   table "sc_widgets"
 

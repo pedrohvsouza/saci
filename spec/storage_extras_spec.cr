@@ -146,7 +146,6 @@ describe "Saci::Storage blob/attachment extras" do
   describe "Blob lifecycle" do
     it "uploads, analyzes, signs and purges a blob" do
       bytes = extras_png_bytes(4, 3)
-      # Low-level module API still delegates to the active service.
       low_key = Saci::Storage.upload("module-data", filename: "m.txt", content_type: "text/plain")
       Saci::Storage.exists?(low_key).should be_true
       String.new(Saci::Storage.download(low_key)).should eq("module-data")
@@ -237,7 +236,6 @@ describe "Saci::Storage blob/attachment extras" do
       Saci::Storage::Attachment.count.should eq(1)
       post.avatar.filename.should eq("two.txt")
 
-      # Assignment from a blob.
       standalone = Saci::Storage::Blob.create_and_upload!("assigned", filename: "a.txt", content_type: "text/plain")
       post.avatar = standalone
       post.avatar.blob.not_nil!.id.should eq(standalone.id)
@@ -346,7 +344,6 @@ describe "Saci::Storage blob/attachment extras" do
         response.status_code.should eq(200)
         response.body.should eq("served-bytes")
 
-        # Named disk services carry a signed ?service= parameter.
         named = Saci::Storage::Blob.create_and_upload!(
           "named-bytes", filename: "n.txt", content_type: "text/plain", service_name: "backup"
         )
@@ -382,7 +379,6 @@ describe "Saci::Storage blob/attachment extras" do
         String.new(blob.download).should eq("direct-data")
         blob.filename.should eq("up.txt")
 
-        # Size mismatch, replay and bogus tokens are rejected.
         _, short_body = extras_multipart("up.txt", "text/plain", "short")
         app.post(url, headers, short_body).status_code.should eq(422)
         app.post(url, headers, body).status_code.should eq(422)

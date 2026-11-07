@@ -5,8 +5,6 @@ module Saci
     # focused on relation chaining; `record.cr` (coordinator-owned) must
     # `require "./record/finders"` after `base`.
     class Base
-      # -- relation-shaped class helpers -----------------------------------
-
       def self.none : Query(self)
         all.none
       end
@@ -107,8 +105,6 @@ module Saci
         all.excluding(records)
       end
 
-      # -- sole / find-or-create -------------------------------------------
-
       def self.find_or_create_by(**attrs : Object) : self
         all.find_or_create_by(**attrs)
       end
@@ -144,8 +140,6 @@ module Saci
       def self.sole : self
         all.sole
       end
-
-      # -- predicates / projections / ordinal finders ----------------------
 
       def self.any? : Bool
         all.any?
@@ -235,8 +229,6 @@ module Saci
         all.third_to_last
       end
 
-      # -- batching ---------------------------------------------------------
-
       def self.find_each(batch_size : Int32 = 1000, start : Value? = nil, & : self ->) : Nil
         all.find_each(batch_size, start) { |r| yield r }
       end
@@ -248,8 +240,6 @@ module Saci
       def self.in_batches(batch_size : Int32 = 1000, start : Value? = nil, finish : Value? = nil) : BatchEnumerator(self)
         all.in_batches(batch_size, start, finish)
       end
-
-      # -- explain ----------------------------------------------------------
 
       def self.explain(analyze : Bool = false) : String
         all.explain(analyze)

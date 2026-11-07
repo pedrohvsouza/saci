@@ -18,7 +18,6 @@ module Saci
     # post.avatar.variant(resize_to_limit: [300, 300]).url
     # ```
     class Variant
-      # Normalised transformation options.
       class Transformations
         getter resize_to_limit : Tuple(Int32, Int32)?
         getter resize_to_fill : Tuple(Int32, Int32)?

@@ -9,7 +9,7 @@
 # Prerequisites: reachable PostgreSQL + MySQL (see live/README.md) and
 # `shards install` (pg + mysql live under development_dependencies).
 set -euo pipefail
-cd "$(dirname "$0")/.." # repo root
+cd "$(dirname "$0")/.."
 
 export PATH="$HOME/.local/bin:$PATH"
 export LD_LIBRARY_PATH="$HOME/.local/pcre2/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"

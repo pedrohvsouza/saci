@@ -141,8 +141,6 @@ module Saci
       __saci_apply_params_wrapper
     end
 
-    # -- request / response helpers -------------------------------------
-
     def request : HTTP::Request
       context.request
     end
@@ -154,8 +152,6 @@ module Saci
     def performed? : Bool
       @performed
     end
-
-    # -- filters ----------------------------------------------------------
 
     def self.filter_applies?(only : FilterTarget, except : FilterTarget, action : Symbol) : Bool
       if o = only
@@ -685,8 +681,6 @@ module Saci
       end
     end
 
-    # -- rendering ---------------------------------------------------------
-
     # Implementation behind the `render` macro (see `controller_extras.cr`).
     # Kept as a method so the macro can forward arbitrary keyword options;
     # literals for `template:`/`action:`/`partial:` never reach this method
@@ -838,8 +832,6 @@ module Saci
       response.status_code = normalize_status(status)
       @performed = true
     end
-
-    # -- security helpers ------------------------------------------------------
 
     def cookies : CookieJar
       @cookies ||= CookieJar.new(request, response)

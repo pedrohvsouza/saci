@@ -67,7 +67,6 @@ module Saci
       abstract def fetch(key : String, expires_in : Time::Span? = nil, &block : -> String) : String
       abstract def fetch_value(key : String, expires_in : Time::Span? = nil, &block : -> Value) : Value
 
-      # Prefixes `key` with the store namespace (`""` by default).
       protected def namespaced(key : String) : String
         ns = @namespace
         ns.empty? ? key : "#{ns}:#{key}"
@@ -107,7 +106,6 @@ module Saci
         raw
       end
 
-      # `Time::Span` → whole EX seconds (>= 1). Nil stays nil.
       protected def expiry_secs(expires_in : Time::Span?) : Int32?
         return nil if expires_in.nil?
         secs = expires_in.total_seconds.to_i

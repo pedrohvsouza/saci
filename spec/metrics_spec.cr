@@ -100,7 +100,6 @@ describe Saci::Metrics do
     body["jobs"]["failed"].as_i64.should eq(0)
     body["cache"]["hits"].as_i64.should eq(1)
     body["cache"]["misses"].as_i64.should eq(0)
-    # DB gauges are best-effort — present, int or null, never raising.
     ["pending", "dead"].each do |key|
       v = body["jobs"][key]
       (!v.as_i64?.nil? || v.raw.nil?).should be_true

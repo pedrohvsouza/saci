@@ -202,7 +202,6 @@ module Saci
         new(db, table: table, adapter: adapter, auto_schema: false).ensure_schema!
       end
 
-      # Adapter used for identifier quoting/placeholders.
       def adapter : Symbol
         @adapter || Record.adapter_of(@db)
       end
@@ -279,7 +278,6 @@ module Saci
         write_encoded(key, "Y:#{Base64.strict_encode(bytes)}", expires_in)
       end
 
-      # Convenience overload for callers that hold binary data directly.
       def write(key : String, value : Bytes, expires_in : Time::Span? = nil) : Bool
         write_bytes(key, value, expires_in)
       end
@@ -296,13 +294,10 @@ module Saci
         end
       end
 
-      # JSON helpers (the caller keeps the same String round-trip as with
-      # `MemoryStore`/`RedisStore`; this is just sugar).
       def write_json(key : String, value : JSON::Any, expires_in : Time::Span? = nil) : Bool
         write(key, value.to_json, expires_in)
       end
 
-      # Convenience overload for callers that hold a parsed JSON value.
       def write(key : String, value : JSON::Any, expires_in : Time::Span? = nil) : Bool
         write_json(key, value, expires_in)
       end
@@ -524,8 +519,6 @@ module Saci
         args = requested.map { |key| namespaced(key).as(Record::Value) }
         exec("DELETE FROM #{table_sql} WHERE #{key_sql} IN (#{placeholders})", args).rows_affected
       end
-
-      # -- SQL helpers ------------------------------------------------------
 
       private def lookup(key : String) : Tuple(Bool, Value)
         raw = scalar(
@@ -842,9 +835,6 @@ module Saci
           message.includes?("constraint failed")
       end
     end
-
-    # -- store selection helpers (reopened in this file to keep the core
-    # cache implementation free of DB/ORM code) ---------------------------
 
     # `Saci::Cache.store = :db` / `= :memory`. `:db` uses the primary
     # `Saci::Record` connection and creates the cache table if needed.

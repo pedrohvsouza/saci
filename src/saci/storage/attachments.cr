@@ -7,7 +7,6 @@ module Saci
     # They are lightweight views over `Attachment` rows, created on every
     # call (like Rails' attached proxies).
     module Attached
-      # Base shared by `One` and `Many`.
       abstract class Base
         getter record : Saci::Record::Base
         getter name : String

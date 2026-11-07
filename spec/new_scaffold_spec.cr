@@ -6,9 +6,6 @@ require "../src/saci/cli/util"
 require "../src/saci/cli/generate_command"
 require "../src/saci/cli/new_command"
 
-# Scaffold-level coverage for `saci new`: the D1 shard.yml bug, the Rails-like
-# operating surface (bin/*, Dockerfile, public/, spec tree, ...) and a
-# compile check of a generated app.
 private def with_new_app(name : String, db : String = "sqlite", & : String ->) : Nil
   dir = File.join("/tmp/opencode", "saci-new-#{name}-#{Random.rand(1_000_000)}")
   begin
@@ -110,14 +107,11 @@ describe "saci new scaffold" do
         File.exists?(File.join(dir, relative)).should be_true
       end
 
-      # public/ ships real files, not .gitkeep placeholders.
       Dir.glob(File.join(dir, "public", ".gitkeep")).should be_empty
 
-      # No fake Rack entrypoint / Rakefile: both are documented in README.md.
       File.exists?(File.join(dir, "config.ru")).should be_false
       File.exists?(File.join(dir, "Rakefile")).should be_false
 
-      # Crystal specs are the test tree; the generated app spec covers /up.
       read_file(dir, "spec", "app_spec.cr").should contain("HealthController")
       read_file(dir, "spec", "app_spec.cr").should contain("/up")
     end
@@ -140,7 +134,6 @@ describe "saci new scaffold" do
       read_file(dir, "bin", "ci").should contain("-Dexecution_context")
       read_file(dir, "bin", "docker-entrypoint").should contain("db:migrate")
       read_file(dir, "bin", "docker-entrypoint").should contain("exec \"$@\"")
-      # Documentation, not a fake proxy implementation.
       read_file(dir, "bin", "thrust").should contain("not a proxy")
       read_file(dir, "bin", "thrust").should contain("reverse proxy")
     end

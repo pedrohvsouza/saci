@@ -160,8 +160,6 @@ module Saci
     hash.to_s(16).rjust(16, '0')
   end
 
-  # -- environments (development / test / production) --------------------------
-
   # From `APP_ENV`, defaulting to development. Read live (spec-friendly).
   def self.env : String
     ENV.fetch("APP_ENV", "development")

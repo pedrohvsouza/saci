@@ -173,7 +173,6 @@ module Saci
         add(name, :boolean, null, default)
       end
 
-      # -- extended / native types ------------------------------------
       # See `NativeTypes` for the adapter matrix.
       #
       # `default:` accepts a value, `:gen_random_uuid` (translated to the
@@ -416,8 +415,6 @@ module Saci
     class Migration
       @inverting : Bool = false
       @inverse_ops : Array(-> Nil) = [] of (-> Nil)
-
-      # -- pure SQL builders (per adapter; no DB needed, spec-covered) -----
 
       # Default FK constraint name: `fk_<from>_on_<column>`.
       def self.fk_constraint_name(from_table : String | Symbol, column : String | Symbol) : String

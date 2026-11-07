@@ -18,7 +18,6 @@ class CableFanoutRecordingConnection < Saci::Cable::Connection
     @recorded_mutex.synchronize { @recorded << text }
   end
 
-  # Broadcast/transmit frames only (drops `{"type":...}` control frames).
   def messages : Array(String)
     @recorded_mutex.synchronize { @recorded.reject(&.starts_with?(%({"type":))) }
   end
@@ -30,7 +29,6 @@ class CableFanoutChannel < Saci::Cable::Channel
   end
 end
 
-# Overrides `deliver`: must keep receiving the payload object.
 class CableFanoutOverrideChannel < Saci::Cable::Channel
   @@received = [] of String
   @@mutex = Mutex.new
@@ -52,7 +50,6 @@ class CableFanoutOverrideChannel < Saci::Cable::Channel
   end
 end
 
-# Inherits the override without redefining it.
 class CableFanoutOverrideChild < CableFanoutOverrideChannel
 end
 
@@ -92,7 +89,6 @@ def cable_fanout_subscribe(server : Saci::Cable::Server, connection : Saci::Cabl
   channel.not_nil!
 end
 
-# The frame format produced before the encode-once change.
 def cable_fanout_legacy_frame(identifier : String, payload) : String
   {"identifier" => identifier, "message" => payload}.to_json
 end
@@ -118,10 +114,8 @@ describe "Saci::Cable encode-once fan-out" do
     connections.each_with_index do |connection, i|
       connection.messages.should eq([cable_fanout_legacy_frame(idents[i], payload)])
     end
-    # Same identifier + same broadcast: subscribers share identical bytes.
     connections[0].messages.should eq(connections[1].messages)
 
-    # NamedTuple payloads and nil keep the old encoding too.
     server.broadcast("fanout:room", {kind: "tuple", list: [1, 2, 3]})
     server.deliver_local("fanout:room", nil)
     connections.each_with_index do |connection, i|

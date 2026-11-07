@@ -4,7 +4,6 @@ module Saci
     module Generate
       FIELD_RE = /\A([a-z][a-z0-9_]*):([a-z]+)\z/
 
-      # Crystal type per migration field type.
       CRYSTAL_TYPES = {
         "string"   => "String",
         "text"     => "String",
@@ -15,7 +14,6 @@ module Saci
         "datetime" => "Time",
       }
 
-      # -- flags + central file writer ---------------------------------------
       # `--pretend` (dry run) and `--force` are global: accepted anywhere in
       # the `saci generate` argv and stripped before KIND dispatch, so nested
       # generators (scaffold -> model + controller) share the same mode.
@@ -276,8 +274,6 @@ module Saci
         "application_record",
       ]
 
-      # -- fields ------------------------------------------------------------
-
       alias Field = Tuple(String, String)
 
       def self.parse_fields(raw : Array(String)) : Array(Field)
@@ -288,8 +284,6 @@ module Saci
           {m[1], type}
         end
       end
-
-      # -- model ---------------------------------------------------------------
 
       def self.model(args : Array(String)) : Nil
         raw_name = args.shift? || raise Error.new("Usage: saci generate model Name [field:type ...]")
@@ -349,7 +343,6 @@ module Saci
         CRYSTAL
       end
 
-      # Sensible sample values per field type for generated specs.
       private def self.sample_args(fields : Array(Field)) : String
         fields.first(2).map do |(name, type)|
           value = case type
@@ -363,8 +356,6 @@ module Saci
           "#{name}: #{value}"
         end.join(", ")
       end
-
-      # -- controller ------------------------------------------------------------
 
       def self.controller(args : Array(String)) : Nil
         raw_name = args.shift? || raise Error.new("Usage: saci generate controller Name [action ...]")
@@ -463,8 +454,6 @@ module Saci
         end
         CRYSTAL
       end
-
-      # -- migration ---------------------------------------------------------------
 
       def self.migration(args : Array(String)) : Nil
         raw_name = args.shift? || raise Error.new("Usage: saci generate migration Name [field:type ...] [--unique]")
@@ -637,8 +626,6 @@ module Saci
         CRYSTAL
       end
 
-      # -- channel -----------------------------------------------------------------
-
       def self.channel(args : Array(String)) : Nil
         raw_name = args.shift? || raise Error.new("Usage: saci generate channel Name")
         base = Util.class_name(Util.file_name(raw_name.sub(/Channel$/i, "")))
@@ -694,8 +681,6 @@ module Saci
         end
         CRYSTAL
       end
-
-      # -- job + mailer --------------------------------------------------------------
 
       def self.job(args : Array(String)) : Nil
         raw_name = args.shift? || raise Error.new("Usage: saci generate job Name")
@@ -786,7 +771,6 @@ module Saci
         CRYSTAL
       end
 
-      # -- scaffold ------------------------------------------------------------------
       # One command for the standard REST stack: model + migration +
       # controller (all REST actions) + specs. Prints the route to add
       # (routes stay hand-edited by design).
@@ -805,7 +789,6 @@ module Saci
         puts "  r.resources \"#{table}\", #{plural}Controller"
       end
 
-      # -- admin -------------------------------------------------------------------
       # Admin-namespace scaffold (RailsAdmin-flavored minimal): namespaced
       # controller (search on string columns + sortable headers + pagination
       # via `Saci::Pagination.paginate`) + namespaced ECR views + request
@@ -1099,8 +1082,6 @@ module Saci
         CRYSTAL
       end
 
-      # -- tasks / helpers / tests / benchmarks (G116/G118) ------------------
-
       # `saci generate task reports:daily` -> lib/tasks/reports/daily.cr.
       # Namespaced names use subdirectories, matching Rails' task layout.
       def self.task(args : Array(String)) : Nil
@@ -1254,8 +1235,6 @@ module Saci
         write_file("src/models/application_record.cr", New.application_record)
       end
 
-      # -- resource ----------------------------------------------------------
-
       def self.resource(args : Array(String)) : Nil
         raw = args.shift? || raise Error.new("Usage: saci generate resource Name [field:type ...]")
         class_name = model_class_name(raw)
@@ -1404,8 +1383,6 @@ module Saci
         end
         CRYSTAL
       end
-
-      # -- scaffold_controller ----------------------------------------------
 
       # `saci generate scaffold_controller Posts title:string` — controller
       # + ECR views for an existing model (no model/migration/routes).
@@ -1660,8 +1637,6 @@ module Saci
         end
         CRYSTAL
       end
-
-      # -- authentication (G117) --------------------------------------------
 
       # Generates a complete session/password-reset stack around
       # `Saci::Authentication` (Saci::Auth + Controller helpers):

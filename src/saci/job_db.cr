@@ -512,8 +512,6 @@ module Saci
         Record.exec_compat(db, "DELETE FROM #{Record.quote(DEAD_TABLE, ad)}")
       end
 
-      # -- process supervision ---------------------------------------------
-
       alias ProcessInfo = NamedTuple(worker_id: String, hostname: String, pid: Int64,
         queues: String?, started_at: Time, heartbeat_at: Time)
 

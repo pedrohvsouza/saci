@@ -42,7 +42,6 @@ class AuthTestUser
     @@rotations = 0
   end
 
-  # Simulates a password change / "log out other sessions" rotation.
   def rotate! : Nil
     @@rotations += 1
     @session_token = "token-#{@id}-r#{@@rotations}"
@@ -191,7 +190,6 @@ def auth_router : Saci::Router
   end
 end
 
-# Cookie jar driving multi-request auth flows (session cookie tracked).
 class AuthCookieClient
   getter jar : Hash(String, String)
 

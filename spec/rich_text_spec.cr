@@ -67,7 +67,6 @@ describe "Saci::RichText.sanitize" do
     Saci::RichText.sanitize(%(<h4>hi</h4>)).should_not contain("<h4>")
     Saci::RichText.sanitize(%(<!-- comment --><p>x</p>)).should eq("<p>x</p>")
     Saci::RichText.sanitize(%(<a href="page.html">x</a>)).should eq("<a>x</a>")
-    # Escaped payloads stay inert text, never executable markup.
     out = Saci::RichText.sanitize(%(<script>alert("xss")</script>))
     out.should contain("&lt;script&gt;")
     out.should contain("alert")

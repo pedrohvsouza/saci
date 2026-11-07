@@ -148,8 +148,6 @@ module Saci
       end
     end
 
-    # -- Fragment caching (Rails `<% cache %>` equivalent) --------------------
-    #
     # ```
     # # In an ECR template (controller instance context):
     # <%= cache(cache_key(@post)) { render_partial("posts/post", post: @post) } %>
@@ -618,8 +616,6 @@ module Saci
       @performed = true
     end
 
-    # -- HTTP caching ----------------------------------------------------------
-    #
     # ```
     # def show
     #   @post = Post.find(params["id"])

@@ -131,8 +131,6 @@ module Saci
       File.write(path, schema_cache_content(names))
     end
 
-    # -- fixtures ----------------------------------------------------------
-
     # Loads YAML fixtures from `dir` (default resolution in the CLI:
     # `spec/fixtures` then `test/fixtures`). Each file maps to a table;
     # files in subdirectories join the path with underscores
@@ -204,8 +202,6 @@ module Saci
       end
     end
 
-    # -- truncation --------------------------------------------------------
-
     # Deletes every row from every table except `schema_migrations`
     # (named databases included when `all` is true). Returns the number of
     # tables touched.
@@ -227,8 +223,6 @@ module Saci
       tables.each { |table| Saci::Record.exec_compat(db, "DELETE FROM #{Saci::Record.quote(table, adapter)}") }
       tables.size
     end
-
-    # -- create / drop -----------------------------------------------------
 
     # Path behind a `sqlite3://` URL (query parameters stripped).
     def self.sqlite_path(url : String) : String

@@ -2,7 +2,6 @@ require "./queries"
 
 module Saci
   module Record
-    # -- test-internal hooks -------------------------------------------------
     # These reopen `Saci::Record` instead of editing `record.cr` (the
     # coordinator owns that file). They give the testing helpers access to
     # the deferred `after_commit` queue so a rolled-back savepoint can
@@ -49,7 +48,6 @@ module Saci
       end
     end
 
-    # -- query counter ------------------------------------------------------
     # Wrap the three execution choke points rather than every call site.
     # `previous_def` keeps the original adapter behavior (placeholder
     # rewriting, block handling, return values).

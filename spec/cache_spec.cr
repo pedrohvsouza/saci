@@ -68,9 +68,7 @@ describe Saci::Cache do
     Saci::Cache.read_value("bf").should eq(false)
     Saci::Cache.read_value("t").as(Time).to_unix_ns.should eq(now.to_unix_ns)
     Saci::Cache.read_value("n").should be_nil
-    # A stored Nil is still a present entry...
     Saci::Cache.exist?("n").should be_true
-    # ...and fetch treats it as a hit (block never runs).
     calls = 0
     Saci::Cache.fetch_value("n") { calls += 1; "x" }.should be_nil
     calls.should eq(0)
@@ -185,18 +183,6 @@ describe Saci::Cache do
   end
 end
 
-# ---------------------------------------------------------------------------
-# Redis store (Saci::Cache::RedisStore).
-#
-# Same dependency story as Cable/Throttle: no shard dep, the vendored
-# pure-socket `Saci::Cable::RedisWire` client is reused, default builds
-# link unchanged. Live specs gate on `REDIS_URL` (`pending!` without it —
-# never failing); the fake-Redis specs prove the wire protocol + encoding
-# in every run.
-# ---------------------------------------------------------------------------
-
-# Minimal in-spec Redis stand-in for the cache path: PING / AUTH / SELECT
-# plus GET / SET (with EX) / DEL / EXISTS, with server-side expiry.
 class FakeCacheRedis
   getter port : Int32
 

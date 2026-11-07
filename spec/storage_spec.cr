@@ -55,10 +55,8 @@ describe "storage signing-key rotation" do
           Saci::Storage.rotate_signing_key!("brand-new-secret")
           Saci::Storage.signing_keys.first.should eq("brand-new-secret")
 
-          # Old signatures verify through the grace window (natural expiry).
           Saci::Storage.verified_url?(key, old_expires, old_sig).should be_true
 
-          # New signings use the new key, not the old one.
           new_url = Saci::Storage.signed_url(key, base: "/files")
           new_parts = new_url.split("?", 2)[1].split("&")
           new_expires = new_parts[0].split("=")[1].to_i64
@@ -68,7 +66,6 @@ describe "storage signing-key rotation" do
           new_sig.should eq(OpenSSL::HMAC.hexdigest(:sha256, "brand-new-secret", "#{key}:#{new_expires}"))
           Saci::Storage.verified_url?(key, new_expires, new_sig).should be_true
 
-          # Unknown keys never verify.
           forged = OpenSSL::HMAC.hexdigest(:sha256, "attacker-secret", "#{key}:#{new_expires}")
           Saci::Storage.verified_url?(key, new_expires, forged).should be_false
 
@@ -177,7 +174,6 @@ describe "storage public-file mode" do
           priv_ok.status_code.should eq(200)
           priv_ok.body.should eq("sec-data")
 
-          # Traversal + missing + listing-shaped paths stay 404.
           Saci::Storage.valid_key?("public/../secret").should be_false
           app.get("/files/public/../secret").status_code.should eq(404)
           app.get("/files/public/ab/cd/missing").status_code.should eq(404)
@@ -211,7 +207,6 @@ describe "storage public-file mode" do
       inherited_private = priv_default.upload("d", filename: "d.txt")
       inherited_private.starts_with?("public/").should be_false
 
-      # Mixed services sharing a root: public serves unsigned, private needs sig.
       ENV["SECRET_KEY_BASE"] = "mixed-spec-secret"
       begin
         Saci::Storage.service = pub_default

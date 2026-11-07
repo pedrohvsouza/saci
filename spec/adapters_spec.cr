@@ -260,21 +260,18 @@ describe "database adapters" do
       db.exec("PRAGMA foreign_keys = ON")
       Saci::Record::Migrator.migrate(db, [AdapterProbeFk1, AdapterProbeFk2] of Saci::Record::Migration.class)
 
-      # create_table block FK is enforced on SQLite.
       db.exec(%(INSERT INTO "fk_probe_users" ("name", "created_at", "updated_at") VALUES (?, ?, ?)), "u", "2024-01-01", "2024-01-02")
       db.exec(%(INSERT INTO "fk_probe_stories" ("title", "user_id", "created_at", "updated_at") VALUES (?, ?, ?, ?)), "s", 1, "2024-01-01", "2024-01-02")
       expect_raises(Exception) do
         db.exec(%(INSERT INTO "fk_probe_stories" ("title", "user_id", "created_at", "updated_at") VALUES (?, ?, ?, ?)), "bad", 999, "2024-01-01", "2024-01-02")
       end
 
-      # references index exists.
       idx_names = [] of String
       db.query("SELECT name FROM sqlite_master WHERE type = 'index'") do |rs|
         rs.each { idx_names << rs.read(String) }
       end
       idx_names.should contain("index_fk_probe_stories_on_user_id")
 
-      # rename_column applied, rollback inverts.
       Saci::Record::Migrator.migrate(db, [AdapterProbeRename] of Saci::Record::Migration.class)
       cols = [] of String
       db.query(%(PRAGMA table_info("fk_probe_stories"))) do |rs|
@@ -293,7 +290,6 @@ describe "database adapters" do
       end
       cols.should contain("title")
 
-      # add_foreign_key / remove_foreign_key / change_column refuse SQLite clearly.
       expect_raises(ArgumentError, /CREATE TABLE time only/) do
         AdapterProbeFk1.new(db).add_foreign_key(:fk_probe_stories, :fk_probe_users)
       end
@@ -345,7 +341,6 @@ describe "database adapters" do
     Saci::Record.db_type(:enum, :sqlite, ["draft", "published"], "posts_status_enum").should eq("TEXT")
     Saci::Record.db_type(:enum, :postgres, ["draft", "published"], "posts_status_enum").should eq(%("posts_status_enum"))
     Saci::Record.db_type(:enum, :mysql, ["draft", "published"], "posts_status_enum").should eq("ENUM('draft','published')")
-    # Single quotes in values are escaped per adapter quoting rules.
     Saci::Record.db_type(:enum, :mysql, ["o'clock"], "t_x_enum").should eq("ENUM('o''clock')")
     Saci::Record.db_type(:enum, :postgres, ["o'clock"], "t_x_enum").should eq(%("t_x_enum"))
     expect_raises(ArgumentError, /requires values/) do
@@ -370,7 +365,6 @@ describe "database adapters" do
     Saci::Record.db_type(:datetime, :mysql, precision: 6).should eq("DATETIME(6)")
     Saci::Record.db_type(:datetime, :sqlite, precision: 6).should eq("TEXT")
     Saci::Record.db_type(:datetime, :postgres, precision: 0).should eq("TIMESTAMP(0)")
-    # No precision: historical rendering is unchanged.
     Saci::Record.db_type(:datetime, :sqlite).should eq("TEXT")
     Saci::Record.db_type(:datetime, :postgres).should eq("TIMESTAMP")
     Saci::Record.db_type(:datetime, :mysql).should eq("DATETIME")
@@ -425,7 +419,6 @@ describe "database adapters" do
     Saci::Record::Migration.enum_type_name(:posts, :status).should eq("posts_status_enum")
     Saci::Record::Migration.create_enum_sql(:postgres, :posts, :status, ["draft", "published"]).should eq(
       %(DO $$ BEGIN CREATE TYPE "posts_status_enum" AS ENUM ('draft', 'published'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;))
-    # No standalone type on MySQL/SQLite (inline ENUM / TEXT instead).
     Saci::Record::Migration.create_enum_sql(:mysql, :posts, :status, ["a"]).should be_nil
     Saci::Record::Migration.create_enum_sql(:sqlite, :posts, :status, ["a"]).should be_nil
     Saci::Record::Migration.drop_enum_sql(:postgres, :posts, :status).should eq(
@@ -462,7 +455,6 @@ describe "database adapters" do
           rs.read(Int64); name = rs.read(String); info[name] = rs.read(String); rs.read(Int64); rs.read(String?); rs.read(Int64)
         end
       end
-      # SQLite stores enums and arrays as TEXT (no DB-level enforcement).
       info["status"].should eq("TEXT")
       info["tags"].should eq("TEXT")
       info["published_at"].should eq("TEXT")
@@ -470,7 +462,6 @@ describe "database adapters" do
       info["audience"].should eq("TEXT")
       info["labels"].should eq("TEXT")
 
-      # Rollback drops the added columns; arrays need no extra statements.
       Saci::Record::Migrator.rollback(db, [AdapterProbeEnums, AdapterProbeEnumAdd] of Saci::Record::Migration.class, 1)
       info = {} of String => String
       db.query(%(PRAGMA table_info("adapter_probe_articles"))) do |rs|
@@ -495,15 +486,12 @@ describe "database adapters" do
       row.id.should_not be_nil
       fresh = AdapterProbeArticle.find(row.id)
       fresh.status.should eq("draft")
-      # JSON encoding round-trips commas, quotes and unicode exactly.
       fresh.tags.should eq(["crystal", "o'hara, jr."])
 
-      # Change detection on assign: a plain setter replaces the value.
       row.tags = ["one"]
       row.save!
       row.reload.tags.should eq(["one"])
 
-      # Nil and empty arrays are distinct and round-trip.
       row.update!(tags: nil)
       row.reload.tags.should be_nil
       row.update!(tags: [] of String)
@@ -703,8 +691,6 @@ describe "PostgreSQL enum/array/precision live" do
         "SELECT datetime_precision FROM information_schema.columns WHERE table_name = ? AND column_name = ?",
         ["pg_probe_articles", "published_at"] of Saci::Record::Value).should eq(6)
 
-      # PostgreSQL enforces the enum at the DB level (invalid values
-      # reject even past model validations).
       expect_raises(Exception) do
         db.exec("INSERT INTO #{tbl} (\"status\") VALUES ($1)", "bogus")
       end
@@ -721,12 +707,10 @@ describe "PostgreSQL enum/array/precision live" do
         PgProbeArticle.find(row.id).tags.should eq([] of String)
       end
 
-      # Rollback drops the table AND the standalone enum type.
       Saci::Record::Migrator.rollback(db, [PgProbeEnums] of Saci::Record::Migration.class, 1)
       Saci::Record.scalar_compat(db,
         "SELECT COUNT(*) FROM pg_type WHERE typname = ?",
         ["pg_probe_articles_status_enum"] of Saci::Record::Value).should eq(0)
-      # ... and the migration re-applies cleanly afterwards.
       Saci::Record::Migrator.migrate(db, [PgProbeEnums] of Saci::Record::Migration.class)
     ensure
       begin
@@ -821,8 +805,6 @@ describe "MySQL enum/array/precision live" do
         got.published_at.should eq(at)
       end
 
-      # Rollback drops the table (arrays are plain columns — nothing
-      # extra; enums are inline — no type to drop).
       Saci::Record::Migrator.rollback(db, [MyProbeEnums] of Saci::Record::Migration.class, 1)
       expect_raises(Exception) do
         Saci::Record.exec_compat(db, "SELECT * FROM #{tbl}")

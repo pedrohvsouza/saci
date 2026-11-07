@@ -2,8 +2,6 @@ require "spec"
 require "file"
 require "../src/saci"
 
-# -- spec schema ------------------------------------------------------------
-
 class CreateOrmUsers < Saci::Record::Migration
   def change
     create_table :orm_users do |t|
@@ -240,8 +238,6 @@ class DropTempTable < Saci::Record::Migration
     drop_table :temp_t
   end
 end
-
-# -- spec models ------------------------------------------------------------
 
 class OrmUser < Saci::Record::Base
   column id : Int64, primary: true
@@ -783,7 +779,6 @@ describe "Saci::Record" do
     profile = OrmProfile.create!(orm_user_id: user.id, bio: "hello")
     user.orm_profile.not_nil!.bio.should eq("hello")
 
-    # Unsaved owners have no associated record.
     OrmUser.new.orm_profile.should be_nil
 
     post = OrmPost.create!(title: "Tagged", views: 1, published: true, orm_user_id: user.id)
@@ -795,10 +790,8 @@ describe "Saci::Record" do
     OrmTagging.create!(orm_post_id: post.id, orm_tag_id: crystal.id)
 
     post.orm_tags.map(&.tag).compact.sort.should eq(["crystal", "ruby"])
-    # Through queries stay chainable.
     post.orm_tags.where(tag: "ruby").map(&.tag).should eq(["ruby"])
     post.orm_tags.count.should eq(2)
-    # Reverse direction + explicit class_name/source traversal.
     ruby.orm_posts.map(&.title).should eq(["Tagged"])
     ruby.stories_via.map(&.title).should eq(["Tagged"])
 
@@ -822,7 +815,6 @@ describe "Saci::Record" do
       "after_commit:on_create",
     ])
 
-    # Update: no create-only callbacks.
     OrmWidget.log.clear
     w.update!(name: "w2")
     OrmWidget.log.should eq([
@@ -833,12 +825,10 @@ describe "Saci::Record" do
       "after_commit",
     ])
 
-    # Destroy: dependents, then after_destroy + after_commit.
     OrmWidget.log.clear
     w.destroy.should be_true
     OrmWidget.log.should eq(["after_destroy", "after_commit"])
 
-    # before_validation can fix attributes (nil name gets stamped).
     OrmWidget.log.clear
     stamped = OrmWidget.create!(name: nil)
     stamped.name.should eq("stamped")
@@ -1023,8 +1013,6 @@ describe "Saci::Record" do
     owner.orm_profile.not_nil!.bio.should eq("inc bio")
 
     expect_raises(ArgumentError) { OrmPost.includes(:bogus) }
-    # G187: has_many :through is now preloadable (batched); the old
-    # "cannot preload through" raise is gone.
     tagged_post = OrmPost.find_by(title: "inc-1").not_nil!
     inc_tag = OrmTag.create!(tag: "inc-through")
     OrmTagging.create!(orm_post_id: tagged_post.id, orm_tag_id: inc_tag.id)
@@ -1041,7 +1029,6 @@ describe "Saci::Record" do
     OrmUser.upsert(name: "UpNew", email: "upsert-new@x.io").should be_true
     OrmUser.exists?(email: "upsert-new@x.io").should be_true
 
-    # Skips validations (bad email format still persists).
     OrmUser.upsert({name: "UpBad", email: "not-an-email"}).should be_true
     OrmUser.exists?(email: "not-an-email").should be_true
 
@@ -1049,14 +1036,12 @@ describe "Saci::Record" do
       OrmUser.upsert({name: "x", bogus_attr: 1})
     end
 
-    # update_columns skips validations and callbacks.
     w = OrmWidget.create!(name: "wcols")
     OrmWidget.log.clear
     w.update_columns({name: ""}).should be_true
     w.reload.name.should eq("")
     OrmWidget.log.should be_empty
 
-    # touch bumps updated_at without validations/callbacks.
     w.update_columns({name: "wt", updated_at: Time.utc(2020, 1, 1)})
     OrmWidget.log.clear
     w.touch.should be_true
@@ -1079,9 +1064,6 @@ describe "Saci::Record" do
     m.reload.meta.should eq(%({"b":[1,2]}))
     m.meta_json.not_nil!["b"][1].should eq(2)
 
-    # Migration logical types render per adapter.
-    # Exact decimal DDL (G297): SQLite uses TEXT affinity; PG/MySQL use
-    # native NUMERIC/DECIMAL with explicit precision/scale.
     Saci::Record.db_type(:decimal, :sqlite).should eq("TEXT_DECIMAL")
     Saci::Record.db_type(:decimal, :postgres).should eq("NUMERIC(38,18)")
     Saci::Record.db_type(:decimal, :mysql).should eq("DECIMAL(38,18)")
@@ -1110,7 +1092,6 @@ describe "Saci::Record" do
     b1.destroy.should be_true
     shelf.reload.orm_books_count.should eq(1)
 
-    # touch: saving / destroying a book bumps the parent's updated_at.
     shelf.update_columns({updated_at: Time.utc(2020, 1, 1)})
     b2.update!(title: "c2x")
     shelf.reload.updated_at.not_nil!.year.should eq(Time.utc.year)
@@ -1243,7 +1224,6 @@ describe "Saci::Record" do
     post.orm_poly_notes.map(&.msg).compact.sort.should eq(["pm1"])
     comment.orm_poly_notes.map(&.msg).compact.sort.should eq(["pm2"])
 
-    # Association setter stores type + id.
     n3 = OrmPolyNote.new(msg: "pm3")
     (n3.notifiable = comment).should_not be_nil
     n3.save.should be_true
@@ -1251,12 +1231,10 @@ describe "Saci::Record" do
     n3.notifiable_id.should eq(comment.id)
     n3.notifiable.not_nil!.as(OrmPolyComment).body.should eq("pc1")
 
-    # Nil type/id → nil; dangling rows raise like belongs_to.
     OrmPolyNote.new(msg: "nil-note").notifiable.should be_nil
     dangling = OrmPolyNote.new(msg: "dang", notifiable_type: "OrmPolyPost", notifiable_id: 999999)
     expect_raises(Saci::Record::RecordNotFound) { dangling.notifiable }
 
-    # Preloading kills N+1 (one query per type, cache populated).
     notes = OrmPolyNote.where("msg LIKE 'pm%'").includes(:notifiable).order(:msg).to_a
     notes.size.should eq(3)
     notes.each { |n| n.__saci_assoc_cache.has_key?("notifiable").should be_true }
@@ -1274,14 +1252,12 @@ describe "Saci::Record" do
     p = OrmPost.create!(title: "nest-p2", views: 1, published: true, orm_user_id: u.id)
     OrmTagging.create!(orm_post_id: p.id, orm_tag_id: OrmTag.create!(tag: "nest-tag2").id)
 
-    # belongs_to chain: tagging -> post -> user.
     rows = OrmTagging.where(orm_post_id: p.id).includes(orm_post: :orm_user).to_a
     rows.size.should eq(1)
     rows.first.__saci_assoc_cache.has_key?("orm_post").should be_true
     rows.first.orm_post.not_nil!.__saci_assoc_cache.has_key?("orm_user").should be_true
     rows.first.orm_post.not_nil!.orm_user.not_nil!.name.should eq("NestUser")
 
-    # has_many chain: user -> posts -> user.
     owners = OrmUser.where(email: "nest2@x.io").includes(orm_posts: :orm_user).to_a
     owners.first.__saci_assoc_cache.has_key?("orm_posts").should be_true
     first_post = owners.first.orm_posts.to_a.first
@@ -1310,39 +1286,33 @@ describe "Saci::Record" do
   end
 
   it "supports if:/unless: conditions on validates and validate" do
-    # Symbol if: skips when false, runs when true.
     OrmCoupon.new(code: nil, kind: "other", handle: "ok").valid?.should be_true
     bad = OrmCoupon.new(code: nil, kind: "promo", handle: "ok")
     bad.valid?.should be_false
     bad.errors["code"].should contain("can't be blank")
 
-    # Symbol unless: runs when false, skips when true.
     OrmCoupon.new(code: "c", kind: "free", handle: nil).valid?.should be_true
     bad2 = OrmCoupon.new(code: "c", kind: "other", handle: nil)
     bad2.valid?.should be_false
     bad2.errors["handle"].should contain("can't be blank")
 
-    # Proc if: with record arg.
     OrmCoupon.new(code: "other", kind: nil, handle: "ok").valid?.should be_true
     bad3 = OrmCoupon.new(code: "special", kind: nil, handle: "ok")
     bad3.valid?.should be_false
     bad3.errors["kind"].should contain("can't be blank")
 
-    # Proc if: on format (only email kind validates format).
     OrmCoupon.new(code: "plain", kind: "other", handle: "ok").valid?.should be_true
     bad4 = OrmCoupon.new(code: "plain", kind: "email", handle: "ok")
     bad4.valid?.should be_false
     bad4.errors["code"].should contain("is invalid")
     OrmCoupon.new(code: "a@b", kind: "email", handle: "ok").valid?.should be_true
 
-    # Symbol if: on custom validate.
     OrmCoupon.new(code: "fancy", kind: "fancy", handle: "ok").valid?.should be_true
     bad5 = OrmCoupon.new(code: "wrong", kind: "fancy", handle: "ok")
     bad5.valid?.should be_false
     bad5.errors["code"].should contain("must be fancy")
     OrmCoupon.new(code: "wrong", kind: "other", handle: "ok").valid?.should be_true
 
-    # Proc unless: on custom validate block.
     OrmCoupon.new(code: "c", kind: "skip", handle: "way-too-long").valid?.should be_true
     bad6 = OrmCoupon.new(code: "c", kind: "other", handle: "way-too-long")
     bad6.valid?.should be_false
@@ -1357,7 +1327,6 @@ describe "Saci::Record" do
     OrmUser.joins(:orm_posts).where("orm_posts.title = ?", "sym-j1").map(&.name).compact.should eq(["SymJoin"])
     OrmTagging.joins(:orm_post).where("orm_posts.title = ?", "sym-j1").to_a.size.should be >= 0
 
-    # String joins still work and chain with symbol joins.
     OrmPost.joins(:orm_user).joins("INNER JOIN orm_users u2 ON u2.id = orm_posts.orm_user_id").where("orm_users.email = ?", "symjoin@x.io").map(&.title).should eq(["sym-j1"])
 
     expect_raises(ArgumentError) { OrmPost.joins(:bogus).to_a }
@@ -1369,7 +1338,6 @@ describe "Saci::Record" do
     b2 = OrmBook.create!(title: "pb2", orm_shelf_id: shelf.id)
     shelf.reload.orm_books_count.should eq(2)
 
-    # update_counter (class + instance + plural).
     OrmShelf.update_counter(shelf.id, :orm_books_count, -1).should be_true
     shelf.reload.orm_books_count.should eq(1)
     shelf.update_counter(:orm_books_count, 2).should be_true
@@ -1377,7 +1345,6 @@ describe "Saci::Record" do
     OrmShelf.update_counters(shelf.id, {orm_books_count: -1}).should be_true
     shelf.reload.orm_books_count.should eq(2)
 
-    # reset_counters recounts from the association.
     shelf.update_columns({orm_books_count: 99})
     shelf.reload.orm_books_count.should eq(99)
     OrmShelf.reset_counters(shelf.id, :orm_books).should be_true
@@ -1385,7 +1352,6 @@ describe "Saci::Record" do
     expect_raises(Saci::Record::UnknownAttributeError) { OrmShelf.reset_counters(shelf.id, :bogus) }
     expect_raises(Saci::Record::UnknownAttributeError) { OrmShelf.update_counter(shelf.id, :bogus, 1) }
 
-    # touch_all bumps updated_at without callbacks/validations.
     shelf.update_columns({updated_at: Time.utc(2020, 1, 1)})
     OrmShelf.where(id: shelf.id).touch_all.should eq(1)
     shelf.reload.updated_at.not_nil!.year.should eq(Time.utc.year)

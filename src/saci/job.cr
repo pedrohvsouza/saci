@@ -576,7 +576,6 @@ module Saci
       @__saci_completed_steps : Array(String) = [] of String
       @__saci_checkpoint_sink : Proc(Array(String), Nil)? = nil
 
-      # -- callback defaults ------------------------------------------------
       def __saci_run_before_enqueue : Nil
       end
 
@@ -601,8 +600,6 @@ module Saci
         false
       end
 
-      # -- callback execution ----------------------------------------------
-      #
       # Enqueue: around -> before -> adapter -> after -> around return.
       # Perform: around -> before -> perform -> after -> around return.
       # `before_enqueue` may raise `Saci::Job::Abort` to cancel silently.
@@ -631,8 +628,6 @@ module Saci
         })
       end
 
-      # -- callback macros --------------------------------------------------
-      #
       # Method names are plain instance methods:
       #
       # ```
@@ -720,7 +715,6 @@ module Saci
         end
       end
 
-      # -- execution API ----------------------------------------------------
       def __saci_set_payload(payload : JSON::Any) : Nil
         @__saci_payload = payload
       end
@@ -759,7 +753,6 @@ module Saci
         raise "Define #{self.class}#perform(payload : JSON::Any)"
       end
 
-      # -- queue selectors --------------------------------------------------
       macro queue_as(name)
         {% qname = name.is_a?(SymbolLiteral) ? name.id.stringify : name %}
         def self.queue_name : String
@@ -792,8 +785,6 @@ module Saci
         0
       end
 
-      # -- uniqueness -------------------------------------------------------
-      #
       # ```
       # class SyncJob < Saci::Job::Base
       #   unique :until_executed               # same class+payload deduped
@@ -837,8 +828,6 @@ module Saci
         "#{name}:#{payload_json}"
       end
 
-      # -- continuations ----------------------------------------------------
-      #
       # ```
       # class ImportJob < Saci::Job::Base
       #   continuable
@@ -900,7 +889,6 @@ module Saci
         end
       end
 
-      # -- concurrency ------------------------------------------------------
       def self.__saci_concurrency_limit : Int32?
         nil
       end
@@ -936,7 +924,6 @@ module Saci
         end
       end
 
-      # -- retry/discard ----------------------------------------------------
       # Retries `error` up to `attempts` total tries, waiting `wait`
       # (`:exponential` backs off 1s/2s/4s… capped at 1 hour) between tries.
       macro retry_on(error, attempts = 3, wait = nil)
@@ -961,7 +948,6 @@ module Saci
         end
       end
 
-      # -- enqueue/perform API ---------------------------------------------
       def self.middleware : MiddlewareChain
         Saci::Job.middleware
       end

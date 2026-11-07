@@ -172,8 +172,6 @@ module Saci
       collection(objects, **opts).to_json
     end
 
-    # -- compile-time DSL ------------------------------------------------
-
     # Declares plain attributes read from `@object` with the same reader
     # name. A missing reader is a compile error (explicit, not magic).
     macro attributes(*names)
@@ -295,8 +293,6 @@ module Saci
       end
     end
 
-    # -- runtime dispatch table defaults --------------------------------
-
     # Per-class stubs so the DSL macros can chain with `previous_def`
     # within the subclass (Crystal's `previous_def` does not reach an
     # inherited generic-base definition directly). `super` bridges to the
@@ -369,8 +365,6 @@ module Saci
       end
     end
 
-    # -- helpers shared by all serializer instances ---------------------
-
     def self.build_options(**opts) : Options
       Options.new(
         only: opts[:only]?,
@@ -417,8 +411,6 @@ module Saci
       root = Saci::Record::Inflector.underscore(base)
       plural ? Saci::Record::Inflector.pluralize(root) : root
     end
-
-    # -- value conversion ------------------------------------------------
 
     def self.dump(value : Nil) : JSON::Any
       JSON::Any.new(nil)

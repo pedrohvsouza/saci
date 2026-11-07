@@ -267,8 +267,6 @@ module Saci
         yield TableChange.new(self, table)
       end
 
-      # -- column helpers -------------------------------------------------
-
       # Changes a column's nullability. On rollback the opposite is
       # applied automatically (the helper is reversible by construction).
       # `default:` backfills existing NULLs before adding NOT NULL.
@@ -326,8 +324,6 @@ module Saci
         remove_column(table, :created_at, if_exists: true)
         remove_column(table, :updated_at, if_exists: true)
       end
-
-      # -- references / join tables ---------------------------------------
 
       # Rails-style `add_reference` on an existing table.
       #
@@ -413,8 +409,6 @@ module Saci
         fk_default_column(table)
       end
 
-      # -- checks / validation -------------------------------------------
-
       # Adds a CHECK constraint (PostgreSQL/MySQL). SQLite cannot add one
       # to an existing table; use `t.check_constraint` inside
       # `create_table` there. Auto-inverts on rollback.
@@ -469,8 +463,6 @@ module Saci
         "chk_#{table}_#{slug}"
       end
 
-      # -- views / extensions --------------------------------------------
-
       # Creates a database view from a SELECT body. SQLite supports views
       # (and `IF NOT EXISTS`); PostgreSQL/MySQL support `OR REPLACE`.
       # Auto-inverts to `drop_view`.
@@ -511,7 +503,6 @@ module Saci
         enable_extension(name, if_not_exists)
       end
 
-      # -- introspection shortcuts ---------------------------------------
       def table_exists?(table : String | Symbol) : Bool
         Introspection.table_exists?(@db, table)
       end
@@ -551,8 +542,6 @@ module Saci
       def check_constraints(table : String | Symbol) : Array(Introspection::CheckConstraintInfo)
         Introspection.check_constraints(@db, table)
       end
-
-      # -- private helpers ------------------------------------------------
 
       private def run_normal(& : ->) : Nil
         previous = @inverting

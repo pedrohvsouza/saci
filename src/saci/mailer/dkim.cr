@@ -154,9 +154,6 @@ module Saci
       end
     end
 
-    # Reopen the stdlib crypto bindings for the EVP public-key signing API
-    # (Crystal 1.22 does not expose OpenSSL::PKey). Only the symbols needed by
-    # DKIM are declared.
     @@dkim_settings : DkimSettings? = nil
     @@dkim_mutex = Mutex.new
 

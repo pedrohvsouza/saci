@@ -52,8 +52,6 @@ module Saci
       # expression like `Ticket.create!(...)` needs no explicit type.
       abstract def process
 
-      # -- lifecycle --------------------------------------------------------
-
       # Runs the callback chain around `process` and updates the inbound
       # email status. Called by `Saci::Mailbox.process!` / the ingress
       # controller; user code normally implements `process` instead.
@@ -115,8 +113,6 @@ module Saci
         __saci_mailbox_rescue(ex)
       end
 
-      # -- actions ----------------------------------------------------------
-
       # Delivers a reply/notification through `Saci::Mailer` (respects the
       # configured delivery adapter, including `:test` in specs).
       def deliver(message : Saci::Mailer::Mail) : Nil
@@ -172,8 +168,6 @@ module Saci
       def forget : Nil
         inbound_email.forget
       end
-
-      # -- callback DSL -----------------------------------------------------
 
       macro inherited
         # Register the class so `route all: :support` / `mailbox: "support"`

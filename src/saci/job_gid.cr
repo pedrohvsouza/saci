@@ -36,7 +36,6 @@ module Saci
       RECORD_KEY = "_saci_record"
       GID_KEY    = "gid"
 
-      # Serializes one job argument.
       def self.encode(value : Saci::Record::Base) : JSON::Any
         id = value.__saci_get_attr(value.class.__saci_primary_key)
         if id.nil?
@@ -113,7 +112,6 @@ module Saci
           "Saci::Record::Base instances or serialize custom values explicitly")
       end
 
-      # Returns true when `value` is a serialized record reference.
       def self.record?(value : JSON::Any) : Bool
         hash = value.as_h?
         return false unless hash

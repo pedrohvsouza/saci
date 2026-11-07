@@ -187,11 +187,6 @@ class Hash(K, V)
   end
 end
 
-# Crystal cannot intern symbols at runtime (`String#to_sym` does not exist);
-# `Hash#symbolize_keys` therefore returns an indifferent-access wrapper. Use
-# `Saci.symbolize_keys({...})` for compile-time hash literals when a real
-# `Hash(Symbol, V)` is required.
-
 class String
   def squish : String
     gsub(/\s+/, " ").strip

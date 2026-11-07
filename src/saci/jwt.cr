@@ -60,7 +60,6 @@ module Saci
       def initialize(@header : Hash(String, JSON::Any), @payload : Hash(String, JSON::Any))
       end
 
-      # Payload convenience accessor.
       def [](key : String) : JSON::Any
         payload[key]
       end
@@ -162,8 +161,6 @@ module Saci
       verify_token(token, key, algorithms, verify_exp, verify_nbf, verify_iat,
         issuer, audience, subject, leeway, Time.utc)
     end
-
-    # -- internals -------------------------------------------------------
 
     private def self.verify_token(token : String, key : String | Bytes, algorithms : Array(Symbol),
                                   verify_exp : Bool, verify_nbf : Bool, verify_iat : Bool,

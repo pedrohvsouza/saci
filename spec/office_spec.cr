@@ -4,8 +4,6 @@ require "compress/deflate"
 require "../src/saci"
 require "../src/saci/office"
 
-# -- helpers ---------------------------------------------------------------
-
 OFFICE_SPEC_TMP = "/tmp/opencode"
 Dir.mkdir_p(OFFICE_SPEC_TMP)
 
@@ -26,8 +24,6 @@ def office_bytes_include?(bytes : Bytes, needle : String) : Bool
   office_find_bytes(bytes, needle) >= 0
 end
 
-# Parsed subset of one central-directory entry, enough to validate the ZIP
-# contract (name, method, sizes, checksum, local-header offset).
 struct OfficeSpecZipEntry
   getter name : String
   getter crc32 : UInt32
@@ -160,8 +156,6 @@ def office_pdf_text(bytes : Bytes) : String
   String.new(bytes)
 end
 
-# -- CRC32 / ZIP -----------------------------------------------------------
-
 describe "Saci::Office::CRC32 and ZIP" do
   it "computes the standard CRC-32 test vector" do
     Saci::Office::CRC32.checksum("123456789").should eq(0xCBF43926_u32)
@@ -197,8 +191,6 @@ describe "Saci::Office::CRC32 and ZIP" do
   end
 end
 
-# -- XLSX ------------------------------------------------------------------
-
 describe "Saci::Office::XLSX" do
   it "builds a multi-sheet package with typed cells, widths, filters and frozen panes" do
     workbook = Saci::Office::XLSX.new
@@ -224,7 +216,6 @@ describe "Saci::Office::XLSX" do
     names.should contain("xl/worksheets/sheet1.xml")
     names.should contain("xl/worksheets/sheet2.xml")
 
-    # Every entry's CRC and uncompressed size must agree with its payload.
     entries.each do |entry|
       payload = office_zip_payload(bytes, entry)
       Digest::CRC32.checksum(payload).should eq(entry.crc32)
@@ -357,8 +348,6 @@ struct OfficeSpecPerson
   end
 end
 
-# -- CSV -------------------------------------------------------------------
-
 describe "Saci::Office::CSV" do
   it "quotes fields per RFC 4180" do
     csv = Saci::Office::CSV.generate([
@@ -396,8 +385,6 @@ describe "Saci::Office::CSV" do
   end
 end
 
-# -- PDF -------------------------------------------------------------------
-
 describe "Saci::Office::PDF" do
   it "writes a valid PDF with text, tables and page breaks" do
     pdf = Saci::Office::PDF.new(title: "Sales report", author: "Saci", footer: "Page {page} of {total}")
@@ -426,11 +413,9 @@ describe "Saci::Office::PDF" do
     office_bytes_include?(bytes, "(Region 1) Tj").should be_true
     office_bytes_include?(bytes, "100 700 Td\n(At coords) Tj").should be_true
     office_bytes_include?(bytes, "/F2 14 Tf").should be_true
-    # Header shading fill and grid strokes are present.
     office_bytes_include?(bytes, "0.9 0.93 0.97 rg").should be_true
     office_bytes_include?(bytes, " re\n").should be_true
     office_bytes_include?(bytes, " RG\n").should be_true
-    # Repeated table headers and page footer.
     office_bytes_include?(bytes, "(Page 2 of ").should be_true
 
     offsets = office_pdf_xref_offsets(bytes)
@@ -490,8 +475,6 @@ describe "Saci::Office::PDF" do
     pdf.text_width("abc", 10).should be > 0
   end
 end
-
-# -- Controller integration ------------------------------------------------
 
 class OfficeSpecDownloadsController < Saci::Controller
   def xlsx

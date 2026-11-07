@@ -45,8 +45,6 @@ module Saci
   # `current_user` (correct, resolves on every call) stays available for
   # controllers that skip the macro.
   module Auth
-    # Authentication configuration (`login_path`, key names, ...).
-    # Everything stored here is framework-spellable (strings/symbols).
     class Config
       # Where `require_login` sends anonymous visitors.
       property login_path : String = "/login"
@@ -62,7 +60,6 @@ module Saci
       # Session key holding the record's rolling `session_token`.
       property token_key : Symbol = :session_token
 
-      # The globally configured finder lambda (`Saci::Auth.user_finder`).
       def user_finder
         Saci::Auth.user_finder
       end
@@ -89,7 +86,6 @@ module Saci
       @@mutex.synchronize { yield @@config }
     end
 
-    # Restores every `Config` default (spec isolation).
     def self.reset! : Nil
       @@mutex.synchronize { @@config = Config.new }
     end
@@ -342,8 +338,6 @@ module Saci
       target || Saci::Auth.after_authentication_path
     end
 
-    # Controller-level convenience over
-    # `Saci::Authentication.authenticate_by`.
     def authenticate_by(model, **attrs)
       Saci::Authentication.authenticate_by(model, **attrs)
     end

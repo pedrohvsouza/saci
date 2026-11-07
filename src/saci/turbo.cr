@@ -32,7 +32,6 @@ module Saci
       end
     end
 
-    # -- stream builders (each returns one `<turbo-stream>` element) --------
     # `targets:` emits a `targets="..."` CSS-selector attribute instead of
     # `target="..."` (Rails parity); both are escaped. `html` is RAW.
 
@@ -77,7 +76,6 @@ module Saci
       end
     end
 
-    # -- Cable integration (streams ARE cable streams) -----------------------
     # Broadcasts the rendered `<turbo-stream>` element as the message
     # payload on `stream` (clients subscribed to that stream receive the
     # HTML string and apply it via a `<turbo-cable-stream-source>` /

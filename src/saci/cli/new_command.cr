@@ -198,8 +198,8 @@ module Saci
       # Builds `shard.yml` line-by-line rather than interpolating a block into
       # a heredoc: heredoc indentation stripping turned the driver block into
       # `pg:` *under* `saci.path`, which made every Postgres/MySQL app fail
-      # `shards install` (RAILS_GAP_ANALYSIS D1). A flat list keeps every
-      # dependency key at the same two-space level.
+      # `shards install`. A flat list keeps every dependency key at the same
+      # two-space level.
       def self.shard_yml(name : String, saci_path : String, db : String = "sqlite") : String
         lines = [
           "name: #{name}",
@@ -823,8 +823,6 @@ module Saci
         CRYSTAL
       end
 
-      # -- project binstubs ---------------------------------------------------
-
       # A thin project-local wrapper. It deliberately does not duplicate CLI
       # logic: every argument (including `--` and everything after it) is
       # forwarded verbatim to the global `saci` binary. Set SACI_BIN to point
@@ -1007,8 +1005,6 @@ module Saci
         esac
         SH
       end
-
-      # -- declarative config -------------------------------------------------
 
       # `database.yml` follows Rails' shape but uses Saci adapter names
       # (`sqlite3`, `postgres`, `mysql`). The `default:` anchor keeps the four
@@ -1641,8 +1637,6 @@ module Saci
         DOCKER
       end
 
-      # -- containers / CI ---------------------------------------------------
-
       def self.dockerfile(name : String) : String
         <<-DOCKER
         # Multi-stage build: compile with the official Crystal image, then
@@ -1792,8 +1786,6 @@ module Saci
         YAML
       end
 
-      # -- public/ -----------------------------------------------------------
-
       def self.public_error_page(code : Int32, title : String) : String
         <<-HTML
         <!DOCTYPE html>
@@ -1824,8 +1816,6 @@ module Saci
         TXT
       end
 
-      # -- initializers ------------------------------------------------------
-      #
       # These are intentionally comment-only. Parallel framework work may add
       # CORS/assets/initializer APIs; a generated app must compile even when
       # those APIs are absent. Uncomment and adapt once the API is available.

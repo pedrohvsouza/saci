@@ -16,20 +16,17 @@ module Saci
       send_xlsx(xlsx.to_bytes, filename, disposition)
     end
 
-    # Sends already-serialized XLSX bytes.
     def send_xlsx(data : Bytes, filename : String = "export.xlsx",
                   disposition : String = "attachment") : Nil
       safe_name = Office.safe_filename(filename, "export.xlsx")
       send_data(data, safe_name, content_type: Office::XLSX::CONTENT_TYPE, disposition: disposition)
     end
 
-    # Sends a PDF document.
     def send_pdf(pdf : Office::PDF, filename : String = "export.pdf",
                  disposition : String = "attachment") : Nil
       send_pdf(pdf.to_bytes, filename, disposition)
     end
 
-    # Sends already-serialized PDF bytes.
     def send_pdf(data : Bytes, filename : String = "export.pdf",
                  disposition : String = "attachment") : Nil
       safe_name = Office.safe_filename(filename, "export.pdf")

@@ -155,20 +155,6 @@ describe Saci::Cable do
   end
 end
 
-# ---------------------------------------------------------------------------
-# Redis adapter (Saci::Cable::RedisServer).
-#
-# Dependency choice (documented): NO shard dependency. The Redis hop is a
-# vendored pure-socket RESP2 client (`Saci::Cable::RedisWire`, plain
-# `TCPSocket`, no OpenSSL linkage), so default SQLite builds link exactly
-# as before and `crystal spec` needs no running server. Live-server specs
-# below are gated on `REDIS_URL` (`pending!` without it — never failing);
-# the fake-Redis specs prove the wire protocol in every run.
-# ---------------------------------------------------------------------------
-
-# Minimal in-spec Redis stand-in: speaks just enough RESP2 (PING /
-# AUTH / SELECT / SUBSCRIBE / PUBLISH) to prove the client wire protocol
-# and multi-instance fan-out without a real server.
 class FakeCableRedis
   getter port : Int32
 
@@ -283,8 +269,6 @@ class FakeCableRedis
 end
 
 # Channel whose receive path broadcasts through its OWN server (not the
-
-# Channel whose receive path broadcasts through its OWN server (not the
 # global default), so two apps on two RedisServer instances fan out.
 class CableRedisFanoutChannel < Saci::Cable::Channel
   def subscribed
@@ -297,8 +281,6 @@ class CableRedisFanoutChannel < Saci::Cable::Channel
   end
 end
 
-# Records outbound frames (instead of writing them to the socket) so the
-# exact bytes delivered through the Redis hop can be compared.
 class CableRedisRecordingConnection < Saci::Cable::Connection
   @recorded = [] of String
   @recorded_mutex = Mutex.new
@@ -409,7 +391,6 @@ describe "Saci::Cable::RedisServer" do
           cable_wait_until("stream channel subscribed") { fake.subscriber_count("saci:spec-life:redis-fanout") == 1 }
           one.close
           sleep 200.milliseconds
-          # Still one local subscriber: stays subscribed.
           fake.subscriber_count("saci:spec-life:redis-fanout").should eq(1)
           two.close
           cable_wait_until("stream channel unsubscribed") { fake.subscriber_count("saci:spec-life:redis-fanout") == 0 }
@@ -439,11 +420,9 @@ describe "Saci::Cable::RedisServer" do
               a_ident = a.subscribe("CableRedisFanoutChannel")
               b_ident = b.subscribe("CableRedisFanoutChannel")
               a.send_message(a_ident, {n: 41})
-              # Sender's own server delivers locally...
               got_a = a.next_message
               got_a["identifier"]?.try(&.as_s?).should eq(a_ident)
               got_a["message"].as_h["n"].as_i.should eq(42)
-              # ...and the peer server delivers via the Redis hop.
               got_b = b.next_message
               got_b["identifier"]?.try(&.as_s?).should eq(b_ident)
               got_b["message"].as_h["n"].as_i.should eq(42)
@@ -483,7 +462,6 @@ describe "Saci::Cable::RedisServer" do
 
         cable_wait_until("peer delivery") { !conn_b.messages.empty? && !CableRedisRawOverrideChannel.received.empty? }
         conn_b.messages.should eq([{"identifier" => ident, "message" => payload}.to_json])
-        # `deliver` overrides still get the parsed JSON::Any, as before.
         CableRedisRawOverrideChannel.received.should eq(["JSON::Any:#{payload.to_json}"])
       ensure
         srv_a.close
@@ -505,7 +483,6 @@ describe "Saci::Cable::RedisServer" do
         cable_wait_until("resubscribed after drop") do
           srv_b.subscribed? && fake.subscriber_count("saci:spec-resub") == 2
         end
-        # Fan-out still works after the resubscribe.
         router_a = Saci::Router.new.draw { |r| r.cable "/cable", CableRedisFanoutChannel, server: srv_a }
         router_b = Saci::Router.new.draw { |r| r.cable "/cable", CableRedisFanoutChannel, server: srv_b }
         Saci::TestSession.serve(router_a) do |app_a|
@@ -543,8 +520,6 @@ describe "Saci::Cable::RedisServer" do
           ident = client.subscribe("CableEchoChannel", {"room" => "x"})
           client.send_message(ident, {text: "hi"})
           client.next_message["message"].as_h["echo"].as_s.should eq("hi")
-          # Broadcast path: local delivery happens despite dead redis,
-          # remote hop is dropped with a warning — no raise.
           srv.broadcast("echo:x", {ping: true})
           client.next_message["message"].as_h["ping"].as_bool.should be_true
         ensure

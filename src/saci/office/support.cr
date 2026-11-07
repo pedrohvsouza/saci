@@ -12,7 +12,6 @@ module Saci
     # format, hence the 2-day offset from the Unix epoch).
     EXCEL_EPOCH_OFFSET = 25_569.0
 
-    # Seconds in a day, used for the fractional part of a date serial.
     SECONDS_PER_DAY = 86_400.0
 
     # Escapes text for an XML 1.0 text node or attribute value. Characters

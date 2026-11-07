@@ -393,8 +393,6 @@ module Saci
     getter default_url_options : Hash(String, String)
     getter mounted_routers : Array(Tuple(String, Router))
 
-    # NOTE(auth track): moved here from #initialize — ivar type declarations
-    # are only legal at class level (was a compile error). No behavior change.
     @fallback : Handler?
 
     def initialize
@@ -414,7 +412,6 @@ module Saci
       @fallback = nil
     end
 
-    # DSL entrypoint: `router.draw { |r| r.get ... }`
     def draw(&block : self ->) : self
       yield self
       # Controllers/views resolve helpers through the most recently drawn
@@ -460,8 +457,6 @@ module Saci
                   &handler : HTTP::Server::Context, Params ->) : Nil
       add(http_method, pattern, constraints, defaults, name: name.to_s, controller: controller, action: action, &handler)
     end
-
-    # -- controller routes -------------------------------------------------
 
     def get(path : String, controller : Controller.class, action : Symbol, constraints : Hash(String, Regex)? = nil,
             defaults : Hash(String, String)? = nil, as name_as : String | Symbol? = nil) : Nil
@@ -775,8 +770,6 @@ module Saci
       defaults(hash, &block)
     end
 
-    # -- reusable resource concerns / custom generators --------------------
-
     # Rails `concern`:
     #   r.concern(:commentable) do |s|
     #     s.member { |m| m.post :comment }
@@ -900,8 +893,6 @@ module Saci
       @fallback = Handler.new { |ctx, p| handler.call(ctx, p); nil }
     end
 
-    # -- websocket routes ------------------------------------------------------
-    #
     # Raw socket route (escape hatch):
     #   r.websocket("/live") { |ws, ctx, params| ws.send("hi") }
     #
@@ -986,8 +977,6 @@ module Saci
       end
     end
 
-    # -- dispatch -----------------------------------------------------------
-
     private def dispatch(controller : Controller.class, action : Symbol, ctx : HTTP::Server::Context, params : Params) : Nil
       ctrl = controller.new(ctx, params, action)
       # Secure defaults first so filters/actions can still override them.
@@ -1065,8 +1054,6 @@ module Saci
       end
       nil
     end
-
-    # -- URL helpers (G4 runtime registry / G253 G256) --------------------
 
     def named_route?(route_name : String | Symbol) : Bool
       key = route_name.to_s
@@ -1427,8 +1414,6 @@ module Saci
       io << ">\n"
       io << routes_table_expanded.join("\n")
     end
-
-    # -- internals ----------------------------------------------------------
 
     protected def current_prefix : String
       @prefix_stack.join("")

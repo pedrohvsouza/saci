@@ -9,8 +9,6 @@ module Saci
     # only exception is `initializers:run`, which uses the runner wrapper
     # so the initializer executes in app context).
     module Info
-      # -- about -------------------------------------------------------------
-
       def self.about(args : Array(String)) : Int32
         reject_flags!(args, "about")
         puts "Saci #{Saci::VERSION}"
@@ -27,8 +25,6 @@ module Saci
         puts "Working directory: #{Dir.current}"
         0
       end
-
-      # -- stats -------------------------------------------------------------
 
       STATS_DIRS = [
         {"models", "src/models"},
@@ -67,8 +63,6 @@ module Saci
         0
       end
 
-      # -- notes -------------------------------------------------------------
-
       NOTE_TAGS = ["TODO", "FIXME", "OPTIMIZE"]
       NOTE_DIRS = ["src", "spec", "config", "db", "lib/tasks"]
 
@@ -104,8 +98,6 @@ module Saci
         0
       end
 
-      # -- middleware --------------------------------------------------------
-
       def self.middleware(args : Array(String)) : Int32
         reject_flags!(args, "middleware")
         handlers = Saci::Application.handlers(Saci::Router.new)
@@ -123,8 +115,6 @@ module Saci
         puts "Saci::Application currently builds HTTP::WebSocketHandler + Saci::Handler."
         0
       end
-
-      # -- initializers ------------------------------------------------------
 
       def self.initializers(args : Array(String)) : Int32
         reject_flags!(args, "initializers")
@@ -186,8 +176,6 @@ module Saci
         Dir.glob("config/initializers/*.cr").sort
       end
 
-      # -- dbconsole ---------------------------------------------------------
-
       def self.dbconsole(args : Array(String)) : Int32
         open = false
         all = false
@@ -228,8 +216,6 @@ module Saci
         end
         0
       end
-
-      # -- dev:cache / log:clear / tmp:clear ---------------------------------
 
       DEV_CACHE_FILE = File.join("tmp", "caching-dev.txt")
 
@@ -299,8 +285,6 @@ module Saci
         end
         0
       end
-
-      # -- time:zones / restart ----------------------------------------------
 
       def self.time_zones(args : Array(String)) : Int32
         if args == ["--local"]

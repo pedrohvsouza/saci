@@ -49,7 +49,6 @@ module Saci
         config
       end
 
-      # Rebuilds defaults (spec isolation / reload).
       def self.reset! : ServerConfig
         self.current = ServerConfig.new
       end

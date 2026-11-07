@@ -106,8 +106,6 @@ module Saci
         @@notes.clear
       end
 
-      # -- kinds -------------------------------------------------------------
-
       def self.destroy_model(raw : String) : Nil
         class_name = Util.class_name(Util.file_name(raw))
         file = Util.file_name(class_name)
@@ -286,8 +284,6 @@ module Saci
       def self.destroy_application_record : Nil
         remove("src/models/application_record.cr", New.application_record)
       end
-
-      # -- removal engine ----------------------------------------------------
 
       # Deletes one owned file. `expected` is the content the generator
       # would produce now; a mismatch prompts unless `--force`/all was

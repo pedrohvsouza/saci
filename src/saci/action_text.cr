@@ -19,7 +19,6 @@ module Saci
   # `<action-text-attachment>` tag; rendering/sanitizing/plain-text
   # extraction is handled here and by `Saci::RichText`.
   module RichText
-    # Regex matching one complete attachment tag (paired or self-closing).
     ATTACHMENT_BLOCK_RE = /<action-text-attachment\b[^>]*>.*?<\/action-text-attachment\s*>|<action-text-attachment\b[^>]*\/?>/m
 
     # One embedded attachment parsed from rich-text HTML.
@@ -57,7 +56,6 @@ module Saci
         )
       end
 
-      # Parses one `<action-text-attachment ...>caption</...>` tag.
       def self.from_tag(tag : String) : Attachment?
         start_tag = tag.match(/\A<action-text-attachment\b[^>]*>/m).try(&.[0]?) || tag
         attrs = RichText.tag_attributes(start_tag)
@@ -134,7 +132,6 @@ module Saci
       end
     end
 
-    # All attachments in `raw`, in document order.
     def self.attachments(raw : String?) : Array(Attachment)
       result = [] of Attachment
       return result if raw.nil? || raw.empty?
@@ -146,8 +143,6 @@ module Saci
       result
     end
 
-    # Signed global id for any persisted record (see
-    # `Storage.signed_global_id`).
     def self.sgid_for(record : Saci::Record::Base) : String
       Storage.signed_global_id(record)
     end
@@ -156,7 +151,6 @@ module Saci
       Storage.resolve_signed_global_id(sgid)
     end
 
-    # Builds an `<action-text-attachment>` tag for a blob/record.
     def self.attachment_tag(attachable : Saci::Record::Base, caption : String? = nil) : String
       attachment = case attachable
                    when Saci::Storage::Blob then Attachment.for_blob(attachable)
@@ -219,7 +213,6 @@ module Saci
     end
   end
 
-  # Blobs are embeddable Action Text attachables out of the box.
   class Storage::Blob
     include RichText::Attachable
 

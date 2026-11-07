@@ -2,10 +2,6 @@ require "spec"
 require "../src/saci"
 require "../src/saci/testing"
 
-# ---------------------------------------------------------------------------
-# Test schema / models (registered with the testing migration registry)
-# ---------------------------------------------------------------------------
-
 class CreateTestingTeams < Saci::Record::Migration
   def change
     create_table :testing_teams do |t|
@@ -74,10 +70,6 @@ class TestingPost < Saci::Record::Base
   timestamps
 end
 
-# ---------------------------------------------------------------------------
-# Factories (compile-time macro DSL)
-# ---------------------------------------------------------------------------
-
 # Model class omitted: `factory :testing_team` infers the `TestingTeam`
 # constant at compile time.
 factory :testing_team do
@@ -104,10 +96,6 @@ factory :testing_post, TestingPost do
   title "A post"
   belongs_to :user, :testing_user, foreign_key: "user_id"
 end
-
-# ---------------------------------------------------------------------------
-# Fixture files + database preparation
-# ---------------------------------------------------------------------------
 
 FIXTURE_DIR = "tmp/saci_testing_spec/fixtures"
 TESTING_DB_PATH     = "tmp/saci_testing_spec/db/app_test.db"
@@ -156,10 +144,6 @@ load_fixtures :all, path: FIXTURE_DIR
 fixture :testing_users, TestingUser
 fixture :testing_teams, TestingTeam
 fixture :testing_posts, TestingPost
-
-# ---------------------------------------------------------------------------
-# Test database lifecycle
-# ---------------------------------------------------------------------------
 
 describe "Saci::Testing test database lifecycle" do
   before_each { Saci::Testing.restore_database! }
@@ -214,10 +198,6 @@ end
 # it, even when the full suite loads other specs' migrations.
 Saci::Record::Migration.reset_test_migrations!
 Saci::Testing.register_migrations(CreateTestingTeams, CreateTestingUsers, CreateTestingPosts)
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
 
 describe "Saci::Testing::Fixtures" do
   before_each { Saci::Testing.restore_database! }
@@ -296,10 +276,6 @@ describe "Saci::Testing::Fixtures reloading" do
   end
 end
 
-# ---------------------------------------------------------------------------
-# Factories
-# ---------------------------------------------------------------------------
-
 describe "Saci::Testing::Factory" do
   before_each { Saci::Testing.restore_database! }
   transactional_tests
@@ -365,10 +341,6 @@ describe "Saci::Testing::Factory" do
   end
 end
 
-# ---------------------------------------------------------------------------
-# Transactional tests
-# ---------------------------------------------------------------------------
-
 describe "Saci::Testing.transactional" do
   before_each { Saci::Testing.restore_database! }
   it "rolls back the block and returns its value" do
@@ -392,7 +364,6 @@ describe "Saci::Testing.transactional" do
         TestingUser.count.should eq(before + 2)
       end
 
-      # Inner savepoint was rolled back; outer work remains.
       TestingUser.count.should eq(before + 1)
       TestingUser.where(name: "inner").count.should eq(0)
     end
@@ -415,7 +386,6 @@ describe "Saci::Testing.transactional" do
       Saci::Testing.flush_after_commit!
       TestingUser.commit_log.should eq(["committed?"])
     end
-    # Rollback happened; no extra callback.
     TestingUser.commit_log.should eq(["committed?"])
   end
 
@@ -437,10 +407,6 @@ describe "Saci::Testing.transactional" do
     Saci::Testing::Fixtures.load(FIXTURE_DIR)
   end
 end
-
-# ---------------------------------------------------------------------------
-# Time helpers
-# ---------------------------------------------------------------------------
 
 describe "Saci::Testing time helpers" do
   before_each { Saci::Testing.restore_database! }
@@ -506,10 +472,6 @@ describe "Saci::Testing time helpers" do
   end
 end
 
-# ---------------------------------------------------------------------------
-# Assertion helpers
-# ---------------------------------------------------------------------------
-
 class TestingJob < Saci::Job::Base
   def perform(payload : JSON::Any) : Nil
   end
@@ -538,7 +500,6 @@ describe "Saci::Testing assertion helpers" do
       TestingUser.create!(name: "changed-again")
     end
     assert_no_changes(-> { TestingUser.count }) do
-      # no writes
     end
   end
 
@@ -547,7 +508,6 @@ describe "Saci::Testing assertion helpers" do
       2.times { |i| TestingUser.create!(name: "diff#{i}") }
     end
     assert_no_difference(-> { TestingUser.count }) do
-      # no writes
     end
   end
 
@@ -565,7 +525,6 @@ describe "Saci::Testing assertion helpers" do
       TestingMailer.welcome("a@example.com").deliver_now
     end
     assert_no_emails do
-      # nothing delivered
     end
   end
 
@@ -580,7 +539,6 @@ describe "Saci::Testing assertion helpers" do
       TestingJob.perform_later({value: 1})
     end
     assert_no_enqueued_jobs do
-      # nothing enqueued
     end
     assert_enqueued_with(job: TestingJob, args: {value: 2}) do
       TestingJob.perform_later({value: 2})
@@ -592,7 +550,6 @@ describe "Saci::Testing assertion helpers" do
       TestingJob.perform_later({value: 3})
     end
     assert_no_performed_jobs do
-      # nothing performed
     end
     assert_performed_with(job: TestingJob, args: {value: 5}) do
       TestingJob.perform_now({value: 5})
@@ -626,10 +583,6 @@ describe "Saci::Testing assertion helpers" do
     end
   end
 end
-
-# ---------------------------------------------------------------------------
-# assert_select
-# ---------------------------------------------------------------------------
 
 class TestingPagesController < Saci::Controller
   def show
@@ -699,10 +652,6 @@ describe "Saci::Testing.assert_select" do
     end
   end
 end
-
-# ---------------------------------------------------------------------------
-# Parallel tests
-# ---------------------------------------------------------------------------
 
 describe "Saci::Testing.parallelize" do
   before_each { Saci::Testing.restore_database! }

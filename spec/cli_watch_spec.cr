@@ -122,7 +122,6 @@ describe Saci::CLI::Watch do
       File.write(File.join(dir, "shard.yml"), "name: x\ndependencies:\n  fw:\n    path: tmp/fw\n")
       Dir.cd(dir) do
         Saci::CLI::Watch.snapshot.keys.any?(&.ends_with?("tmp/fw/src/a.cr")).should be_true
-        # The app's own tmp/ stays ignored.
         File.write("tmp/cache.tmp", "x")
         Saci::CLI::Watch.snapshot.has_key?("tmp/cache.tmp").should be_false
       end

@@ -136,7 +136,6 @@ module Saci
       false
     end
 
-    # Builds the identifier JSON clients send (`{"channel":"X",...}`).
     def self.identifier_for(channel : String, params : Hash(String, String) = {} of String => String) : String
       {"channel" => channel}.merge(params).to_json
     end
@@ -739,8 +738,6 @@ module Saci
         @broadcasts_mutex = Mutex.new
       end
 
-      # -- live connection registry (G96) ---------------------------------
-
       # Registers a connection. Returns false when `max_connections` is
       # reached (the caller closes the socket with a clear log line).
       def register(connection : Connection) : Bool
@@ -783,8 +780,6 @@ module Saci
       def disconnect_all : Int32
         remote_connections.disconnect
       end
-
-      # -- subscriptions ----------------------------------------------------
 
       # Instantiates the channel and runs the optional `#connect` hook plus
       # `#subscribed`. Returns nil when the subscription was rejected or
@@ -969,8 +964,6 @@ module Saci
         emptied.each { |name| stream_stopped(name) }
       end
 
-      # -- introspection (test helpers) -------------------------------------
-
       def stream_names : Array(String)
         @mutex.synchronize do
           @streams.select { |_, subs| !subs.empty? }.keys.sort
@@ -987,8 +980,6 @@ module Saci
       def stream_subscriber_count(stream : String) : Int32
         @mutex.synchronize { @streams[stream]?.try(&.size) || 0 }
       end
-
-      # -- broadcast recording (test helpers) --------------------------------
 
       def record_broadcasts=(enabled : Bool) : Nil
         @record_broadcasts.set(enabled)
@@ -1091,7 +1082,6 @@ module Saci
         to_a.each { |connection| yield connection }
       end
 
-      # Disconnects every matching connection. Returns the count.
       def disconnect : Int32
         targets = to_a
         targets.each do |connection|
@@ -1347,7 +1337,6 @@ module Saci
               end
             end
           rescue
-            # Broken pipe / refused / timeout: back off and retry.
           end
           break if @closed.get
           sleep backoff.seconds
@@ -1655,8 +1644,6 @@ module Saci
         connection.server.broadcast(Cable.broadcasting_for(broadcastable, prefix), payload)
       end
 
-      # -- identifiers (G203) ----------------------------------------------
-
       # Declares a connection identifier exposed on every channel:
       #
       # ```
@@ -1688,8 +1675,6 @@ module Saci
           connection.set_identifier({{name.id.stringify}}, value)
         end
       end
-
-      # -- periodic timers (G95) -------------------------------------------
 
       # Runs the block every `interval` while the subscription is active.
       # The timer is cancelled by `unsubscribe`, connection close, and
@@ -2132,7 +2117,6 @@ module Saci
         self.record_broadcasts = true
       end
 
-      # Convenience for spec teardown (`server.clear!`).
       def clear! : Nil
         clear_broadcasts
       end

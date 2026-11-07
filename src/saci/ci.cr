@@ -66,12 +66,10 @@ module Saci
       reset!
     end
 
-    # Fails the current step with `message`.
     def self.fail!(message : String = "CI step failed") : NoReturn
       raise StepFailed.new(message)
     end
 
-    # Convenience assertion for in-process steps.
     def self.check(condition : Bool, message : String = "CI check failed") : Nil
       fail!(message) unless condition
     end

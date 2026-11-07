@@ -80,7 +80,6 @@ module Saci
       end
     end
 
-    # Full path of the active manifest, or nil when none exists.
     def self.manifest_path : String?
       if configured = @@manifest_path
         return configured
@@ -190,12 +189,10 @@ module Saci
       manifest
     end
 
-    # True when the logical asset exists in the manifest.
     def self.exists?(source : String) : Bool
       manifest.has_key?(normalize_key(source))
     end
 
-    # Fingerprinted path from the manifest, or nil when missing.
     def self.digest_path(source : String) : String?
       manifest[normalize_key(source)]?
     end

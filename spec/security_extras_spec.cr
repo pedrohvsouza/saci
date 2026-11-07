@@ -2,10 +2,6 @@ require "spec"
 require "http/client"
 require "../src/saci"
 
-# Extra coverage for the security/session wave: cookie serializers and
-# rotations, session stores, masked/per-form CSRF tokens, CSP nonces,
-# Permissions-Policy and the extra default headers.
-
 class ExtrasSecurityController < Saci::Controller
   protect_from_forgery
 
@@ -126,7 +122,6 @@ def extras_router : Saci::Router
   end
 end
 
-# Minimal cookie-jar client (mirrors spec/session_spec.cr's helper).
 class ExtrasCookieClient
   getter jar : Hash(String, String)
 
@@ -320,7 +315,6 @@ describe "session stores" do
       login["user_id"].as_i.should eq(9)
       login["id"].as_s.should_not be_empty
 
-      # Only a signed id lives in the cookie.
       client.jar[Saci::Session::COOKIE_KEY].should_not contain("user_id")
       JSON.parse(client.get("/session/profile").body)["user_id"].as_i.should eq(9)
 
@@ -435,7 +429,6 @@ describe "masked and per-form CSRF tokens" do
       resp = app.get("/extras/repeat")
       body = JSON.parse(resp.body)
       body["same"].as_bool.should be_true
-      # One token issued -> one Set-Cookie, not one per call.
       resp.headers.get("Set-Cookie").size.should eq(1)
       cookie = resp.headers.get("Set-Cookie").first
       cookie.should contain(body["token"].as_s)

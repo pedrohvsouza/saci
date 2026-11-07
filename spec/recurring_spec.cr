@@ -44,7 +44,6 @@ describe Saci::Recurring do
     Saci::Recurring.next_after("*/5 * * * *", Time.utc(2026, 1, 1, 10, 3)).should eq(Time.utc(2026, 1, 1, 10, 5))
     Saci::Recurring.next_after("0 9 * * *", Time.utc(2026, 1, 1, 10, 0)).should eq(Time.utc(2026, 1, 2, 9, 0))
     Saci::Recurring.next_after("0 0 1 * *", Time.utc(2026, 1, 15, 12, 0)).should eq(Time.utc(2026, 2, 1, 0, 0))
-    # Step over range + list.
     Saci::Recurring.next_after("0-30/15 8 * * *", Time.utc(2026, 1, 1, 8, 1)).should eq(Time.utc(2026, 1, 1, 8, 15))
     Saci::Recurring.next_after("10,20 * * * *", Time.utc(2026, 1, 1, 8, 11)).should eq(Time.utc(2026, 1, 1, 8, 20))
   end
@@ -52,9 +51,7 @@ describe Saci::Recurring do
   it "matches either dom or dow when both are restricted" do
     # 2026-01-04 is a Sunday; dom 15 does not match, dow 0 does.
     Saci::Recurring.next_after("0 0 15 * 0", Time.utc(2026, 1, 4, 0, 1)).should eq(Time.utc(2026, 1, 11, 0, 0))
-    # DOW 7 is Sunday too.
     Saci::Recurring.next_after("0 0 * * 7", Time.utc(2026, 1, 5, 0, 1)).should eq(Time.utc(2026, 1, 11, 0, 0))
-    # Names resolve (JAN, MON).
     Saci::Recurring.next_after("0 0 * JAN MON", Time.utc(2026, 1, 5, 0, 1)).should eq(Time.utc(2026, 1, 12, 0, 0))
   end
 
@@ -109,7 +106,6 @@ describe Saci::Recurring do
     good.should eq(1)
     errors.size.should eq(1)
     errors.first[0].should eq("recurring:bad")
-    # Guard released: forcing due again fires again (and reports again).
     bad.next_due = Time.utc - 1.second
     Saci::Recurring.run_due.should eq(1)
     errors.size.should eq(2)
@@ -169,7 +165,6 @@ describe Saci::Recurring do
     Saci::Cache.write(Saci::Recurring.claim_key("deduped", slot), "1", expires_in: 1.hour)
     Saci::Recurring.run_due(Time.utc).should eq(0)
     runs.should eq(0)
-    # Without a prior claim the fire goes through and leaves a claim.
     Saci::Cache.clear
     entry.next_due = Time.utc - 1.second
     due_slot = entry.next_due

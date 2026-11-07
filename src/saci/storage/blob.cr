@@ -62,7 +62,6 @@ module Saci
         @service_name || "local"
       end
 
-      # The backend that holds this blob's bytes.
       def service : Service
         Storage.service_named(service_name)
       end

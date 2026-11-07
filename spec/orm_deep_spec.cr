@@ -2,8 +2,6 @@ require "spec"
 require "file"
 require "../src/saci"
 
-# -- schema ---------------------------------------------------------------
-
 class CreateDeepOrmTables < Saci::Record::Migration
   def change
     create_table :deep_authors do |t|
@@ -66,8 +64,6 @@ class CreateDeepOrmTables < Saci::Record::Migration
   end
 end
 
-# -- models ---------------------------------------------------------------
-
 class DeepAuthor < Saci::Record::Base
   column id : Int64, primary: true
   column name : String
@@ -75,16 +71,12 @@ class DeepAuthor < Saci::Record::Base
 
   validates :name, presence: true
 
-  # G240: new/dirty children of this collection save with the owner.
   has_many :deep_posts, autosave: true
-  # G187: nested through preloading (author -> posts -> comments).
   has_many :deep_comments, through: :deep_posts
 
-  # G186: has_one through an intermediate has_one.
   has_one :deep_account
   has_one :deep_profile, through: :deep_account, source: :deep_profile
 
-  # G19: update_only reuses the existing account row.
   accepts_nested_attributes_for :deep_account, update_only: true
 end
 
@@ -92,25 +84,20 @@ class DeepPost < Saci::Record::Base
   column id : Int64, primary: true
   column title : String
   column deep_author_id : Int64
-  # G20: optimistic locking column.
   column lock_version : Int32, default: 0
   timestamps
 
   validates :title, presence: true
 
-  # G240: assigned/built author is saved before this record.
   belongs_to :deep_author, autosave: true, touch: true
 
   has_many :deep_comments
   has_many :deep_taggings
-  # G187: classic join-table through.
   has_many :deep_tags, through: :deep_taggings
-  # G187: polymorphic source + source_type filtering.
   has_many :deep_poly_taggings
   has_many :deep_poly_tags, class_name: "DeepTag", through: :deep_poly_taggings,
     source: :taggable, source_type: "DeepTag"
 
-  # G19: full nested-attribute surface.
   accepts_nested_attributes_for :deep_comments, allow_destroy: true,
     reject_if: :all_blank, limit: 3
 end
@@ -193,7 +180,6 @@ class DeepArticle < Saci::Record::Base
   column title : String
   timestamps
 
-  # G33: HABTM with explicit join table/keys.
   has_and_belongs_to_many :deep_tags, join_table: "deep_articles_deep_tags",
     foreign_key: "deep_article_id", association_foreign_key: "deep_tag_id"
 end
@@ -214,8 +200,6 @@ describe "Saci::Record deep ActiveRecord gaps" do
   after_all do
     deep_db.close
   end
-
-  # -- G19 nested attributes ---------------------------------------------
 
   describe "nested attributes (G19)" do
     it "creates children from symbol-keyed mass assignment" do
@@ -303,8 +287,6 @@ describe "Saci::Record deep ActiveRecord gaps" do
     end
   end
 
-  # -- G21 pessimistic locking / isolation --------------------------------
-
   describe "pessimistic locking and isolation (G21)" do
     it "locks and reloads a row inside a transaction on SQLite" do
       post = DeepPost.create!(title: "lock-before")
@@ -376,8 +358,6 @@ describe "Saci::Record deep ActiveRecord gaps" do
     end
   end
 
-  # -- G20 optimistic locking --------------------------------------------
-
   describe "optimistic locking (G20)" do
     it "starts at version 0 and increments on update" do
       post = DeepPost.create!(title: "optimistic")
@@ -405,8 +385,6 @@ describe "Saci::Record deep ActiveRecord gaps" do
     end
   end
 
-  # -- G186 has_one :through ---------------------------------------------
-
   describe "has_one :through (G186)" do
     it "reads, assigns, preloads and joins through the intermediate record" do
       author = DeepAuthor.create!(name: "ho-author")
@@ -429,8 +407,6 @@ describe "Saci::Record deep ActiveRecord gaps" do
       DeepProfile.where(deep_account_id: account.id).count.should eq(1)
     end
   end
-
-  # -- G187 through preloading -------------------------------------------
 
   describe "batched through preloading (G187)" do
     it "preloads classic has_many :through with two queries" do
@@ -482,8 +458,6 @@ describe "Saci::Record deep ActiveRecord gaps" do
     end
   end
 
-  # -- G240 autosave ------------------------------------------------------
-
   describe "autosave associations (G240)" do
     it "saves built has_many children with the owner in one transaction" do
       author = DeepAuthor.new(name: "auto-author")
@@ -531,8 +505,6 @@ describe "Saci::Record deep ActiveRecord gaps" do
       tag.persisted?.should be_false
     end
   end
-
-  # -- G33 HABTM ----------------------------------------------------------
 
   describe "has_and_belongs_to_many (G33)" do
     it "adds, removes and replaces join rows" do

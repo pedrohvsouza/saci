@@ -5,8 +5,6 @@ require "../src/saci/record/bulk"
 require "../src/saci/record/finders"
 require "../src/saci/record/dialect"
 
-# -- schema -----------------------------------------------------------------
-
 QX_DB_PATH = "/tmp/opencode/saci_orm_query_extras.db"
 
 def extras_db : DB::Database
@@ -39,7 +37,6 @@ class QxItem < Saci::Record::Base
   define_finders :sku, :name
 end
 
-# Custom string primary key (G12 batching must honor it).
 class QxCode < Saci::Record::Base
   column code : String, primary: true
   column label : String
@@ -67,8 +64,6 @@ describe "Saci::Record query/bulk extras" do
     extras_db.exec("DELETE FROM qx_groups")
     extras_db.exec("DELETE FROM qx_codes")
   end
-
-  # -- G11 bulk writes ------------------------------------------------------
 
   describe "insert_all / upsert_all" do
     it "inserts multiple named-tuple rows and fills timestamps" do
@@ -150,8 +145,6 @@ describe "Saci::Record query/bulk extras" do
       rows.first["id"].should_not be_nil
     end
   end
-
-  # -- G12 batching ---------------------------------------------------------
 
   describe "bulk SQL per adapter (string level)" do
     it "builds multi-row ON CONFLICT DO NOTHING for SQLite/PostgreSQL" do
@@ -244,8 +237,6 @@ describe "Saci::Record query/bulk extras" do
       QxCode.in_batches(batch_size: 2).pluck(:code).map(&.to_s).should eq(["c1", "c2", "c3"])
     end
   end
-
-  # -- G27 relation depth ---------------------------------------------------
 
   describe "relation depth" do
     before_each do
@@ -360,8 +351,6 @@ describe "Saci::Record query/bulk extras" do
     end
   end
 
-  # -- G291/G292/G293 predicates, ids, ordinals -----------------------------
-
   describe "predicates, ids and ordinals" do
     before_each do
       QxItem.insert_all((1..4).map { |i| {name: "o#{i}", sku: "o#{i}", qty: i} })
@@ -399,8 +388,6 @@ describe "Saci::Record query/bulk extras" do
     end
   end
 
-  # -- G28 explain ----------------------------------------------------------
-
   describe "explain" do
     it "returns a readable SQLite query plan" do
       QxItem.insert_all([{name: "plan", sku: "plan"}])
@@ -411,8 +398,6 @@ describe "Saci::Record query/bulk extras" do
       QxItem.explain.should contain("EXPLAIN QUERY PLAN")
     end
   end
-
-  # -- G233 dynamic finders -------------------------------------------------
 
   describe "define_finders" do
     it "generates find_by_<attr>, bang and find_or_initialize variants" do
@@ -425,8 +410,6 @@ describe "Saci::Record query/bulk extras" do
       fresh.sku.should eq("f2")
     end
   end
-
-  # -- G311 dialect ---------------------------------------------------------
 
   describe "Dialect" do
     it "builds EXTRACT fragments per adapter" do

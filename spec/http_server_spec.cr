@@ -50,7 +50,6 @@ describe Saci::HTTPServer do
       begin
         client.get("/big").body.size.should eq(300_000)
         client.post("/echo", form: {"data" => "y" * 200_000}).body.should eq("200000")
-        # Keep-alive: the same socket keeps working after big transfers.
         client.get("/big").body.size.should eq(300_000)
       ensure
         client.close

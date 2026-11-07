@@ -95,8 +95,6 @@ module Saci
       @@context_mutex.synchronize { @@contexts.delete(key) }
     end
 
-    # -- policy registry --------------------------------------------------
-
     # Registers a policy factory for a model class. The `resource` macro on
     # a policy expands to this call, so most applications never call it
     # directly.
@@ -252,8 +250,6 @@ module Saci
         resource.name
       end
     end
-
-    # -- compile-time DSL ------------------------------------------------
 
     macro allow(*actions)
       def self.__saci_policy_allowed : Array(String)

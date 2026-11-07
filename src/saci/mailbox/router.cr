@@ -67,8 +67,6 @@ module Saci
         @routes.clear
       end
 
-      # -- route builders ---------------------------------------------------
-
       # Matches every inbound email (unless further conditions are added).
       def route(mailbox : Base.class, *, all : Bool = false,
                 to : String | Regex | Array(String) | Nil = nil,
@@ -141,9 +139,6 @@ module Saci
         add_route(Saci::Mailbox.resolve_mailbox(mailbox), matcher)
       end
 
-      # -- lookup -----------------------------------------------------------
-
-      # First matching route, or nil.
       def route_for(inbound : InboundEmail) : Route?
         @routes.find { |route| route.matches?(inbound) }
       end

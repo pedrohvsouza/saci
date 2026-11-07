@@ -182,8 +182,6 @@ class ExtrasFileLayoutMailer < Saci::Mailer::Base
   end
 end
 
-# Local HTTP sink used to verify provider payloads/headers without touching
-# the network.
 class ExtrasHttpSink
   getter method : String = ""
   getter path : String = ""
@@ -213,7 +211,6 @@ class ExtrasHttpSink
   end
 end
 
-# Minimal SMTP sink that captures the DATA payload.
 class ExtrasSmtpSink
   getter data : String = ""
 

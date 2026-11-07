@@ -289,7 +289,6 @@ module Saci
         end
       end
 
-      # Body (POST/PUT/PATCH).
       if body = request.body
         content_type = request.headers["Content-Type"]? || ""
         raw = body.gets_to_end
@@ -585,8 +584,6 @@ module Saci
     def to_s(io : IO) : Nil
       @values.to_s(io)
     end
-
-    # -- nested parsing ----------------------------------------------------
 
     # Scalar as String, or nil for hashes/arrays. JSON null counts as scalar.
     def self.scalar_string(any : JSON::Any) : String?

@@ -150,8 +150,6 @@ describe Saci::Mailer::SMTP do
     settings = Saci::Mailer::SmtpSettings.new(
       host: "127.0.0.1", port: server.port,
       username: "user", password: "secret", tls: :auto)
-    # STARTTLS advertised but unimplementable here → 502 → SmtpError,
-    # and no credentials cross the wire.
     expect_raises(Saci::Mailer::SmtpError, /502/) do
       server.run_once do
         Saci::Mailer::SMTP.deliver(smtp_mail, settings)

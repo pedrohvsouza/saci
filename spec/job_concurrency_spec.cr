@@ -113,7 +113,6 @@ describe "Job concurrency limits" do
     Saci::Job.execute(ConcSlowJob, "{}")
     done.receive
     ConcSlowJob.runs.should eq(1)
-    # Slot released afterwards — the next run proceeds.
     Saci::Job.execute(ConcSlowJob, "{}")
     ConcSlowJob.runs.should eq(2)
   end

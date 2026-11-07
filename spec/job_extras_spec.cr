@@ -4,14 +4,10 @@ require "../src/saci"
 
 JOB_EXTRAS_DB_PATH = "/tmp/opencode/saci_job_extras_test.db"
 
-# -- models -----------------------------------------------------------------
-
 class JobExtrasUser < Saci::Record::Base
   column id : Int64, primary: true
   column name : String
 end
-
-# -- jobs -------------------------------------------------------------------
 
 class ExtrasCallbackJob < Saci::Job::Base
   @@log = [] of String
@@ -378,8 +374,6 @@ class ExtrasDoomedJob < Saci::Job::Base
     raise "always doomed"
   end
 end
-
-# -- helpers ----------------------------------------------------------------
 
 def extras_db : DB::Database
   Saci::Record.database("primary").as(DB::Database)
@@ -804,7 +798,6 @@ describe "job extras" do
         ExtrasFlakyStepJob.perform_later({} of String => Int32)
         Saci::Job::Db.drain.should eq(1)
       end
-      # `first` completed once; the failed `second` reran on retry.
       ExtrasFlakyStepJob.runs.should eq(["first", "second", "second"])
     end
   end

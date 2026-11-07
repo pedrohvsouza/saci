@@ -99,7 +99,6 @@ module Saci
       @@mutex.synchronize { @@max_value_bytes = value }
     end
 
-    # Restores framework defaults (spec isolation).
     def self.reset! : Nil
       @@mutex.synchronize do
         @@serializer = :json

@@ -83,8 +83,6 @@ module Saci
         end
       end
 
-      # -- existence checks ---------------------------------------------
-
       def self.table_exists?(db : DB::Database | DB::Connection, table : String | Symbol) : Bool
         name = table.to_s
         case Record.adapter_of(db)
@@ -146,8 +144,6 @@ module Saci
         end
       end
 
-      # -- column / index / FK listings ---------------------------------
-
       def self.columns(db : DB::Database | DB::Connection, table : String | Symbol) : Array(ColumnInfo)
         case Record.adapter_of(db)
         when :postgres then pg_columns(db, table.to_s)
@@ -196,8 +192,6 @@ module Saci
         names.map { |n| ViewInfo.new(n, view_body(db, n)) }
       end
 
-      # -- helpers -------------------------------------------------------
-
       private def self.exists?(db : DB::Database | DB::Connection, sql : String, arg : String) : Bool
         found = false
         Record.query_compat(db, sql, [arg] of Value) do |rs|
@@ -236,8 +230,6 @@ module Saci
         else false
         end
       end
-
-      # -- SQLite --------------------------------------------------------
 
       private def self.sqlite_columns(db : DB::Database | DB::Connection, table : String) : Array(ColumnInfo)
         qt = table.gsub('"', "\"\"")
@@ -508,8 +500,6 @@ module Saci
         nil
       end
 
-      # -- PostgreSQL ----------------------------------------------------
-
       private def self.pg_columns(db : DB::Database | DB::Connection, table : String) : Array(ColumnInfo)
         pk_cols = Set(String).new
         escaped = table.gsub("'", "''")
@@ -645,8 +635,6 @@ module Saci
         out
       end
 
-      # -- MySQL ---------------------------------------------------------
-
       private def self.mysql_columns(db : DB::Database | DB::Connection, table : String) : Array(ColumnInfo)
         pk_cols = Set(String).new
         Record.query_compat(db, "SELECT column_name FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = ? AND index_name = 'PRIMARY' ORDER BY seq_in_index", [table] of Value) do |rs|
@@ -765,8 +753,6 @@ module Saci
         out
       end
 
-      # -- views ---------------------------------------------------------
-
       private def self.view_body(db : DB::Database | DB::Connection, name : String) : String
         case Record.adapter_of(db)
         when :postgres
@@ -799,7 +785,6 @@ module Saci
       end
     end
 
-    # -- module-level convenience API -----------------------------------
     # The database argument is optional and defaults to the primary
     # connection, so migrations and console sessions can ask
     # `Saci::Record.table_exists?(:users)`.

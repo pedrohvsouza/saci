@@ -1,6 +1,5 @@
 module Saci
   module Storage
-    # Base error for storage failures.
     class Error < Exception
     end
 

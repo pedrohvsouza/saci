@@ -101,7 +101,6 @@ module Saci
       @middleware.use(Middleware::Compression.new(self))
     end
 
-    # -- existing module-level settings -------------------------------------
     # These delegate so `Saci.force_ssl = ...` and `config.force_ssl = ...`
     # cannot drift apart.
 
@@ -191,8 +190,6 @@ module Saci
       end
     end
 
-    # -- typed numeric setters (accept any Crystal integer/nil) -------------
-
     def max_request_body : Int64?
       @max_request_body
     end
@@ -216,8 +213,6 @@ module Saci
     def max_request_line_size=(value : Int?) : Int32?
       @max_request_line_size = value.try(&.to_i32)
     end
-
-    # -- block-style configuration helpers ----------------------------------
 
     def cors(& : Middleware::CORS::Settings ->) : Middleware::CORS::Settings
       yield @cors
@@ -247,8 +242,6 @@ module Saci
       @middleware.use(klass, **options)
     end
 
-    # -- declarative YAML config (G147/G148) --------------------------------
-    #
     # `Saci.config_for(:database)` reads `config/database.yml` for the current
     # `APP_ENV`. A missing file returns an empty section, so env-var defaults
     # keep working for apps that never create these files.

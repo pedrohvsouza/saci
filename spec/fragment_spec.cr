@@ -8,7 +8,6 @@ class FragWidget < Saci::Record::Base
   column updated_at : Time
 end
 
-# A store that is always down (fail-open specs).
 class FragDownStore < Saci::Cache::Store
   def read(key : String) : String?
     raise Saci::Cache::RedisDown.new("down")
@@ -181,13 +180,11 @@ describe "russian-doll fragments" do
     inner_calls.should eq(1)
     outer_calls.should eq(1)
 
-    # Bust the outer entry only: the outer miss re-renders around the inner hit.
     Saci::Cache.delete("frag/doll-outer").should be_true
     render.call.should eq("O[I]")
     outer_calls.should eq(2)
     inner_calls.should eq(1)
 
-    # Bust both: everything re-renders.
     Saci::Cache.delete("frag/doll-inner").should be_true
     Saci::Cache.delete("frag/doll-outer").should be_true
     render.call.should eq("O[I]")
@@ -198,9 +195,7 @@ describe "russian-doll fragments" do
   it "documents the stale-outer caveat (inner delete alone does not expire the outer entry)" do
     Saci::Views.cache("frag/cave-outer") { "O[" + Saci::Views.cache("frag/cave-inner") { "I1" } + "]" }.should eq("O[I1]")
     Saci::Cache.delete("frag/cave-inner")
-    # Outer hit still embeds the old inner HTML.
     Saci::Views.cache("frag/cave-outer") { "O[" + Saci::Views.cache("frag/cave-inner") { "I2" } + "]" }.should eq("O[I1]")
-    # A version bump expires the outer entry and picks up the fresh inner HTML.
     Saci::Views.cache("frag/cave-outer", version: 2) { "O[" + Saci::Views.cache("frag/cave-inner") { "I2" } + "]" }.should eq("O[I2]")
   end
 end
@@ -222,12 +217,10 @@ describe "fragment caching in ECR (render_partial collections)" do
       first.body.should contain(%(<div class="comment">one</div>))
       first.body.should contain(%(<div class="comment">two</div>))
 
-      # Same cache key with a new stamp still serves the first render (hit).
       second = app.get("/stamped-list?stamp=B")
       second.body.should contain("A")
       second.body.should_not contain("B")
 
-      # Explicit expiry re-renders with the new stamp.
       Saci::Cache.delete("frag/stamped-list").should be_true
       third = app.get("/stamped-list?stamp=B")
       third.body.should contain("B")

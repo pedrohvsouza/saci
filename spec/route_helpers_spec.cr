@@ -1,8 +1,6 @@
 require "spec"
 require "../src/saci"
 
-# -- tiny test controllers --------------------------------------------------
-
 class RouteHelpersHomeController < Saci::Controller
   def index
     render text: "home"
@@ -123,8 +121,6 @@ class Comment
   end
 end
 
-# -- compile-time helper module ---------------------------------------------
-
 Saci::Routes.define do |r|
   r.get "/one", RouteHelpersHomeController, :index, as: :one
 end
@@ -157,8 +153,6 @@ Saci::Routes.define RouteHelpersApp do |r|
   end
   r.direct(:status) { |_params| "/statusz" }
 end
-
-# -- runtime router ---------------------------------------------------------
 
 def route_helpers_router : Saci::Router
   Saci::Router.new.draw do |r|

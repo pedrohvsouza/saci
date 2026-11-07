@@ -11,7 +11,6 @@ module Saci
   # <%= image_tag "images/logo.png", alt: "Logo", size: "64x64" %>
   # ```
   module Views
-    # Asset URL helpers (also on `Saci::Assets` and `Saci::Controller`).
     def self.asset_path(source : String, digest : Bool = true) : String
       Assets.asset_path(source, digest)
     end
@@ -152,7 +151,6 @@ module Saci
   end
 
   class Controller
-    # -- asset pipeline ------------------------------------------------------
     def asset_path(source : String, digest : Bool = true) : String
       Assets.asset_path(source, digest)
     end
@@ -161,7 +159,6 @@ module Saci
       Assets.asset_url(source, host: host, protocol: protocol, port: port)
     end
 
-    # -- asset tags ----------------------------------------------------------
     def image_tag(source : String, alt : String? = nil, size : String? = nil, **attributes) : String
       Views.image_tag(source, alt, size, **attributes)
     end

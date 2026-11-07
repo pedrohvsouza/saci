@@ -2,9 +2,6 @@ require "spec"
 require "file_utils"
 require "../examples/forem_lite_domain"
 
-# Forem Lite validation suite: one app exercising every Saci subsystem —
-# router, controllers/filters, ORM, views, caching, CSRF/sessions, throttle,
-# storage, jobs, mailers, cable, I18n, logging, credentials, env, multidb.
 LITE_SPEC_DB           = "/tmp/opencode/forem_lite_spec.db"
 LITE_SPEC_ANALYTICS_DB = "/tmp/opencode/forem_lite_spec_analytics.db"
 LITE_SPEC_STORAGE      = "/tmp/opencode/forem_lite_spec_storage"
@@ -33,7 +30,6 @@ class LiteClient
     track(@app.put(path, with_cookies(headers), body))
   end
 
-  # Rails-style `_method` tunneling (what `link_to(..., method: :delete)` emits).
   def post_override(path : String, method : String) : HTTP::Client::Response
     ensure_csrf!
     headers = HTTP::Headers{
@@ -143,11 +139,9 @@ describe "forem-lite validation app" do
         resp.status_code.should eq(201)
         body = JSON.parse(resp.body)
         body["username"].as_s.should eq("carol")
-        # Session persisted: the profile round-trips behind the cookie.
         me = client.get("/lite_users/#{body["id"].as_i}")
         me.status_code.should eq(200)
         JSON.parse(me.body)["username"].as_s.should eq("carol")
-        # Welcome mail rendered now, delivered through the job system.
         Saci::Mailer.deliveries.map(&.subject).should contain("Welcome to Forem Lite, carol!")
       end
     end
@@ -172,7 +166,6 @@ describe "forem-lite validation app" do
     Saci::TestSession.serve(forem_lite_router) do |app|
       client = LiteClient.new(app)
       lite_login!(client)
-      # Logged in: creating articles works.
       created = client.post("/lite_articles", {title: "A valid title", body: "body"}.to_json)
       created.status_code.should eq(201)
 
@@ -382,7 +375,6 @@ describe "forem-lite validation app" do
       view = LitePageView.first.not_nil!
       view.article_id.should eq(article.id)
       view.ip.should eq("10.0.0.7")
-      # The primary database never sees the analytics table.
       Saci::Record.database("primary").scalar(
         "SELECT COUNT(*) FROM sqlite_master WHERE name = 'lite_page_views'").should eq(0)
     end

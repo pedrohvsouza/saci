@@ -170,7 +170,6 @@ describe "Saci::Record::Schema (SQLite)" do
       names = Saci::Record::Schema.introspect(db).map(&.name)
       names.should eq(["schema_gadgets", "schema_widgets"])
 
-      # Data-less: structure is back, rows are not, constraints enforced.
       db.scalar("SELECT COUNT(*) FROM \"schema_widgets\"").should eq(0)
       db.exec("INSERT INTO \"schema_widgets\" (\"title\", \"created_at\", \"updated_at\") VALUES (?, ?, ?)", "x", "2024-01-01", "2024-01-02")
       expect_raises(Exception, /nique/i) do
@@ -326,7 +325,6 @@ describe "Saci::Record::Schema (live PostgreSQL)" do
       schema_col(tables, "schema_pg_things", "big").logical_type.should eq(:bigint)
       schema_col(tables, "schema_pg_things", "score").logical_type.should eq(:float)
       schema_col(tables, "schema_pg_things", "score").default_value.should eq(1.5)
-      # Exact decimal columns map to NUMERIC on PostgreSQL.
       schema_col(tables, "schema_pg_things", "amount").logical_type.should eq(:decimal)
       schema_col(tables, "schema_pg_things", "amount").default_value.should eq(Saci::Record::Decimal.new("2.5"))
       schema_col(tables, "schema_pg_things", "day").logical_type.should eq(:date)
@@ -391,7 +389,6 @@ describe "Saci::Record::Schema (live MySQL)" do
       schema_col(tables, "schema_my_things", "count").default_value.should eq(3_i64)
       schema_col(tables, "schema_my_things", "big").logical_type.should eq(:bigint)
       schema_col(tables, "schema_my_things", "score").logical_type.should eq(:float)
-      # Exact decimal columns map to DECIMAL on MySQL; JSON remains TEXT.
       schema_col(tables, "schema_my_things", "amount").logical_type.should eq(:decimal)
       schema_col(tables, "schema_my_things", "amount").default_value.should eq(Saci::Record::Decimal.new("2.5"))
       schema_col(tables, "schema_my_things", "day").logical_type.should eq(:date)

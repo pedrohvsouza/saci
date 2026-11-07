@@ -23,7 +23,6 @@ def link_extras_framework_lib! : Nil
   File.symlink(framework_lib, "lib") unless File.exists?("lib")
 end
 
-# Captures generator/destroy/app:update output through the injectable IOs.
 def capture_extras_output(& : ->) : Tuple(String, String)
   out_mem = IO::Memory.new
   err_mem = IO::Memory.new
@@ -372,7 +371,6 @@ describe "saci task" do
         Saci::CLI.run(["task", "spec:marker"]).should eq(0)
         File.read("task_marker.txt").should eq("ran")
 
-        # `saci runner` loads task files too (integration seam).
         Saci::CLI::Inspect::Runner.wrapper_source(code_body: "1").should contain("../lib/tasks/*")
       end
     end

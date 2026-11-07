@@ -162,10 +162,8 @@ describe Saci::Job::Db do
     Saci::Record.exec_compat(db,
       "UPDATE saci_jobs SET locked_by = 'live-worker', locked_at = ?",
       [Time.utc.to_rfc3339(fraction_digits: 9)] of Saci::Record::Value)
-    # Fresh locks are respected…
     Saci::Job::Db.drain.should eq(0)
     DbProbeJob.ran.should be_empty
-    # …but expired ones are reclaimed.
     Saci::Job::Db.configure(lock_timeout: 1.second)
     begin
       sleep 1.1.seconds

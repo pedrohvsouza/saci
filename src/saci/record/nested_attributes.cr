@@ -6,8 +6,6 @@ module Saci
     class TooManyRecords < Exception
     end
 
-    # -- nested-attribute input helpers (G19) ------------------------------
-    #
     # Form params arrive as nested hashes with string keys; direct Crystal
     # calls usually use symbol-keyed named tuples. Both shapes are normalized
     # to `Hash(String, Saci::Record::Value)` here.

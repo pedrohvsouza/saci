@@ -104,8 +104,6 @@ module Saci
       apply_hsts(response)
     end
 
-    # -- HSTS ---------------------------------------------------------------
-
     def self.hsts : Bool?
       @@mutex.synchronize { @@hsts }
     end
@@ -151,8 +149,6 @@ module Saci
       response.headers[HSTS_HEADER] = value
     end
 
-    # -- regexp DoS (G289) --------------------------------------------------
-
     def self.regexp_timeout : Time::Span?
       @@mutex.synchronize { @@regexp_timeout }
     end
@@ -168,8 +164,6 @@ module Saci
     def self.regexp_timeout_enforced? : Bool
       false
     end
-
-    # -- cookies defaults (G196) --------------------------------------------
 
     def self.cookies_same_site_protection : Symbol?
       Cookies.same_site_protection

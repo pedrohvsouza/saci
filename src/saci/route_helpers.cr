@@ -44,13 +44,9 @@ module Saci
       @@default_url_options = options
     end
 
-    # Named route used by polymorphic URL helpers for `Admin::Post` etc.
-    # `resolve` on a router can override this convention.
     def self.configure_default_url_options(**options) : Nil
       options.each { |key, value| @@default_url_options[key.to_s] = value.to_s }
     end
-
-    # -- model naming (G257/G258) -----------------------------------------
 
     # Small Rails `ActiveModel::Name` equivalent. Only the naming surface
     # used by routes/forms is implemented.
@@ -144,8 +140,6 @@ module Saci
       core = persisted ? "#{base}_#{record.id}" : "new_#{base}"
       prefix ? "#{prefix}_#{core}" : core
     end
-
-    # -- path generation ---------------------------------------------------
 
     # Replaces `:name` / `*name`, drops optional `(...)` groups whose params
     # were not supplied, then appends extra params as a query string.
@@ -359,8 +353,6 @@ module Saci
       end
     end
 
-    # -- absolute URLs -----------------------------------------------------
-
     def self.full_url(path : String, request : HTTP::Request? = nil, options : Hash(String, String)? = nil) : String
       return path if path.starts_with?("http://") || path.starts_with?("https://")
       merged = {} of String => String
@@ -398,8 +390,6 @@ module Saci
       value = value.starts_with?("/") ? value : "/#{value}"
       value.ends_with?("/") ? value[0...-1] : value
     end
-
-    # -- polymorphic routes -------------------------------------------------
 
     # `polymorphic_path(post)` -> `post_path(post)` when named routes exist,
     # otherwise `/posts/12` (Rails conventions). New records use
@@ -579,8 +569,6 @@ module Saci
     def self.edit_polymorphic_path(records : Array, router : Router? = nil, **params) : String
       polymorphic_path(records, router, :edit, **params)
     end
-
-    # -- naming/inflection --------------------------------------------------
 
     def self.underscore(word : String) : String
       word.gsub("::", "/")

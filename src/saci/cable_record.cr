@@ -2,7 +2,6 @@ require "./cable"
 
 module Saci
   module Cable
-    # Default namespace for record-derived streams (`saci:Post:1`).
     DEFAULT_BROADCAST_NAMESPACE = "saci"
 
     # Derives the pub/sub stream name for a record (G94).

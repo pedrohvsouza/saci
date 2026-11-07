@@ -1,10 +1,6 @@
 require "spec"
 require "../src/saci"
 
-# DB-backed cache (G145/G163). Every test uses its own SQLite file through
-# `DbStore.new(url:)`, so nothing here needs a live PostgreSQL/MySQL server
-# (the adapter-specific SQL paths are shared/guarded in `cache_db.cr`).
-
 CACHE_DB_TMP = "/tmp/opencode"
 
 private def cache_db_new(*, namespace : String = "", max_entries : Int32? = nil, max_bytes : Int64? = nil) : Tuple(Saci::Cache::DbStore, String)
@@ -35,7 +31,6 @@ describe Saci::Cache::DbStore do
       store.read("k").should eq("v")
       store.exist?("k").should be_true
 
-      # Same type-tagged encoding as MemoryStore/RedisStore.
       store.write("i", 42_i64)
       store.write("f", 1.5_f64)
       store.write("bt", true)
@@ -51,7 +46,6 @@ describe Saci::Cache::DbStore do
       store.read_value("bf").should eq(false)
       store.read_value("t").as(Time).to_unix_ns.should eq(now.to_unix_ns)
       store.read_value("n").should be_nil
-      # A stored Nil is a present entry, and fetch treats it as a hit.
       store.exist?("n").should be_true
       calls = 0
       store.fetch_value("n") { calls += 1; "x" }.should be_nil
@@ -92,7 +86,7 @@ describe Saci::Cache::DbStore do
 
       store.write("old2", "v", expires_in: 1.millisecond)
       sleep 10.milliseconds
-      store.prune.should eq(1_i64) # Rails/Solid Cache alias
+      store.prune.should eq(1_i64)
       store.count.should eq(2_i64)
     ensure
       cache_db_close(store, path)
@@ -223,8 +217,6 @@ describe Saci::Cache::DbStore do
     other = nil
     begin
       store.write("shared", "value")
-      # A second store on the same file sees the entry (persisted, not
-      # in-process state).
       other = Saci::Cache::DbStore.new(url: "sqlite3://#{path}")
       other.read("shared").should eq("value")
       other.write("from-second", 9_i64)
@@ -306,7 +298,6 @@ describe Saci::Cache::DbStore do
       store.write("json-overload", json)
       store.read_json("json-overload").not_nil!.to_json.should eq(json.to_json)
 
-      # JSON stored as a plain String (the Memory/Redis-compatible path).
       store.write("json-string", %({"hello":"world"}))
       store.read("json-string").should eq(%({"hello":"world"}))
     ensure
@@ -350,7 +341,6 @@ describe "Saci::Cache DB store selection" do
       Saci::Cache.read("primary").should eq("yes")
       Saci::Cache.store.should be_a(Saci::Cache::DbStore)
 
-      # `use_database!` swaps the global store and returns it.
       cache = Saci::Cache.use_database!(db, namespace: "env", max_entries: 10)
       Saci::Cache.store.should be(cache)
       Saci::Cache.write("scoped", "v")

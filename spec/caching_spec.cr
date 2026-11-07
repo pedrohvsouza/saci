@@ -88,9 +88,7 @@ describe "HTTP caching" do
 
       w1 = app.get("/widget?t=1000")
       w1_etag = w1.headers["ETag"].not_nil!
-      # Same timestamp -> fresh.
       app.get("/widget?t=1000", HTTP::Headers{"If-None-Match" => w1_etag}).status_code.should eq(304)
-      # Changed record -> stale again.
       app.get("/widget?t=2000", HTTP::Headers{"If-None-Match" => w1_etag}).status_code.should eq(200)
     end
   end

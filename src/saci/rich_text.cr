@@ -38,10 +38,8 @@ module Saci
     # attribute allowlist (see `ATTACHMENT_ATTRIBUTES`).
     ALLOWED_TAGS = %w(p br strong em a ul ol li code pre blockquote h1 h2 h3 action-text-attachment)
 
-    # Tags that render without a closing tag.
     VOID_TAGS = %w(br)
 
-    # `<action-text-attachment>` tag name (Trix Action Text embed).
     ATTACHMENT_TAG = "action-text-attachment"
 
     # Attributes preserved on `<action-text-attachment>`: the signed
@@ -99,7 +97,6 @@ module Saci
       attrs
     end
 
-    # Truncates `text` to `length` characters, appending `omission` when cut.
     def self.truncate(text : String, length : Int32 = 200, omission : String = "…") : String
       return text if text.size <= length
       text[0, length].rstrip + omission
@@ -144,8 +141,6 @@ module Saci
         raw == other.raw
       end
     end
-
-    # -- sanitizer internals ------------------------------------------------
 
     # Sanitizes one tag-shaped piece: comments are dropped, allowlisted
     # tags are re-emitted with safe attributes only, everything else is
@@ -256,7 +251,6 @@ module Saci
     # post.body_rich_text = "<p>hi</p>" # raw write (sanitized on read)
     # ```
     macro has_rich_text(name)
-      # Reads the backing column as a `RichText::Content` value object.
       def {{name.id}}_rich_text : Saci::RichText::Content
         Saci::RichText::Content.new({{name.id}})
       end

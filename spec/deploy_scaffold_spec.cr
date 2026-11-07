@@ -7,8 +7,6 @@ require "../src/saci/cli/util"
 require "../src/saci/cli/generate_command"
 require "../src/saci/cli/new_command"
 
-# Coverage for the deployment/config scaffold (G121, G138/G139, G141/G142/
-# G144, G147/G148, G165/G166, G174) and the runtime loaders they rely on.
 private def with_deploy_app(name : String, db : String = "sqlite", devcontainer : Bool = false, & : String ->) : Nil
   dir = File.join("/tmp/opencode", "saci-deploy-#{name}-#{Random.rand(1_000_000)}")
   begin
@@ -383,7 +381,6 @@ describe "deployment/config scaffold" do
   end
 end
 
-# Minimal controller used only to build an Application in the API-shape spec.
 class HealthControllerStub < Saci::Controller
   def show
     render plain: "OK", status: 200

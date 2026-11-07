@@ -22,7 +22,6 @@ class FtsArticle < Saci::Record::Base
   validates :title, presence: true
 end
 
-# Never indexed — proves the setup guard.
 class FtsUnindexed < Saci::Record::Base
   column id : Int64, primary: true
   column title : String
@@ -94,7 +93,6 @@ describe "Saci::Record::FTS" do
     expect_raises(ArgumentError, /unknown column/) do
       Saci::Record::FTS.setup(FtsArticle, [:bogus_col])
     end
-    # Failed setup leaves the previous index intact.
     FtsArticle.create!(title: "still indexed", body: "y")
     FtsArticle.search_fts("indexed").count.should eq(1)
   end

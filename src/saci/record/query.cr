@@ -805,8 +805,6 @@ module Saci
         pluck(@klass.__saci_primary_key)
       end
 
-      # -- relation predicates ---------------------------------------------
-
       def any? : Bool
         if @none_flag
           return false
@@ -868,8 +866,6 @@ module Saci
         end
         row
       end
-
-      # -- sole / find-or-create -------------------------------------------
 
       # `sole` — exactly one record or raise (`RecordNotFound` for zero,
       # `SoleRecordExceeded` for more than one).
@@ -1050,8 +1046,6 @@ module Saci
         values
       end
 
-      # -- internal (association preloading, grouped aggregates) -------------
-
       # Attaches preloaded records to this (already scoped) query. Terminal
       # reads use them; further chaining re-queries. Used by `has_many`
       # getters when the association was eager-loaded.
@@ -1069,7 +1063,6 @@ module Saci
         self
       end
 
-      # HABTM join-table wiring (G33).
       def __saci_with_habtm(owner : Saci::Record::Base, table : String, fk : String, afk : String) : Query(T)
         @__saci_habtm_owner = owner
         @__saci_habtm_table = table
@@ -1234,8 +1227,6 @@ module Saci
       def __saci_grouped_aggregate(func : String, col : String) : Array(Array(Value))
         __saci_grouped_rows("#{func}(#{qualified(col)})")
       end
-
-      # -- SQL fragments -----------------------------------------------------
 
       private def scalar_aggregate(func : String, col : String) : Value
         ad = adapter

@@ -54,7 +54,6 @@ module Saci
     # and `Array(String)` (string arrays: native `TEXT[]` on PostgreSQL,
     # JSON text elsewhere).
     class Base
-      # -- connection ------------------------------------------------------
       # Delegates to the module-global connection (see `Saci::Record` —
       # Crystal class variables are per-class, so connection state cannot
       # live here and be visible to subclasses).
@@ -96,8 +95,6 @@ module Saci
           end
         {% end %}
       end
-
-      # -- schema DSL -------------------------------------------------------
 
       macro inherited
         # Self-register for schema drift checks (`Saci::Record.check_schema!`,
@@ -338,7 +335,6 @@ module Saci
           end
         {% end %}
 
-        # -- dirty tracking (ActiveModel::Dirty-compatible) -------------
         def {{decl.var.id}}_changed? : Bool
           __saci_attribute_changed?({{decl.var.stringify}})
         end
@@ -573,7 +569,6 @@ module Saci
       def __saci_run_dependents : Nil
       end
 
-      # -- autosave / nested-attribute hooks (G19, G240) -------------------
       # These chains are appended to by association macros (`autosave: true`)
       # and by `accepts_nested_attributes_for`. `Base#save` consults them to
       # (a) validate associated records before writing and (b) write them in
@@ -646,8 +641,6 @@ module Saci
 
       def __saci_apply_defaults : Nil
       end
-
-      # -- construction -----------------------------------------------------
 
       @new_record : Bool = true
       @destroyed : Bool = false
@@ -742,8 +735,6 @@ module Saci
       def __saci_set_assoc(key : String, value : Base | Array(Base) | Nil) : Nil
         @__saci_assoc_cache[key] = value
       end
-
-      # -- persistence ------------------------------------------------------
 
       def save : Bool
         return false unless valid?
@@ -1174,8 +1165,6 @@ module Saci
         nil
       end
 
-      # -- loading ----------------------------------------------------------
-
       def self.load_row(rs : DB::ResultSet, adapter : Adapter = :sqlite) : self
         obj = new
         __saci_column_names.each do |(col_name, col_type)|
@@ -1191,8 +1180,6 @@ module Saci
         # (a fresh instance fetched from the database, not a save).
         __saci_dirty_reset!
       end
-
-      # -- finders ----------------------------------------------------------
 
       def self.all : Query(self)
         Query(self).new(self)
@@ -1393,7 +1380,6 @@ module Saci
         true
       end
 
-      # -- counters & touching ------------------------------------------------
       # `update_counter(id, :views, 1)` / `update_counters(id, {views: 1})` —
       # atomic `COALESCE(col,0) + delta` writes, skipping validations and
       # callbacks (like Rails). `update_counter` also exists on instances.
@@ -1459,10 +1445,7 @@ module Saci
         all.touch_all(*names, time: time)
       end
 
-      # -- validations ------------------------------------------------------
-
       macro validates(col, presence = nil, min_length = nil, max_length = nil, length = nil, format = nil, uniqueness = nil, inclusion = nil, numericality = nil, allow_nil = nil, allow_blank = nil, on = nil, **_saci_cond)
-        # -- macro-time normalization ------------------------------------
         {% if on %}
           {% on_s = on.id.stringify %}
           {% unless on_s == "create" || on_s == "update" %}
@@ -1828,8 +1811,6 @@ module Saci
         end
       end
 
-      # -- callbacks ------------------------------------------------------
-      #
       # Minimal Rails-compatible set: `before_validation` (with `on:`),
       # `before_save`, `after_save`, `after_create`, `after_commit` (with
       # `on:`) and `after_destroy`. Each accepts method names, inline
@@ -2073,8 +2054,6 @@ module Saci
           {% end %}
         end
       end
-
-      # -- associations -----------------------------------------------------
 
       # `belongs_to :user` reads `user_id` and returns the `User`
       # (nil when the foreign key is nil, raises `RecordNotFound` when
@@ -3560,11 +3539,8 @@ end
 # own file to keep the core class readable and the diff reviewable.
 require "./dirty"
 
-# Pessimistic/optimistic locking, transaction isolation (G20/G21).
 require "./locking"
 
-# `accepts_nested_attributes_for` (G19).
 require "./nested_attributes"
 
-# `has_and_belongs_to_many` (G33).
 require "./habtm"

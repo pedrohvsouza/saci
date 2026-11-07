@@ -2,8 +2,6 @@ require "spec"
 require "file"
 require "../src/saci"
 
-# -- schema ---------------------------------------------------------------
-
 class CreateCoreProducts < Saci::Record::Migration
   def change
     create_table :core_products do |t|
@@ -20,8 +18,6 @@ class CreateCoreProducts < Saci::Record::Migration
     end
   end
 end
-
-# -- models ---------------------------------------------------------------
 
 # Alias/qualified-type coverage: `Decimal`, `Saci::Record::Decimal` and
 # `BigDecimal` all map to the exact BigDecimal-backed column.
@@ -73,8 +69,6 @@ describe "Saci::Record ORM core gaps" do
   after_all do
     core_db.close
   end
-
-  # -- G10 dirty tracking -------------------------------------------------
 
   describe "dirty tracking (G10)" do
     it "tracks mass-assignment changes until save" do
@@ -159,7 +153,6 @@ describe "Saci::Record ORM core gaps" do
       p.changed?.should be_true
       p.previous_changes["name"].should eq([nil, "Original"])
 
-      # A later successful save commits the pending change.
       p.name = "Fixed"
       p.save.should be_true
       p.previous_changes["name"].should eq(["Original", "Fixed"])
@@ -203,8 +196,6 @@ describe "Saci::Record ORM core gaps" do
       p.tags.should eq(["one", "two"])
     end
   end
-
-  # -- G297 exact decimal -------------------------------------------------
 
   describe "exact decimal (G297)" do
     it "uses TEXT_DECIMAL on SQLite and native NUMERIC/DECIMAL elsewhere" do
@@ -282,7 +273,6 @@ describe "Saci::Record ORM core gaps" do
       dump.should contain(":decimal")
       dump.should contain("BigDecimal.new(\"1.25\")")
 
-      # A dump/load round-trip recreates the exact TEXT_DECIMAL type.
       fresh_path = "/tmp/opencode/saci_orm_core_schema.db"
       File.delete(fresh_path) if File.exists?(fresh_path)
       fresh = DB.open("sqlite3://#{fresh_path}")
@@ -292,7 +282,6 @@ describe "Saci::Record ORM core gaps" do
         reloaded_products = reloaded.find! { |t| t.name == "core_products" }
         reloaded_products.columns.find! { |c| c.name == "price" }.logical_type.should eq(:decimal)
         reloaded_products.columns.find! { |c| c.name == "fee" }.default_value.should eq(BigDecimal.new("1.25"))
-        # Body (excluding the timestamped header line) is byte-stable.
         dump_body = dump.lines.reject(&.starts_with?("# db/schema.cr")).join
         redump_body = Saci::Record::Schema.dump(fresh, "sqlite3://#{ORM_CORE_DB_PATH}")
           .lines.reject(&.starts_with?("# db/schema.cr")).join
@@ -303,8 +292,6 @@ describe "Saci::Record ORM core gaps" do
       end
     end
   end
-
-  # -- G299 assigned timestamps -------------------------------------------
 
   describe "assigned timestamps (G299)" do
     it "preserves explicit created_at/updated_at on create" do
@@ -339,14 +326,11 @@ describe "Saci::Record ORM core gaps" do
       p.reload.updated_at.should eq(explicit)
       p.created_at.not_nil!.to_unix.should eq(original_created.not_nil!.to_unix)
 
-      # A normal update still bumps updated_at.
       p.update!(name: "Bumped")
       p.reload.updated_at.not_nil!.year.should eq(Time.utc.year)
       p.reload.updated_at.not_nil!.should be > explicit
     end
   end
-
-  # -- G294 persistence helpers -------------------------------------------
 
   describe "persistence helpers (G294)" do
     it "update_attribute skips validations but runs callbacks" do
@@ -431,8 +415,6 @@ describe "Saci::Record ORM core gaps" do
       p.previously_persisted?.should be_true
     end
   end
-
-  # -- G13 model enum -----------------------------------------------------
 
   describe "model enum (G13)" do
     it "generates predicates, bang methods, status_value and a class hash" do

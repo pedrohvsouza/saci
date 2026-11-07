@@ -27,7 +27,6 @@ class AuthExtrasUser < Saci::Record::Base
   end
 end
 
-# Exercises the `generates_password_reset_token` convenience macro.
 class AuthExtrasConvenienceUser < Saci::Record::Base
   column id : Int64, primary: true
   column email : String
@@ -120,11 +119,9 @@ describe "generates_token_for / password reset" do
     found = AuthExtrasUser.find_by_token_for(:password_reset, token)
     found.not_nil!.id.should eq(user.id)
 
-    # Purpose separation, including the string form.
     AuthExtrasUser.find_by_token_for(:magic_login, token).should be_nil
     AuthExtrasUser.find_by_token_for("password_reset", token).not_nil!.id.should eq(user.id)
 
-    # Cross-model token rejection.
     AuthExtrasAdmin.find_by_token_for(:password_reset, token).should be_nil
   end
 
@@ -206,7 +203,6 @@ describe "generates_token_for / password reset" do
     user = AuthExtrasUser.create!(email: "a@b.c", password: "secret123")
     token = user.issue_password_reset_token!
 
-    # The column stores a digest, never the plaintext token.
     user.reset_password_token.not_nil!.should_not eq(token)
     user.password_reset_token_valid?.should be_true
     user.password_reset_token_valid?(token).should be_true
@@ -313,7 +309,6 @@ describe "Saci::JWT" do
     issued_in_future = Saci::JWT.encode({"sub" => "1", "iat" => now + 60}, "secret")
     Saci::JWT.decode(issued_in_future, "secret").should be_nil
 
-    # leeway absorbs small clock skew.
     Saci::JWT.decode(expired, "secret", leeway: 2.minutes).not_nil!["sub"].as_s.should eq("1")
   end
 
@@ -357,7 +352,6 @@ describe "Saci::TOTP" do
     vectors.each do |time, expected|
       Saci::TOTP.code(rfc_secret, time: Time.unix(time), digits: 8).should eq(expected)
     end
-    # Default 6 digits (RFC vector truncated).
     Saci::TOTP.code(rfc_secret, time: Time.unix(59_i64)).should eq("287082")
   end
 

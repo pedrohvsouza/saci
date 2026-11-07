@@ -722,7 +722,6 @@ def capture_cli_output(& : ->) : Tuple(String, String)
   {out_mem.to_s, err_mem.to_s}
 end
 
-# Answers one conflict prompt from piped input, always restoring STDIN.
 def with_generate_input(answer : String, & : ->) : Nil
   Saci::CLI::Generate.input = IO::Memory.new(answer)
   begin
@@ -933,8 +932,6 @@ describe "saci new staging environment" do
     helper.should contain("require \"../config/environments/*\"")
   end
 
-  # Boots the rendered staging template in a subprocess (compile-checked):
-  # APP_ENV=staging applies staging values; other envs leave them alone.
   it "boots APP_ENV=staging with staging config applied" do
     with_tmp_app(name: "cli_staging_boot") do |dir|
       Dir.cd(dir) do

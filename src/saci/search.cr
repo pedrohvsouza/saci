@@ -230,8 +230,6 @@ module Saci
       end
     end
 
-    # -- parameter normalization -----------------------------------------
-
     # Flattens every accepted params shape into `q[key]`-style strings.
     def self.flatten_params(params) : Hash(String, String)
       flat = {} of String => String

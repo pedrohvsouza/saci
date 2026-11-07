@@ -69,7 +69,6 @@ def session_router : Saci::Router
   end
 end
 
-# Minimal cookie jar for driving multi-request specs.
 class SpecCookieClient
   getter last_headers : HTTP::Headers?
   getter jar : Hash(String, String)
@@ -229,7 +228,7 @@ describe "encrypted cookies" do
   it "rejects signed values presented as encrypted" do
     Saci::TestSession.serve(session_router) do |app|
       client = SpecCookieClient.new(app)
-      client.get("/prefer") # sets a signed cookie
+      client.get("/prefer")
       jar = client.jar
       jar["secret"] = jar["saci_csrf"]? || Saci::Secrets.sign("forged")
       (JSON.parse(client.get("/unseal").body)["secret"]?.try(&.raw)).should be_nil
