@@ -207,6 +207,9 @@ module Saci
 
       @track_mutex = Mutex.new
       @subscriptions : Array(Subscription) = [] of Subscription
+      # Subscribed channels by identifier, whether or not they stream: what
+      # client `message`/`unsubscribe` frames and disconnects act on.
+      @channels = {} of String => Channel
       @identifiers_mutex = Mutex.new
       @identifiers = Hash(String, IdentifierValue).new
 
@@ -404,6 +407,35 @@ module Saci
         @track_mutex.synchronize do
           drained = @subscriptions.dup
           @subscriptions.clear
+          drained
+        end
+      end
+
+      # Records a confirmed subscription. Returns the channel already
+      # subscribed under `identifier` instead, if there is one.
+      def register_channel(identifier : String, channel : Channel) : Channel?
+        @track_mutex.synchronize do
+          if existing = @channels[identifier]?
+            existing
+          else
+            @channels[identifier] = channel
+            nil
+          end
+        end
+      end
+
+      def channel_for(identifier : String) : Channel?
+        @track_mutex.synchronize { @channels[identifier]? }
+      end
+
+      def unregister_channel(identifier : String) : Channel?
+        @track_mutex.synchronize { @channels.delete(identifier) }
+      end
+
+      def drain_channels : Array(Channel)
+        @track_mutex.synchronize do
+          drained = @channels.values
+          @channels.clear
           drained
         end
       end
@@ -785,6 +817,12 @@ module Saci
       # `#subscribed`. Returns nil when the subscription was rejected or
       # failed (client already notified).
       def subscribe(channel_class : Channel.class, connection : Connection, identifier : String, params : Hash(String, JSON::Any)) : Channel?
+        # Subscribing twice with one identifier keeps the first channel (a
+        # second one would double every delivery and every hook).
+        if existing = connection.channel_for(identifier)
+          connection.send_json({type: "confirm_subscription", identifier: identifier})
+          return existing
+        end
         channel = channel_class.new(connection, identifier, params)
         begin
           channel.connect
@@ -801,23 +839,37 @@ module Saci
           connection.close
           return nil
         end
+        connection.register_channel(identifier, channel)
         connection.send_json({type: "confirm_subscription", identifier: identifier})
         channel.start_periodic_timers
         channel
       end
 
-      # Removes one subscription (client `unsubscribe`), running the
-      # channel's `#unsubscribed` hook and cancelling its timers.
+      # Removes one subscription (client `unsubscribe`): every stream of its
+      # channel, then the channel's `#unsubscribed` hook (once) and timers.
       def unsubscribe(connection : Connection, identifier : String) : Nil
-        if sub = connection.find_subscription(identifier)
-          remove_subscription(connection, sub, run_hook: true)
+        if channel = connection.unregister_channel(identifier)
+          close_channel(channel)
         end
       end
 
       # Removes every subscription of a closing connection.
       def unsubscribe_connection(connection : Connection) : Nil
+        connection.drain_channels.each { |channel| close_channel(channel) }
+        # Streams of channels that never got registered (none in practice).
         connection.drain_subscriptions.each do |sub|
-          remove_subscription(connection, sub, run_hook: true)
+          remove_subscription(connection, sub, run_hook: false)
+        end
+      end
+
+      private def close_channel(channel : Channel) : Nil
+        remove_channel(channel)
+        begin
+          channel.unsubscribed
+        rescue
+          # A broken user hook must not block cleanup.
+        ensure
+          channel.stop_periodic_timers
         end
       end
 
@@ -859,6 +911,11 @@ module Saci
         return if subs.empty?
         decoded : JSON::Any? = nil
         fan_out_encoded(subs, message_json) { decoded ||= JSON.parse(message_json) }
+      end
+
+      # Subscriptions to `stream` on this process.
+      def subscriber_count(stream : String) : Int32
+        @mutex.synchronize { @streams[stream]?.try(&.size) || 0 }
       end
 
       private def subscribers_snapshot(stream : String) : Array(Subscription)
@@ -2010,8 +2067,8 @@ module Saci
       when "unsubscribe"
         server.unsubscribe(connection, identifier) if identifier
       when "message"
-        if identifier && (sub = connection.find_subscription(identifier))
-          sub.channel.receive(message_payload(frame["data"]?))
+        if identifier && (channel = connection.channel_for(identifier))
+          channel.receive(message_payload(frame["data"]?))
         end
       end
     end
