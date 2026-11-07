@@ -76,4 +76,56 @@ describe Saci::CLI::Watch do
       end
     end
   end
+
+  it "watches the src/ of path dependencies declared in shard.yml" do
+    with_watch_dir do |dir|
+      framework = File.join(dir, "vendor-fw")
+      Dir.mkdir_p(File.join(framework, "src", "fw"))
+      Dir.mkdir_p(File.join(framework, "spec"))
+      File.write(File.join(framework, "src", "fw", "core.cr"), "module Fw; end\n")
+      File.write(File.join(framework, "spec", "core_spec.cr"), "x\n")
+      app = File.join(dir, "app")
+      Dir.mkdir_p(File.join(app, "src"))
+      File.write(File.join(app, "src", "app.cr"), "puts 1\n")
+      File.write(File.join(app, "shard.yml"), <<-YAML)
+        name: app
+        dependencies:
+          fw:
+            path: ../vendor-fw
+          pg:
+            github: will/crystal-pg
+        development_dependencies:
+          missing:
+            path: ../nope
+        YAML
+
+      Dir.cd(app) do
+        roots = Saci::CLI::Watch.path_dependency_roots
+        roots.size.should eq(1)
+        roots.first.should end_with("vendor-fw/src")
+
+        before = Saci::CLI::Watch.snapshot
+        before.keys.any?(&.ends_with?("vendor-fw/src/fw/core.cr")).should be_true
+        before.keys.any?(&.ends_with?("core_spec.cr")).should be_false
+
+        File.write(File.join(framework, "src", "fw", "core.cr"), "module Fw; X = 1; end\n")
+        Saci::CLI::Watch.changed?(before, Saci::CLI::Watch.snapshot).should be_true
+      end
+    end
+  end
+
+  it "keeps watching a dependency that lives under an ignored dir name" do
+    with_watch_dir do |dir|
+      fw = File.join(dir, "tmp", "fw")
+      Dir.mkdir_p(File.join(fw, "src"))
+      File.write(File.join(fw, "src", "a.cr"), "x\n")
+      File.write(File.join(dir, "shard.yml"), "name: x\ndependencies:\n  fw:\n    path: tmp/fw\n")
+      Dir.cd(dir) do
+        Saci::CLI::Watch.snapshot.keys.any?(&.ends_with?("tmp/fw/src/a.cr")).should be_true
+        # The app's own tmp/ stays ignored.
+        File.write("tmp/cache.tmp", "x")
+        Saci::CLI::Watch.snapshot.has_key?("tmp/cache.tmp").should be_false
+      end
+    end
+  end
 end

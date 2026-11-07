@@ -1,3 +1,5 @@
+require "yaml"
+
 module Saci
   module CLI
     # File watching + rebuild/restart loop behind `saci serve --watch`.
@@ -17,16 +19,46 @@ module Saci
       IGNORE_DIRS = ["tmp", "log", ".git", "lib", ".shards", "bin"]
       IGNORE_RES  = [/\.db$/, /\.log$/, /\.tmp$/]
 
-      def self.watched?(path : String) : Bool
+      # `root` is the watched directory the path was found under; ignore
+      # rules apply to the part below it, so a path dependency living under
+      # e.g. `/tmp/...` or `~/bin/...` is still watched.
+      def self.watched?(path : String, root : String? = nil) : Bool
         return false unless File.file?(path)
-        parts = path.split(File::SEPARATOR)
+        rel = root && path.starts_with?(root) ? path[root.size..] : path
+        parts = rel.split(File::SEPARATOR)
         return false if parts.any? { |p| IGNORE_DIRS.includes?(p) }
         IGNORE_RES.none? { |re| re.matches?(path) }
       end
 
       def self.roots : Array(String)
         dirs = WATCH_DIRS.select { |d| Dir.exists?(d) }
-        dirs + WATCH_FILES.select { |f| File.exists?(f) }
+        dirs + WATCH_FILES.select { |f| File.exists?(f) } + path_dependency_roots
+      end
+
+      # Source dirs of `path:` dependencies in shard.yml (e.g. a framework
+      # checkout developed side by side), so editing them also rebuilds.
+      # Only each dependency's `src/` is watched (its specs, lib/ and tmp/
+      # are not part of the app build).
+      def self.path_dependency_roots(shard_file : String = "shard.yml") : Array(String)
+        return [] of String unless File.exists?(shard_file)
+        yaml = YAML.parse(File.read(shard_file))
+        base = File.dirname(File.expand_path(shard_file))
+        found = [] of String
+        ["dependencies", "development_dependencies"].each do |section|
+          deps = yaml[section]?.try(&.as_h?)
+          next if deps.nil?
+          deps.each_value do |spec|
+            path = spec.as_h?.try(&.[YAML::Any.new("path")]?).try(&.as_s?)
+            next if path.nil?
+            dir = File.expand_path(path, base)
+            src = File.join(dir, "src")
+            target = Dir.exists?(src) ? src : dir
+            found << target if Dir.exists?(target) && !found.includes?(target)
+          end
+        end
+        found
+      rescue YAML::ParseException
+        [] of String
       end
 
       def self.snapshot(paths : Array(String) = roots) : Snapshot
@@ -34,7 +66,7 @@ module Saci
         paths.each do |path|
           if Dir.exists?(path)
             Dir.glob("#{path}/**/*") do |entry|
-              next unless watched?(entry)
+              next unless watched?(entry, path)
               begin
                 snap[entry] = File.info(entry).modification_time
               rescue
