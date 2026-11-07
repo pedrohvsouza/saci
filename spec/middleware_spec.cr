@@ -780,6 +780,32 @@ describe "exceptions app and error reporting" do
     end
   end
 
+  it "treats a client that hung up as a disconnect, not a server error" do
+    seen = [] of String
+    previous = Saci.error_reporter
+    Saci.error_reporter = ->(exception : Exception) { seen << exception.message.to_s }
+    begin
+      router = Saci::Router.new
+      router.get("/gone") { |_ctx, _params| raise HTTP::Server::ClientError.new("Error while writing data to the client") }
+      router.get("/late") do |ctx, _params|
+        ctx.response.print("partial")
+        ctx.response.flush
+        raise "late boom"
+      end
+      io = IO::Memory.new
+      request = HTTP::Request.new("GET", "/gone")
+      router.call(HTTP::Server::Context.new(request, HTTP::Server::Response.new(io)))
+      seen.should be_empty
+
+      Saci::TestSession.serve(router, config: Saci::Configuration.new) do |app|
+        app.get("/late").body.should start_with("partial")
+      end
+      seen.should eq(["late boom"])
+    ensure
+      Saci.error_reporter = previous
+    end
+  end
+
   it "calls Saci.report_error for unhandled server errors" do
     seen = [] of String
     previous = Saci.error_reporter

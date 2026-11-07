@@ -1347,6 +1347,18 @@ module Saci
     end
 
     private def handle_handler_error(context : HTTP::Server::Context, request : HTTP::Request, path : String, ex : Exception) : Nil
+      # The client went away mid-response: there is nobody to answer, and a
+      # lost client is routine, not a server error.
+      if ex.is_a?(HTTP::Server::ClientError) || context.response.closed?
+        Saci.logger.debug { "client gone during #{request.method} #{path}: #{ex.message}" }
+        return
+      end
+      # Too late for an error page (the status line is already out): only
+      # report it. Setting a status now would raise and hide this error.
+      if context.response.@wrote_headers
+        render_server_error(context, request, path, ex)
+        return
+      end
       case ex
       when ParameterMissing
         context.response.status_code = 400
@@ -1372,6 +1384,7 @@ module Saci
     end
 
     private def render_server_error(context : HTTP::Server::Context, request : HTTP::Request, path : String, ex : Exception) : Nil
+      return if context.response.@wrote_headers
       context.response.status_code = 500
       if Saci.show_detailed_exceptions?
         context.response.content_type = "text/html; charset=utf-8"

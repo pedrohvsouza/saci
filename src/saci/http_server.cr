@@ -37,6 +37,11 @@ module Saci
         end
       end
       super
+    rescue ex : ::HTTP::Server::ClientError
+      # The stdlib flushes and closes the response outside its own handler
+      # rescue, so a client that hangs up at that moment ("Broken pipe")
+      # escapes as an unhandled fiber exception. It is a routine disconnect.
+      Saci.logger.debug { "client gone: #{ex.message}" }
     end
   end
 
