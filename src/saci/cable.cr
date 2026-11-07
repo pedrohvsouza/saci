@@ -140,6 +140,31 @@ module Saci
       {"channel" => channel}.merge(params).to_json
     end
 
+    # Builds the ActionCable message frame for one subscription from an
+    # already-encoded message. Byte-identical to
+    # `{"identifier" => identifier, "message" => payload}.to_json` when
+    # `message_json == payload.to_json`; `identifier` (itself a JSON
+    # document) is escaped as a JSON string value.
+    def self.broadcast_frame(identifier : String, message_json : String) : String
+      String.build(identifier.bytesize + message_json.bytesize + 32) do |io|
+        io << %({"identifier":)
+        identifier.to_json(io)
+        io << %(,"message":)
+        io << message_json
+        io << '}'
+      end
+    end
+
+    # :nodoc:
+    # Serialises a broadcast payload once. Returns nil when it cannot be
+    # encoded (e.g. NaN): callers then fall back to the per-subscriber
+    # `Channel#deliver` path so failure behaviour is unchanged.
+    def self.encode_payload(payload) : String?
+      payload.to_json
+    rescue
+      nil
+    end
+
     # Raised by `Channel#reject`; aborts the subscription (client gets
     # `reject_subscription`).
     class RejectedError < Exception
@@ -226,7 +251,16 @@ module Saci
       # policy documented on the class).
       def send_json(payload) : Nil
         return if closed?
-        text = payload.to_json
+        send_raw(payload.to_json)
+      end
+
+      # Queues one already-encoded frame (same bounded-queue/backpressure
+      # semantics as `#send_json`). Broadcast fan-out uses it so a payload
+      # is serialised once per broadcast instead of once per socket; the
+      # String is immutable, so one instance may be queued on any number
+      # of connections concurrently.
+      def send_raw(text : String) : Nil
+        return if closed?
         @pending.add(1)
         select
         when @outbound.send(text)
@@ -685,16 +719,79 @@ module Saci
       # process. (`RedisServer` overrides this to fan out remotely too;
       # remote arrivals re-enter through `#deliver_local`.)
       def broadcast(stream : String, payload) : Nil
-        record_broadcast(stream, payload)
-        deliver_local(stream, payload)
+        message_json = Cable.encode_payload(payload)
+        record_broadcast(stream, payload, message_json)
+        deliver_local(stream, payload, message_json)
       end
 
       # Fan-out to this process's subscribers only (no Redis hop).
+      #
+      # The payload is serialised once per call (not once per subscriber);
+      # each frame is then spliced from the subscription identifier and
+      # that shared, immutable String (see `Channel#deliver_encoded`).
       def deliver_local(stream : String, payload) : Nil
-        subs = @mutex.synchronize { @streams[stream]?.try(&.dup) || [] of Subscription }
+        subs = subscribers_snapshot(stream)
+        return if subs.empty?
+        deliver_to(subs, payload, Cable.encode_payload(payload))
+      end
+
+      # Same as `#deliver_local(stream, payload)` with the payload already
+      # encoded by the caller (`message_json == payload.to_json`, or nil
+      # when encoding failed).
+      def deliver_local(stream : String, payload, message_json : String?) : Nil
+        subs = subscribers_snapshot(stream)
+        return if subs.empty?
+        deliver_to(subs, payload, message_json)
+      end
+
+      # Fan-out of a message that only exists as JSON text (e.g. carried by
+      # a Redis envelope): no parse/re-serialise round trip. It is parsed
+      # (once, lazily) only for channels that override `Channel#deliver`,
+      # which receive the same `JSON::Any` they always did.
+      def deliver_local_encoded(stream : String, message_json : String) : Nil
+        subs = subscribers_snapshot(stream)
+        return if subs.empty?
+        decoded : JSON::Any? = nil
+        fan_out_encoded(subs, message_json) { decoded ||= JSON.parse(message_json) }
+      end
+
+      private def subscribers_snapshot(stream : String) : Array(Subscription)
+        @mutex.synchronize { @streams[stream]?.try(&.dup) || [] of Subscription }
+      end
+
+      private def deliver_to(subs : Array(Subscription), payload, message_json : String?) : Nil
+        if json = message_json
+          fan_out_encoded(subs, json) { payload }
+        else
+          # Unencodable payload: legacy per-subscriber path (each `deliver`
+          # raises and the subscription is dropped, exactly as before).
+          subs.each do |sub|
+            begin
+              sub.channel.deliver(sub.identifier, payload)
+            rescue
+              remove_subscription(sub.channel.connection, sub, run_hook: false)
+            end
+          end
+        end
+      end
+
+      # Channels that override `#deliver` keep getting the payload object
+      # through it; every other subscription gets a spliced frame. Frames
+      # are memoised per identifier (subscribers of one room usually share
+      # the same identifier), so a fan-out to N sockets costs one payload
+      # encode plus one frame per distinct identifier.
+      private def fan_out_encoded(subs : Array(Subscription), message_json : String, &) : Nil
+        frames = {} of String => String
         subs.each do |sub|
           begin
-            sub.channel.deliver(sub.identifier, payload)
+            channel = sub.channel
+            if channel.deliver_overridden?
+              payload = yield
+              channel.deliver(sub.identifier, payload)
+            else
+              frame = frames[sub.identifier] ||= Cable.broadcast_frame(sub.identifier, message_json)
+              channel.deliver_encoded(sub.identifier, message_json, frame)
+            end
           rescue
             remove_subscription(sub.channel.connection, sub, run_hook: false)
           end
@@ -785,8 +882,14 @@ module Saci
       end
 
       protected def record_broadcast(stream : String, payload) : Nil
+        record_broadcast(stream, payload, nil)
+      end
+
+      # `message_json`, when given, is `payload.to_json` already computed by
+      # the caller (avoids a second encode while recording).
+      protected def record_broadcast(stream : String, payload, message_json : String?) : Nil
         return unless @record_broadcasts.get
-        any = payload.is_a?(JSON::Any) ? payload : JSON.parse(payload.to_json)
+        any = payload.is_a?(JSON::Any) ? payload : JSON.parse(message_json || payload.to_json)
         @broadcasts_mutex.synchronize { @broadcasts[stream] << any }
       rescue ex
         Cable.report_error(ex, "broadcast recording")
@@ -935,10 +1038,11 @@ module Saci
       # Local fan-out first (remote failures must never lose local
       # delivery), then the Redis hop (fail-open with a warning).
       def broadcast(stream : String, payload) : Nil
-        record_broadcast(stream, payload)
-        deliver_local(stream, payload)
+        message_json = Cable.encode_payload(payload)
+        record_broadcast(stream, payload, message_json)
+        deliver_local(stream, payload, message_json)
         begin
-          publish_envelope({"sender" => @id, "stream" => stream, "message" => payload}.to_json)
+          publish_envelope(envelope_json(stream, payload, message_json))
         rescue ex : Exception
           STDERR.puts("warning: saci cable redis unreachable (#{ex.message}); broadcast delivered locally only")
         end
@@ -967,6 +1071,25 @@ module Saci
       def close : Nil
         @closed.set(true)
         disconnect!
+      end
+
+      # Byte-identical to
+      # `{"sender" => @id, "stream" => stream, "message" => payload}.to_json`,
+      # reusing the already-encoded message when available.
+      private def envelope_json(stream : String, payload, message_json : String?) : String
+        if json = message_json
+          String.build(json.bytesize + stream.bytesize + 64) do |io|
+            io << %({"sender":)
+            @id.to_json(io)
+            io << %(,"stream":)
+            stream.to_json(io)
+            io << %(,"message":)
+            io << json
+            io << '}'
+          end
+        else
+          {"sender" => @id, "stream" => stream, "message" => payload}.to_json
+        end
       end
 
       private def publish_envelope(envelope : String) : Nil
@@ -1017,16 +1140,50 @@ module Saci
         end
       end
 
+      # Scans the envelope with a pull parser and keeps `message` as raw
+      # JSON text (`read_raw`), so a remote broadcast is not materialised as
+      # `JSON::Any` and re-serialised (unless a local channel overrides
+      # `Channel#deliver`; see `Server#deliver_local_encoded`).
       private def handle_remote(payload : String) : Nil
         begin
-          env = JSON.parse(payload)
-          return if env["sender"]?.try(&.as_s?) == @id
-          stream = env["stream"]?.try(&.as_s?)
-          return if stream.nil?
-          message = env["message"]?
-          deliver_local(stream.as(String), message)
+          sender : String? = nil
+          stream : String? = nil
+          message_json : String? = nil
+          pull = JSON::PullParser.new(payload)
+          pull.read_object do |key|
+            case key
+            when "sender"
+              sender = remote_string(pull)
+            when "stream"
+              stream = remote_string(pull)
+            when "message"
+              message_json = pull.read_raw
+            else
+              pull.skip
+            end
+          end
+          return unless pull.kind.eof? # trailing garbage: rejected, like JSON.parse
+          return if sender == @id
+          target = stream
+          return if target.nil?
+          if json = message_json
+            deliver_local_encoded(target, json)
+          else
+            deliver_local(target, nil) # no "message" key: null, as before
+          end
         rescue
           # One corrupt envelope must never kill the subscriber pump.
+        end
+      end
+
+      # String value of an envelope field; non-strings are skipped (nil),
+      # matching the old `env[key]?.try(&.as_s?)`.
+      private def remote_string(pull : JSON::PullParser) : String?
+        if pull.kind.string?
+          pull.read_string
+        else
+          pull.skip
+          nil
         end
       end
     end
@@ -1116,6 +1273,28 @@ module Saci
       def initialize(@connection : Connection, @identifier : String, @params : Hash(String, JSON::Any))
       end
 
+      # Detects subclasses that define their own `#deliver`. Those keep
+      # receiving the payload object through `#deliver` on broadcasts; all
+      # other channels get pre-encoded frames via `#deliver_encoded`.
+      # Descendants inherit the flag from their parent class.
+      macro inherited
+        macro finished
+          \{% if @type.methods.any? { |m| m.name.stringify == "deliver" } %}
+            # :nodoc:
+            def deliver_overridden? : Bool
+              true
+            end
+          \{% end %}
+        end
+      end
+
+      # :nodoc:
+      # True when this class (or an ancestor below `Channel`) defines its
+      # own `#deliver` (see the `inherited` hook above).
+      def deliver_overridden? : Bool
+        false
+      end
+
       # Optional per-subscription authentication hook, called before
       # `#subscribed`. For a connection-wide hook use `Cable.identify`.
       def connect : Nil
@@ -1158,9 +1337,20 @@ module Saci
         connection.send_json({"identifier" => identifier, "message" => payload})
       end
 
-      # Broadcast delivery (invoked by `Server#broadcast`).
+      # Broadcast delivery of a payload object. `Server#deliver_local` calls
+      # it only for subclasses that override it (see `#deliver_overridden?`);
+      # otherwise the server uses `#deliver_encoded`. Kept for code that
+      # calls or overrides it.
       def deliver(identifier : String, payload) : Nil
         connection.send_json({"identifier" => identifier, "message" => payload})
+      end
+
+      # Broadcast delivery of an already-encoded message (`payload.to_json`,
+      # computed once per broadcast). `frame` lets the server share one
+      # spliced frame between subscriptions with the same identifier.
+      def deliver_encoded(identifier : String, message_json : String,
+                          frame : String = Cable.broadcast_frame(identifier, message_json)) : Nil
+        connection.send_raw(frame)
       end
 
       # Subscribes this subscription to a named stream.

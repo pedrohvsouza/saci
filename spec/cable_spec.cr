@@ -292,6 +292,48 @@ class CableRedisFanoutChannel < Saci::Cable::Channel
   end
 end
 
+# Records outbound frames (instead of writing them to the socket) so the
+# exact bytes delivered through the Redis hop can be compared.
+class CableRedisRecordingConnection < Saci::Cable::Connection
+  @recorded = [] of String
+  @recorded_mutex = Mutex.new
+
+  def send_raw(text : String) : Nil
+    @recorded_mutex.synchronize { @recorded << text }
+  end
+
+  def messages : Array(String)
+    @recorded_mutex.synchronize { @recorded.reject(&.starts_with?(%({"type":))) }
+  end
+end
+
+class CableRedisRawChannel < Saci::Cable::Channel
+  def subscribed
+    stream_from "redis-raw"
+  end
+end
+
+class CableRedisRawOverrideChannel < Saci::Cable::Channel
+  @@received = [] of String
+  @@mutex = Mutex.new
+
+  def self.received : Array(String)
+    @@mutex.synchronize { @@received.dup }
+  end
+
+  def self.reset! : Nil
+    @@mutex.synchronize { @@received.clear }
+  end
+
+  def subscribed
+    stream_from "redis-raw"
+  end
+
+  def deliver(identifier : String, payload) : Nil
+    @@mutex.synchronize { @@received << "#{payload.class.name}:#{payload.to_json}" }
+  end
+end
+
 def cable_wait_until(desc : String, timeout : Time::Span = 10.seconds, &) : Nil
   deadline = Time.monotonic + timeout
   until yield
@@ -376,6 +418,38 @@ describe "Saci::Cable::RedisServer" do
             end
           end
         end
+      ensure
+        srv_a.close
+        srv_b.close
+      end
+    ensure
+      fake.close
+    end
+  end
+
+  it "delivers remote envelopes byte-identically without re-encoding (fake redis wire)" do
+    CableRedisRawOverrideChannel.reset!
+    fake = FakeCableRedis.new
+    begin
+      srv_a = Saci::Cable::RedisServer.new(fake.url, "saci:spec-raw")
+      srv_b = Saci::Cable::RedisServer.new(fake.url, "saci:spec-raw")
+      begin
+        cable_wait_until("both servers subscribed") { fake.subscriber_count("saci:spec-raw") == 2 }
+        ident = Saci::Cable.identifier_for("CableRedisRawChannel", {"room" => %(q"\\1)})
+        conn_b = CableRedisRecordingConnection.new(HTTP::WebSocket.new(IO::Memory.new), Saci::Params.new, srv_b)
+        srv_b.register(conn_b)
+        srv_b.subscribe(CableRedisRawChannel, conn_b, ident, {} of String => JSON::Any).should_not be_nil
+        override_conn = CableRedisRecordingConnection.new(HTTP::WebSocket.new(IO::Memory.new), Saci::Params.new, srv_b)
+        srv_b.register(override_conn)
+        srv_b.subscribe(CableRedisRawOverrideChannel, override_conn, "override", {} of String => JSON::Any).should_not be_nil
+
+        payload = {"text" => %(hi "x" \\ é), "n" => 7, "f" => 2.25, "list" => [1, 2], "none" => nil}
+        srv_a.broadcast("redis-raw", payload)
+
+        cable_wait_until("peer delivery") { !conn_b.messages.empty? && !CableRedisRawOverrideChannel.received.empty? }
+        conn_b.messages.should eq([{"identifier" => ident, "message" => payload}.to_json])
+        # `deliver` overrides still get the parsed JSON::Any, as before.
+        CableRedisRawOverrideChannel.received.should eq(["JSON::Any:#{payload.to_json}"])
       ensure
         srv_a.close
         srv_b.close

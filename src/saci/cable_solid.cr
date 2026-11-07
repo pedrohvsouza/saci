@@ -226,8 +226,9 @@ module Saci
       # peer servers on their next poll. DB failures are reported but never
       # break local delivery (fail-open, like the Redis adapter).
       def broadcast(stream : String, payload) : Nil
-        record_broadcast(stream, payload)
-        deliver_local(stream, payload)
+        message_json = Cable.encode_payload(payload)
+        record_broadcast(stream, payload, message_json)
+        deliver_local(stream, payload, message_json)
         begin
           envelope = {"__saci_cable" => true, "sender" => @id, "message" => payload}
           @adapter.insert(stream, envelope.to_json)
