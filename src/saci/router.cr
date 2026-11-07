@@ -1017,9 +1017,44 @@ module Saci
       end
     end
 
-    def find(method : String, path : String) : {Route, Hash(String, String)}?
+    # Routes grouped by HTTP method, each with the literal prefix its
+    # pattern starts with (a cheap `starts_with?` filter before the regex).
+    # Rebuilt whenever the route count changes (routes are only appended).
+    private record IndexedRoute, route : Route, prefix : String
+
+    @route_index : Hash(String, Array(IndexedRoute))? = nil
+    @route_index_size = -1
+
+    private def route_index : Hash(String, Array(IndexedRoute))
+      if (index = @route_index) && @route_index_size == @routes.size
+        return index
+      end
+      index = {} of String => Array(IndexedRoute)
       @routes.each do |route|
-        next unless route.http_method == method.upcase
+        (index[route.http_method] ||= [] of IndexedRoute) << IndexedRoute.new(route, Router.literal_prefix(route))
+      end
+      @route_index = index
+      @route_index_size = @routes.size
+      index
+    end
+
+    # The literal text a route's pattern starts with, but only when its
+    # regex provably begins with exactly that text (otherwise "", i.e. no
+    # pre-filter).
+    def self.literal_prefix(route : Route) : String
+      pattern = route.pattern
+      cut = pattern.each_char_with_index { |c, i| break i if c == ':' || c == '*' || c == '(' } || pattern.size
+      prefix = pattern[0, cut]
+      route.regex.source.starts_with?("^" + Regex.escape(prefix)) ? prefix : ""
+    end
+
+    def find(method : String, path : String) : {Route, Hash(String, String)}?
+      verb = method.upcase
+      candidates = route_index[verb]?
+      return nil if candidates.nil?
+      candidates.each do |entry|
+        next unless path.starts_with?(entry.prefix)
+        route = entry.route
         if m = route.regex.match(path)
           path_params = route.defaults.dup
           route.param_names.each do |name|
@@ -1244,6 +1279,9 @@ module Saci
       "#{script_name}#{path}"
     end
 
+    # Shared, never mutated: the request log reads it only when logging.
+    EMPTY_LOGGED_PARAMS = {} of String => String
+
     def call(context : HTTP::Server::Context) : Nil
       Saci::Routes.current_router = self
       request = context.request
@@ -1251,7 +1289,8 @@ module Saci
       started = Time.instant
       request_id = request.headers["X-Request-Id"]? || Saci.request_id
       context.response.headers["X-Request-Id"] = request_id
-      logged_params = {} of String => String
+      log = Saci.log_requests
+      logged_params = EMPTY_LOGGED_PARAMS
       if Throttle.blocked?(context)
         context.response.status_code = 403
         context.response.content_type = "application/json"
@@ -1269,9 +1308,11 @@ module Saci
       elsif path_match = (find(request.method, path) || find_path(path))
         _, path_params = path_match
         params = Params.build(request, path_params)
-        logged_params = params.to_h
+        logged_params = params.to_h if log
         method = override_method(request, params) || request.method
-        if found = find(method, path)
+        # Reuse the first lookup unless `_method` changed the verb.
+        found = path_match[0].http_method == method.upcase ? path_match : find(method, path)
+        if found
           route, _ = found
           begin
             route.handler.call(context, params)
@@ -1285,7 +1326,7 @@ module Saci
         end
       elsif fb = @fallback
         params = Params.build(request, {} of String => String)
-        logged_params = params.to_h
+        logged_params = params.to_h if log
         begin
           fb.call(context, params)
         rescue ex : Exception

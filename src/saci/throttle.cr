@@ -242,6 +242,7 @@ module Saci
     end
 
     def self.blocked?(context : HTTP::Server::Context) : Bool
+      return false if @@mutex.synchronize { @@blocklists.empty? }
       lists = @@mutex.synchronize { @@blocklists.dup }
       lists.any? { |rule| rule.call(context) }
     end
@@ -255,6 +256,7 @@ module Saci
     # Safelist/blocklist behavior is backend-independent. A dead store
     # is fail-open (STDERR warning, request allowed — see module docs).
     def self.check(context : HTTP::Server::Context) : Int32?
+      return nil if @@mutex.synchronize { @@rules.empty? }
       return nil if safelisted?(context)
       rules = @@mutex.synchronize { @@rules.dup }
       store = @@store_mutex.synchronize { @@store }

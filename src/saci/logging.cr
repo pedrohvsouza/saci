@@ -142,8 +142,10 @@ module Saci
     end
   end
 
+  # Correlation id for logs/traces: unique enough, not a secret, so it uses
+  # the fast PRNG instead of a getrandom syscall per request.
   def self.request_id : String
-    Random::Secure.hex(8)
+    Random.rand(UInt64::MAX).to_s(16).rjust(16, '0')
   end
 
   # FNV-1a 64-bit hex digest (pure Crystal). Used for ETags: stdlib
