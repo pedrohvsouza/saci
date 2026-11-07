@@ -111,6 +111,7 @@ module Saci
 
     def listen(port : Int32 = 3000, host : String = "127.0.0.1") : Nil
       boot
+      Saci::GCTuner.start_from_env
       server = Saci::HTTPServer.new(handler, @config.socket_buffer_size)
       if size = @config.max_headers_size
         server.max_headers_size = size

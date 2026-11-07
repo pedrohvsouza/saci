@@ -5,6 +5,7 @@ require "json"
 require "uri"
 
 require "./saci/version"
+require "./saci/gc_tuner"
 require "./saci/exceptions"
 require "./saci/params"
 require "./saci/controller"

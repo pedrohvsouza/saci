@@ -29,6 +29,7 @@ module Saci
     # ```
     def listen_gracefully(port : Int32 = 3000, host : String = "127.0.0.1", shutdown : Deploy::GracefulShutdown? = nil, reuse_port : Bool? = nil) : Nil
       boot
+      Saci::GCTuner.start_from_env
       settings = Deploy::ServerConfig.current
       graceful = shutdown || Deploy::GracefulShutdown.new(timeout: settings.shutdown_timeout)
 
