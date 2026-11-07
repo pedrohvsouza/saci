@@ -1979,7 +1979,7 @@ module Saci
         return
       end
       done = ::Channel(Exception?).new(1)
-      detached_pool.submit(->{ block.call; nil }, done)
+      detached_pool.submit(-> { block.call; nil }, done)
       if failure = done.receive
         raise failure
       end
