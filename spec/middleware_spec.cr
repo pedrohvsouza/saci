@@ -454,6 +454,23 @@ describe Saci::Middleware::Static do
     end
   end
 
+  it "re-reads the root's entries on every request when entry_cache_ttl is zero" do
+    root = File.join(Dir.tempdir, "saci-static-ttl-#{Random::Secure.hex(4)}")
+    Dir.mkdir_p(root)
+    File.write(File.join(root, "a.txt"), "a")
+    fresh = Saci::Middleware::Static.new(root)
+    fresh.settings.entry_cache_ttl = Time::Span.zero
+    fresh.enabled?.should be_true # populates the entry set without b.txt
+    File.write(File.join(root, "b.txt"), "b")
+    io = IO::Memory.new
+    response = HTTP::Server::Response.new(io)
+    fresh.call(HTTP::Server::Context.new(HTTP::Request.new("GET", "/b.txt"), response))
+    response.close
+    io.to_s.should contain("200 OK")
+  ensure
+    FileUtils.rm_rf(root.not_nil!) if root
+  end
+
   it "answers If-None-Match and If-Modified-Since with 304" do
     Saci::TestSession.serve(middleware_router, config: middleware_static_config(static_dir)) do |app|
       first = app.get("/app.css")

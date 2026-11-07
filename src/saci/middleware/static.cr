@@ -36,10 +36,20 @@ module Saci
         property headers : Hash(String, String) = {} of String => String
         property cache_control : String? = "public, max-age=3600"
         property index_files : Array(String) = ["index.html"]
+        # How long the root's existence and its top-level entries are
+        # remembered. Requests whose first path segment is not one of those
+        # entries (e.g. `/api/...`) skip the filesystem entirely instead of
+        # paying several stat calls each. Zero re-reads on every request.
+        property entry_cache_ttl : Time::Span = 1.second
 
         def initialize
         end
       end
+
+      @entries : Set(String)? = nil
+      @entries_at : Time::Instant? = nil
+      @entries_root : String? = nil
+      @entries_mutex = Mutex.new
 
       def initialize(@config : Configuration)
         @settings = nil
@@ -57,13 +67,32 @@ module Saci
       end
 
       def enabled? : Bool
-        settings.enabled && Dir.exists?(settings.root)
+        settings.enabled && !top_level_entries.nil?
+      end
+
+      # Names directly under the root (nil when the root does not exist),
+      # cached for `entry_cache_ttl`.
+      private def top_level_entries : Set(String)?
+        root = settings.root
+        ttl = settings.entry_cache_ttl
+        now = Time.instant
+        @entries_mutex.synchronize do
+          if ttl > Time::Span.zero && @entries_root == root && (at = @entries_at) && now - at < ttl
+            return @entries
+          end
+          entries = Dir.exists?(root) ? Dir.children(root).to_set : nil
+          @entries, @entries_at, @entries_root = entries, now, root
+          entries
+        end
+      rescue File::Error
+        nil
       end
 
       def call(context : HTTP::Server::Context) : Nil
-        return call_next(context) unless enabled?
+        return call_next(context) unless settings.enabled
         request = context.request
         return call_next(context) unless request.method.in?("GET", "HEAD")
+        return call_next(context) unless entries = top_level_entries
 
         response = context.response
         raw_path = request.path || "/"
@@ -74,6 +103,11 @@ module Saci
         end
 
         segments = decoded.split('/').reject { |segment| segment.empty? || segment == "." }
+        if first = segments.first?
+          return call_next(context) unless entries.includes?(first)
+        else
+          return call_next(context) unless settings.index_files.any? { |name| entries.includes?(name) }
+        end
         root = Path.new(settings.root).expand
         file = root
         segments.each { |segment| file = file.join(segment) }
