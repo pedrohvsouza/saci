@@ -254,6 +254,11 @@ class FakeCableRedis
         @mutex.synchronize { @subs[ch] << sock }
         my_channels << ch
         emit(sock, "*3\r\n$9\r\nsubscribe\r\n$#{ch.bytesize}\r\n#{ch}\r\n:1\r\n")
+      when "UNSUBSCRIBE"
+        ch = args[1]
+        @mutex.synchronize { @subs[ch].delete(sock) }
+        my_channels.delete(ch)
+        emit(sock, "*3\r\n$11\r\nunsubscribe\r\n$#{ch.bytesize}\r\n#{ch}\r\n:0\r\n")
       when "PUBLISH"
         ch, payload = args[1], args[2]
         targets = @mutex.synchronize { @subs[ch].dup }
@@ -387,6 +392,36 @@ describe "Saci::Cable Redis wire protocol" do
 end
 
 describe "Saci::Cable::RedisServer" do
+  it "subscribes a stream's redis channel only while it has local subscribers" do
+    fake = FakeCableRedis.new
+    begin
+      srv = Saci::Cable::RedisServer.new(fake.url, "saci:spec-life")
+      begin
+        cable_wait_until("base subscription") { fake.subscriber_count("saci:spec-life") == 1 }
+        srv.channel_for("redis-fanout").should eq("saci:spec-life:redis-fanout")
+        fake.subscriber_count("saci:spec-life:redis-fanout").should eq(0)
+        router = Saci::Router.new.draw { |r| r.cable "/cable", CableRedisFanoutChannel, server: srv }
+        Saci::TestSession.serve(router) do |app|
+          one = Saci::Cable::TestClient.new(app.host, app.port)
+          two = Saci::Cable::TestClient.new(app.host, app.port)
+          one.subscribe("CableRedisFanoutChannel")
+          two.subscribe("CableRedisFanoutChannel")
+          cable_wait_until("stream channel subscribed") { fake.subscriber_count("saci:spec-life:redis-fanout") == 1 }
+          one.close
+          sleep 200.milliseconds
+          # Still one local subscriber: stays subscribed.
+          fake.subscriber_count("saci:spec-life:redis-fanout").should eq(1)
+          two.close
+          cable_wait_until("stream channel unsubscribed") { fake.subscriber_count("saci:spec-life:redis-fanout") == 0 }
+        end
+      ensure
+        srv.close
+      end
+    ensure
+      fake.close
+    end
+  end
+
   it "fans out broadcasts across two server instances (fake redis wire)" do
     fake = FakeCableRedis.new
     begin

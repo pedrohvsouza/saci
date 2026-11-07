@@ -591,11 +591,39 @@ module Saci
           end
         end
 
+        # Sends every command in one write, then reads one reply per command
+        # (RESP pipelining: one round trip, two syscalls, for N commands).
+        def call_pipeline(commands : Array(Array(String))) : Array(RedisValue)
+          @mutex.synchronize do
+            begin
+              buf = String.build { |io| commands.each { |c| io << RedisWire.encode(c) } }
+              @sock.write(buf.to_slice)
+            rescue ex : IO::Error
+              raise RedisDown.new("redis: write failed (#{ex.message})")
+            end
+            commands.map { RedisWire.read_reply(@sock).as(RedisValue) }
+          end
+        end
+
+        # Writes a command without reading its reply: for a subscriber
+        # connection, whose replies are consumed by the `subscribe` loop.
+        def send_command(args : Array(String)) : Nil
+          @mutex.synchronize { write_cmd(args) }
+        end
+
         # SUBSCRIBEs and yields each published payload until the connection
         # breaks (raises `RedisDown`). `on_subscribed` fires once the
         # server confirms the subscription (lets owners reset backoff).
         def subscribe(channel : String, on_subscribed : -> Nil = -> { }, & : String -> Nil) : Nil
-          write_cmd(["SUBSCRIBE", channel])
+          subscribe_many([channel], on_subscribed) { |_ch, payload| yield payload }
+        end
+
+        # SUBSCRIBEs to `channels` (one command each) and yields
+        # (channel, payload) for every message until the connection breaks.
+        # More channels may be (un)subscribed later with `send_command`;
+        # their confirmations are skipped here.
+        def subscribe_many(channels : Array(String), on_subscribed : -> Nil = -> { }, & : String, String -> Nil) : Nil
+          channels.each { |ch| send_command(["SUBSCRIBE", ch]) }
           RedisWire.read_reply(@sock)
           on_subscribed.call
           loop do
@@ -603,8 +631,8 @@ module Saci
             if arr = msg.as?(Array(RedisValue))
               next unless arr.size == 3
               next unless arr[0] == "message"
-              if payload = arr[2].as?(String)
-                yield payload
+              if (ch = arr[1].as?(String)) && (payload = arr[2].as?(String))
+                yield ch, payload
               end
             end
           end
@@ -852,25 +880,49 @@ module Saci
 
       def add_stream(connection : Connection, stream : String, identifier : String, channel : Channel) : Nil
         sub = Subscription.new(stream, identifier, channel)
-        @mutex.synchronize { @streams[stream] << sub }
+        first = @mutex.synchronize do
+          subs = @streams[stream]
+          subs << sub
+          subs.size == 1
+        end
         connection.track(sub)
+        stream_started(stream) if first
       end
 
       def remove_stream(stream : String, channel : Channel) : Nil
         sub = nil
+        last = false
         @mutex.synchronize do
           if found = @streams[stream]?.try { |subs| subs.find { |s| s.channel.same?(channel) } }
             @streams[stream].delete(found)
             sub = found
+            last = @streams[stream].empty?
           end
         end
         channel.connection.untrack(sub) if sub
+        stream_stopped(stream) if last
+      end
+
+      # Called when `stream` gets its first local subscriber / loses its
+      # last one (outside the registry lock). `RedisServer` uses them to
+      # (un)subscribe that stream's Redis channel.
+      protected def stream_started(stream : String) : Nil
+      end
+
+      protected def stream_stopped(stream : String) : Nil
+      end
+
+      # Streams with at least one local subscriber.
+      def active_streams : Array(String)
+        @mutex.synchronize { @streams.compact_map { |name, subs| subs.empty? ? nil : name } }
       end
 
       def remove_channel(channel : Channel) : Nil
         leftovers = [] of Subscription
+        emptied = [] of String
         @mutex.synchronize do
-          @streams.each_value do |subs|
+          @streams.each do |name, subs|
+            before = subs.size
             subs.reject! do |s|
               if s.channel.same?(channel)
                 leftovers << s
@@ -879,9 +931,11 @@ module Saci
                 false
               end
             end
+            emptied << name if before > 0 && subs.empty?
           end
         end
         leftovers.each { |s| channel.connection.untrack(s) }
+        emptied.each { |name| stream_stopped(name) }
       end
 
       # -- introspection (test helpers) -------------------------------------
@@ -948,8 +1002,17 @@ module Saci
       end
 
       private def remove_subscription(connection : Connection, sub : Subscription, run_hook : Bool) : Nil
-        @mutex.synchronize { @streams[sub.stream]?.try(&.delete(sub)) }
+        last = @mutex.synchronize do
+          if subs = @streams[sub.stream]?
+            had = subs.size
+            subs.delete(sub)
+            had > 0 && subs.empty?
+          else
+            false
+          end
+        end
         connection.untrack(sub)
+        stream_stopped(sub.stream) if last
         begin
           sub.channel.unsubscribed if run_hook
         rescue
@@ -1074,6 +1137,15 @@ module Saci
       @closed : Atomic(Bool)
       @subscribed : Atomic(Bool)
 
+      # Broadcasts go to one Redis channel per stream (`<redis_channel>:<stream>`)
+      # and each process subscribes only to the streams it has local
+      # subscribers for, so a replica never receives (or wakes up for)
+      # broadcasts nobody on it listens to. Concurrent publishes are
+      # pipelined: one write and one read for a whole batch.
+      PUBLISH_BATCH = 256
+
+      @publish_queue : ::Channel({String, String, ::Channel(Exception?)})
+
       def initialize(@url : String = ENV.fetch("REDIS_URL", "redis://127.0.0.1:6379"), @redis_channel : String = "saci:cable")
         super()
         @info = RedisWire.parse_url(@url)
@@ -1084,7 +1156,29 @@ module Saci
         @sub_conn = nil
         @closed = Atomic(Bool).new(false)
         @subscribed = Atomic(Bool).new(false)
+        @publish_queue = ::Channel({String, String, ::Channel(Exception?)}).new(4096)
         spawn { subscriber_loop }
+        spawn { publisher_loop }
+      end
+
+      def channel_for(stream : String) : String
+        "#{@redis_channel}:#{stream}"
+      end
+
+      protected def stream_started(stream : String) : Nil
+        send_sub_command(["SUBSCRIBE", channel_for(stream)])
+      end
+
+      protected def stream_stopped(stream : String) : Nil
+        send_sub_command(["UNSUBSCRIBE", channel_for(stream)])
+      end
+
+      # Best effort: when the subscriber is (re)connecting, the loop
+      # subscribes every active stream itself once connected.
+      private def send_sub_command(args : Array(String)) : Nil
+        conn = @sub_mutex.synchronize { @sub_conn }
+        conn.try(&.send_command(args))
+      rescue
       end
 
       # Local fan-out first (remote failures must never lose local
@@ -1094,7 +1188,7 @@ module Saci
         record_broadcast(stream, payload, message_json)
         deliver_local(stream, payload, message_json)
         begin
-          publish_envelope(envelope_json(stream, payload, message_json))
+          publish_envelope(channel_for(stream), envelope_json(stream, payload, message_json))
         rescue ex : Exception
           STDERR.puts("warning: saci cable redis unreachable (#{ex.message}); broadcast delivered locally only")
         end
@@ -1144,11 +1238,45 @@ module Saci
         end
       end
 
-      private def publish_envelope(envelope : String) : Nil
+      # Queues the PUBLISH for the publisher fiber and waits for Redis to
+      # accept it (so callers keep the old synchronous semantics), sharing
+      # the round trip with every publish queued meanwhile.
+      private def publish_envelope(channel : String, envelope : String) : Nil
+        done = ::Channel(Exception?).new(1)
+        @publish_queue.send({channel, envelope, done})
+        if failure = done.receive
+          raise failure
+        end
+      end
+
+      private def publisher_loop : Nil
+        loop do
+          first = @publish_queue.receive
+          batch = [first]
+          while batch.size < PUBLISH_BATCH
+            select
+            when item = @publish_queue.receive
+              batch << item
+            else
+              break
+            end
+          end
+          failure = nil.as(Exception?)
+          begin
+            publish_batch(batch)
+          rescue ex
+            failure = ex
+          end
+          batch.each { |item| item[2].send(failure) }
+        end
+      end
+
+      private def publish_batch(batch : Array({String, String, ::Channel(Exception?)})) : Nil
+        commands = batch.map { |(channel, envelope, _)| ["PUBLISH", channel, envelope] }
         @pub_mutex.synchronize do
           begin
             conn = @pub_conn ||= RedisWire::Conn.new(@info)
-            conn.call("PUBLISH", @redis_channel, envelope)
+            conn.call_pipeline(commands)
           rescue ex : RedisDown
             begin
               @pub_conn.try(&.close)
@@ -1159,7 +1287,7 @@ module Saci
             # without waiting for the next broadcast.
             conn2 = RedisWire::Conn.new(@info)
             @pub_conn = conn2
-            conn2.call("PUBLISH", @redis_channel, envelope)
+            conn2.call_pipeline(commands)
           end
         end
       end
@@ -1171,8 +1299,12 @@ module Saci
           begin
             conn = RedisWire::Conn.new(@info, subscriber: true)
             @sub_mutex.synchronize { @sub_conn = conn }
+            # Publish the connection first, then snapshot the active streams:
+            # a stream started in between is subscribed twice (harmless),
+            # never missed.
+            channels = [@redis_channel] + active_streams.map { |s| channel_for(s) }
             begin
-              conn.subscribe(@redis_channel, on_subscribed: -> { backoff = 0.1; @subscribed.set(true); nil }) do |payload|
+              conn.subscribe_many(channels, on_subscribed: -> { backoff = 0.1; @subscribed.set(true); nil }) do |_channel, payload|
                 handle_remote(payload)
               end
             ensure
