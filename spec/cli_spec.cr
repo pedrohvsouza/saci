@@ -490,6 +490,16 @@ describe "Saci::CLI dispatch" do
     expect_raises(Saci::CLI::Error) { Saci::CLI::Serve.parse(["--bogus"]) }
   end
 
+  it "binds every interface on a bare --host, like Vite" do
+    Saci::CLI::Serve.parse(["--host"])[:host].should eq("0.0.0.0")
+    opts = Saci::CLI::Serve.parse(["--host", "--port", "4000"])
+    opts[:host].should eq("0.0.0.0")
+    opts[:port].should eq("4000")
+    Saci::CLI::Serve.parse(["--host", "-w"])[:watch].should be_true
+    Saci::CLI::Serve.parse(["--host", "10.0.0.5"])[:host].should eq("10.0.0.5")
+    Saci::CLI::Serve.parse(["--host=::"])[:host].should eq("::")
+  end
+
   it "splits test args on --" do
     script, flags = Saci::CLI::Test.split_args(["spec/models", "--verbose", "--", "--link-flags=-Lx"])
     script.should eq(["spec/models", "--verbose"])

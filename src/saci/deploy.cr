@@ -1,4 +1,5 @@
 require "./config_file"
+require "./server_urls"
 require "./deploy/server_config"
 require "./deploy/graceful_shutdown"
 require "./deploy/environment_check"
@@ -41,7 +42,7 @@ module Saci
         server.max_request_line_size = size
       end
 
-      puts "Saci listening on http://#{host}:#{port}"
+      print Saci::ServerUrls.banner(host, port)
       puts (@router.routes_table + @router.ws_routes_table).join("\n")
       server.bind_tcp(host, port, reuse_port: reuse_port.nil? ? settings.reuse_port : reuse_port)
       graceful.run(server)

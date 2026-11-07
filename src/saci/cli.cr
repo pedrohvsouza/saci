@@ -196,7 +196,7 @@ module Saci
           saci g task reports:daily
         HELP
       when "serve", "server", "s"
-        "Usage: saci serve [--port N] [--host H] [--release] [--watch] [--watch-interval SECS] [--mt] [--workers N] [-- extra crystal args]\n\nRuns src/<app>.cr with crystal run (PORT/HOST env are set for the app). With --watch, rebuilds and restarts on file changes. With --mt, compiles with multithreading (-Dexecution_context) and enables it at boot via SACI_MT."
+        "Usage: saci serve [--port N] [--host [H]] [--release] [--watch] [--watch-interval SECS] [--mt] [--workers N] [-- extra crystal args]\n\nRuns src/<app>.cr with crystal run (PORT/HOST env are set for the app). --host alone binds every interface (0.0.0.0) and prints the Network URLs other devices on the local network can open. With --watch, rebuilds and restarts on file changes. With --mt, compiles with multithreading (-Dexecution_context) and enables it at boot via SACI_MT."
       when "db:migrate"
         "Usage: saci db:migrate [--all]\n\nRuns pending migrations in db/migrate/ (keeps db/migrations.cr in sync first). With --all, migrates primary + all named DBs."
       when "db:rollback"

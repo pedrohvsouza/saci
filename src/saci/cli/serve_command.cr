@@ -44,8 +44,15 @@ module Saci
           elsif a.starts_with?("--host=")
             host = a.split("=", 2)[1]
           elsif a == "--host"
-            host = args[i + 1]? || raise Error.new("Missing value for --host")
-            i += 1
+            # Bare `--host` (as in Vite): every interface, so other devices
+            # on the network can reach the app.
+            value = args[i + 1]?
+            if value.nil? || value.starts_with?("-")
+              host = "0.0.0.0"
+            else
+              host = value
+              i += 1
+            end
           elsif a == "--release"
             release = true
           elsif a == "--watch" || a == "-w"

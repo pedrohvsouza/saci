@@ -3,6 +3,7 @@ require "http/server/handlers/websocket_handler"
 require "./middleware"
 require "./configuration"
 require "./initializers"
+require "./server_urls"
 
 # Carries the unhandled exception from the router to `ShowExceptions`, which
 # runs outside the router and would otherwise only see a 500 status.
@@ -119,7 +120,7 @@ module Saci
       if size = @config.max_request_line_size
         server.max_request_line_size = size
       end
-      puts "Saci listening on http://#{host}:#{port}"
+      print Saci::ServerUrls.banner(host, port)
       puts (@router.routes_table + @router.ws_routes_table).join("\n")
       server.bind_tcp(host, port)
       server.listen
