@@ -1202,6 +1202,7 @@ module Saci
           stream : String? = nil
           message_json : String? = nil
           pull = JSON::PullParser.new(payload)
+          skipped = false
           pull.read_object do |key|
             case key
             when "sender"
@@ -1209,11 +1210,20 @@ module Saci
             when "stream"
               stream = remote_string(pull)
             when "message"
-              message_json = pull.read_raw
+              # Envelopes carry sender and stream first: when this process
+              # sent it or has nobody on that stream, skip decoding the
+              # message at all (every replica receives every broadcast).
+              if sender == @id || ((s = stream) && !local_subscribers?(s))
+                skipped = true
+                pull.skip
+              else
+                message_json = pull.read_raw
+              end
             else
               pull.skip
             end
           end
+          return if skipped
           return unless pull.kind.eof? # trailing garbage: rejected, like JSON.parse
           return if sender == @id
           target = stream
@@ -1225,6 +1235,13 @@ module Saci
           end
         rescue
           # One corrupt envelope must never kill the subscriber pump.
+        end
+      end
+
+      private def local_subscribers?(stream : String) : Bool
+        @mutex.synchronize do
+          subs = @streams[stream]?
+          !subs.nil? && !subs.empty?
         end
       end
 
