@@ -44,6 +44,20 @@ jobs:
       - name: Generated app smoke test
         run: SACI_SMOKE=1 crystal spec spec/generated_app_smoke_spec.cr
 
+  # Builds the Dockerfile `saci new` writes (with this checkout vendored
+  # in), boots the image and checks /up, / and HEAD /.
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: crystal-lang/install-crystal@v1
+        with:
+          crystal: "1.22"
+      - name: Install dependencies
+        run: shards install
+      - name: Generated app Docker image
+        run: script/docker_smoke.sh
+
   live:
     runs-on: ubuntu-latest
     services:
