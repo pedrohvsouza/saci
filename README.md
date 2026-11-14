@@ -801,9 +801,32 @@ r.post "/direct_uploads", Storage::DirectUploadsController, :create
   using its own SigV4 signer. `MirrorService` writes to several services
   at once.
 - Blobs have checksums and metadata. Image dimensions come from a
-  pure-Crystal analyzer. Variants and previews go through a pluggable
-  processor; none is bundled, so without one they return the original
-  file.
+  pure-Crystal analyzer.
+- Variants and previews need a processor. Without one they return the
+  original file. Two are bundled. They run the command-line tools, so
+  nothing extra is linked into the app:
+
+  ```crystal
+  Storage.variant_processor = Storage::Processors::Vips.new        # apt install libvips-tools
+  Storage.variant_processor = Storage::Processors::ImageMagick.new # apt install imagemagick
+  Storage.variant_processor = Storage::Processors.detect           # whichever is installed
+
+  user.avatar.variant(resize_to_limit: [300, 300]).url
+  user.avatar.variant(resize_to_fill: [64, 64], format: "webp", quality: 80).url
+  doc.file.preview(resize_to_limit: [400, 400]).url  # PDF page 1 (poppler-utils), video frame 1 (ffmpeg)
+  ```
+
+  `resize_to_limit` only shrinks, `resize_to_fit` also enlarges, and
+  `resize_to_fill` crops to the exact size. The other options are
+  `format:` (png, jpeg, gif, webp, avif), `quality:` and `strip: true`.
+  A variant is processed on first use and stored under a key derived
+  from the original and the options, so later requests reuse it.
+  `purge` deletes the variants along with the original. Inputs must be
+  PNG, JPEG, GIF or WebP, detected from the bytes. Images over 50
+  megapixels are refused, and each command is killed after 30 seconds
+  (`max_pixels:` and `timeout:` change both). Animated GIFs keep only
+  their first frame. A custom processor subclasses
+  `Storage::Variant::Processor`.
 - Uploads with content types that browsers execute are rejected by
   default, and upload size is capped.
 

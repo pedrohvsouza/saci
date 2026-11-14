@@ -13,6 +13,29 @@
   arriving. `DbServer#wake` triggers an immediate poll. Without
   `saci/cable_pg`, `listen_notify: true` still raises, and the error now
   names the requires to add.
+- **Image variants and previews work out of the box.**
+  `Storage::Processors::Vips` (`vipsthumbnail`) and
+  `Storage::Processors::ImageMagick` (`magick`/`convert`) handle
+  `resize_to_limit`, `resize_to_fit`, `resize_to_fill`, `format:`,
+  `quality:` and `strip:`. `Storage::Processors.detect` picks whichever
+  is installed. Previews render the first page of a PDF (`pdftoppm`) or
+  the first frame of an MP4/WebM (`ffmpeg`) as PNG, and take the same
+  options: `blob.preview(resize_to_limit: [400, 400])`. The tools run as
+  child processes. Each one gets its input format named explicitly,
+  sniffed from the bytes. Images over `max_pixels` are refused and each
+  command has a `timeout`. Install one with
+  `Storage.variant_processor = Storage::Processors::Vips.new`.
+- **Fixed: every `variant(...).url` call processed and uploaded a new
+  blob.** A variant is now stored under a key derived from the original's
+  key and its options. The next request, from any process, finds it and
+  skips processing. `Blob#purge` also deletes the original's variants.
+  The order of options no longer changes the variant's filename.
+- Variants that change the format (`format: "webp"`, or a preview of a
+  PDF) get the new content type and file extension. `Variant::Processor`
+  has three new methods with defaults: `output_content_type`, `variable?`
+  and `previewable?`. Attachments have `preview`, `variable?` and
+  `previewable?`, and so does `Blob`. Variant blobs now record their
+  dimensions in `metadata`.
 
 ## 0.7.0 — 2026-11-14
 

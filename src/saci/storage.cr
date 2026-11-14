@@ -7,6 +7,7 @@ require "./storage/service"
 require "./storage/sha256"
 require "./storage/analysis"
 require "./storage/variant"
+require "./storage/processors"
 require "./storage/mirror_service"
 require "./storage/s3_service"
 
@@ -194,6 +195,15 @@ module Saci
       hex = Random::Secure.hex(16)
       shard = "#{hex[0, 2]}/#{hex[2, 2]}/#{hex[4..]}"
       public ? "#{PUBLIC_PREFIX}#{shard}" : shard
+    end
+
+    # Key of a variant: a hash of the original's key and the variation,
+    # sharded like `generate_key` and public when the original is. The
+    # original's key is random and secret, so variant keys are too.
+    def self.variant_key(original_key : String, variation : String) : String
+      hex = SHA256.hexdigest("#{original_key}\n#{variation}")[0, 32]
+      shard = "#{hex[0, 2]}/#{hex[2, 2]}/#{hex[4..]}"
+      public_key?(original_key) ? "#{PUBLIC_PREFIX}#{shard}" : shard
     end
 
     # Strips path components and control characters so metadata can never

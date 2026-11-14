@@ -128,6 +128,7 @@ module Saci
       def purge : Nil
         current_id = id
         if current_id
+          Blob.variants_of(current_id).each(&.purge)
           Attachment.where(blob_id: current_id).to_a.each do |attachment|
             attachment.destroy
           end
@@ -186,20 +187,46 @@ module Saci
         ))
       end
 
-      # Previews (PDF/video first pages) have no bundled backend, like
-      # variants. True only when an application processor is installed and
-      # the blob is a previewable container.
-      def previewable? : Bool
-        return false unless Storage.variant_processor
-        ct = content_type || ""
-        ct == "application/pdf" || ct.starts_with?("video/")
+      # True when a processor is installed and can transform this blob
+      # (`Processors::Command` handles PNG, JPEG, GIF and WebP).
+      def variable? : Bool
+        return false unless processor = Storage.variant_processor
+        processor.variable?(content_type || "")
       end
 
-      # Documented preview extension point. With a processor this is a
-      # variant tagged `preview=true`; without one it is the original blob
-      # (pass-through — install a previewer to generate real thumbnails).
-      def preview : Variant
-        variant(preview: true)
+      # True when a processor is installed and can render a preview of
+      # this blob (PDF first page, video first frame).
+      def previewable? : Bool
+        return false unless processor = Storage.variant_processor
+        processor.previewable?(content_type || "")
+      end
+
+      # A first page/frame as an image (PNG unless `format:` says
+      # otherwise), optionally resized like `variant`. Without a
+      # processor this is the original blob (pass-through).
+      #
+      # ```
+      # blob.preview(resize_to_limit: [400, 400]).url
+      # ```
+      def preview(*, resize_to_limit : Array(Int32) | Tuple(Int32, Int32) | Nil = nil,
+                  resize_to_fill : Array(Int32) | Tuple(Int32, Int32) | Nil = nil,
+                  resize_to_fit : Array(Int32) | Tuple(Int32, Int32) | Nil = nil,
+                  **extra) : Variant
+        variant(**extra, preview: true, resize_to_limit: resize_to_limit,
+          resize_to_fill: resize_to_fill, resize_to_fit: resize_to_fit)
+      end
+
+      # Variant blobs made from the blob with this id (see `Variant`).
+      def self.variants_of(id : Int64) : Array(Blob)
+        expr = case Record.adapter_of(connection)
+               when :postgres
+                 "metadata ->> 'variant_of'"
+               when :mysql
+                 "CASE WHEN JSON_VALID(metadata) THEN JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.variant_of')) END"
+               else
+                 "CASE WHEN json_valid(metadata) THEN CAST(json_extract(metadata, '$.variant_of') AS TEXT) END"
+               end
+        where("#{expr} = ?", id.to_s).to_a
       end
 
       # Pure-Crystal metadata analysis (PNG/GIF/JPEG/WebP dimensions).

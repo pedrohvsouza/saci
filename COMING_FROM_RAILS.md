@@ -81,7 +81,7 @@ type behind `Saci::`.
 | Active Job / Solid Queue | `Job` with the `:db` adapter (`SKIP LOCKED` claims, dead letters, priorities, uniqueness, batches, continuations) and `Recurring` |
 | Action Mailer | `Mailer::Base` (SMTP, sendmail, SendGrid/Mailgun/Postmark/SES, DKIM, attachments, callbacks, previews) |
 | Action Mailbox | `Mailbox` |
-| Active Storage | `Storage` (disk, S3, mirror services, blobs, `has_one_attached`/`has_many_attached`, direct uploads) |
+| Active Storage | `Storage` (disk, S3, mirror services, blobs, `has_one_attached`/`has_many_attached`, direct uploads, vips/ImageMagick variants, PDF/video previews) |
 | Action Text | `RichText` (sanitized storage, attachments) |
 | Action Cable / Solid Cable | `Cable` (in-process, Redis or database fan-out) |
 | Rails.cache / Solid Cache | `Cache` (memory, Redis, database), `PageCache` |
@@ -180,6 +180,4 @@ type behind `Saci::`.
 - Browser-driven system tests. `saci g system_test` generates an HTTP
   integration test.
 - GIS / PostGIS types.
-- An image processing backend for storage variants and previews. The
-  processor interface is pluggable, but none is bundled.
 - A bundled HTTP/2 proxy in place of Thruster.

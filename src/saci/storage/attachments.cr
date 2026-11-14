@@ -157,6 +157,28 @@ module Saci
           )
         end
 
+        def preview(*, resize_to_limit : Array(Int32) | Tuple(Int32, Int32) | Nil = nil,
+                    resize_to_fill : Array(Int32) | Tuple(Int32, Int32) | Nil = nil,
+                    resize_to_fit : Array(Int32) | Tuple(Int32, Int32) | Nil = nil,
+                    **extra) : Variant?
+          current = blob
+          return nil unless current
+          current.preview(
+            **extra,
+            resize_to_limit: resize_to_limit,
+            resize_to_fill: resize_to_fill,
+            resize_to_fit: resize_to_fit
+          )
+        end
+
+        def variable? : Bool
+          blob.try(&.variable?) || false
+        end
+
+        def previewable? : Bool
+          blob.try(&.previewable?) || false
+        end
+
         private def replace_with(blob : Blob) : Attachment
           previous = attachment
           created = begin
@@ -304,6 +326,28 @@ module Saci
             resize_to_fill: resize_to_fill,
             resize_to_fit: resize_to_fit
           )
+        end
+
+        def preview(*, resize_to_limit : Array(Int32) | Tuple(Int32, Int32) | Nil = nil,
+                    resize_to_fill : Array(Int32) | Tuple(Int32, Int32) | Nil = nil,
+                    resize_to_fit : Array(Int32) | Tuple(Int32, Int32) | Nil = nil,
+                    **extra) : Variant?
+          current = blobs.first?
+          return nil unless current
+          current.preview(
+            **extra,
+            resize_to_limit: resize_to_limit,
+            resize_to_fill: resize_to_fill,
+            resize_to_fit: resize_to_fit
+          )
+        end
+
+        def variable? : Bool
+          blobs.first?.try(&.variable?) || false
+        end
+
+        def previewable? : Bool
+          blobs.first?.try(&.previewable?) || false
         end
       end
     end

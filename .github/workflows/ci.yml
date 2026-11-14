@@ -25,6 +25,10 @@ jobs:
           crystal: "1.22"
       - name: Install dependencies
         run: shards install
+      - name: Image tools for the storage variant specs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libvips-tools imagemagick poppler-utils ffmpeg
       - name: Specs (single-threaded)
         run: crystal spec
       - name: Specs (multithreaded)
