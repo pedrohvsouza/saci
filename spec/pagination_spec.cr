@@ -195,6 +195,44 @@ describe "Saci::Pagination.paginate_nav" do
     Saci::Pagination.paginate_nav(page, "/active/page/:page").should contain(%(href="/active/page/1"))
     Saci::Pagination.paginate_nav(page, "/items?tag=x").should contain(%(href="/items?tag=x&amp;page=1"))
   end
+
+  it "translates the link texts through Saci::I18n" do
+    page = Saci::Pagination::Page(PaginateItem).new([] of PaginateItem, 250_i64, 10_i32, 5_i32, 25_i32, 6, 4)
+    Saci::Pagination.paginate_nav(page, "/items").should contain("« Prev")
+
+    dir = "/tmp/opencode/saci-pagination-i18n-#{Random.rand(1_000_000)}"
+    Dir.mkdir_p(dir)
+    path = File.join(dir, "pt-BR.yml")
+    File.write(path, <<-YAML)
+      pt-BR:
+        saci:
+          pagination:
+            prev: "← mais novos"
+            next: "mais antigos →"
+            gap: "<…>"
+            label: "Páginas"
+      YAML
+    old_path = Saci::I18n.load_path.dup
+    old_locale = Saci::I18n.locale
+    begin
+      Saci::I18n.load_path.replace([path])
+      Saci::I18n.reload!
+      Saci::I18n.locale = "pt-BR"
+      out = Saci::Pagination.paginate_nav(page, "/items")
+      out.should contain(%(<nav class="pagination" aria-label="Páginas">))
+      out.should contain(%(rel="prev">← mais novos</a>))
+      out.should contain(%(rel="next">mais antigos →</a>))
+      out.should contain(%(<span class="gap">&lt;…&gt;</span>))
+      out.should_not contain("Prev")
+      Saci::Views.page_numbers(5, 10, "/items").should contain(%(rel="next">mais antigos →</a>))
+    ensure
+      Saci::I18n.load_path.replace(old_path)
+      Saci::I18n.reload!
+      Saci::I18n.locale = old_locale
+      File.delete(path) if File.exists?(path)
+      Dir.delete(dir) if Dir.exists?(dir)
+    end
+  end
 end
 
 describe "pagination integration" do

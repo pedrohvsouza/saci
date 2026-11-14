@@ -1,3 +1,6 @@
+require "html"
+require "./i18n"
+
 module Saci
   # Kaminari/pagy-like pagination over `Saci::Record::Query`.
   #
@@ -64,6 +67,18 @@ module Saci
     # `base_path` honors `:page` / `%{page}` placeholders and `?`-style
     # query strings, exactly like `page_numbers`. Returns `""` when there
     # is one page or less (empty result sets render nothing).
+    #
+    # Link texts go through `Saci::I18n` (see `Pagination.label`):
+    #
+    # ```yaml
+    # pt-BR:
+    #   saci:
+    #     pagination:
+    #       prev: "← Anterior"
+    #       next: "Próxima →"
+    #       gap: "…"
+    #       label: "Páginas"   # optional aria-label for the <nav>
+    # ```
     def self.paginate_nav(page : Page(T), base_path : String, window : Int32 = 2) : String forall T
       total = page.total_pages
       return "" if total <= 1
@@ -77,13 +92,13 @@ module Saci
         end
       end
       String.build do |io|
-        io << %(<nav class="pagination">)
+        io << nav_open_tag
         if current > 1
-          io << %(<a href="#{HTML.escape(nav_url(base_path, current - 1))}" rel="prev">« Prev</a>)
+          io << %(<a href="#{HTML.escape(nav_url(base_path, current - 1))}" rel="prev">#{label(:prev)}</a>)
         end
         pages.each do |p|
           if p.nil?
-            io << %(<span class="gap">…</span>)
+            io << %(<span class="gap">#{label(:gap)}</span>)
           elsif p == current
             io << %(<span class="current" aria-current="page">#{p}</span>)
           else
@@ -91,9 +106,33 @@ module Saci
           end
         end
         if current < total
-          io << %(<a href="#{HTML.escape(nav_url(base_path, current + 1))}" rel="next">Next »</a>)
+          io << %(<a href="#{HTML.escape(nav_url(base_path, current + 1))}" rel="next">#{label(:next)}</a>)
         end
         io << "</nav>"
+      end
+    end
+
+    LABEL_DEFAULTS = {prev: "« Prev", next: "Next »", gap: "…"}
+
+    # HTML-escaped link text for `:prev`, `:next` or `:gap`, from
+    # `saci.pagination.<name>` in the current locale (English defaults).
+    # Shared by `paginate_nav` and `Saci::Views.page_numbers`.
+    def self.label(name : Symbol) : String
+      default = case name
+                when :prev then LABEL_DEFAULTS[:prev]
+                when :next then LABEL_DEFAULTS[:next]
+                else            LABEL_DEFAULTS[:gap]
+                end
+      HTML.escape(Saci::I18n.t("saci.pagination.#{name}", default: default))
+    end
+
+    # `<nav class="pagination">`, with an `aria-label` when
+    # `saci.pagination.label` is translated.
+    def self.nav_open_tag : String
+      if Saci::I18n.exists?("saci.pagination.label")
+        %(<nav class="pagination" aria-label="#{HTML.escape(Saci::I18n.t("saci.pagination.label"))}">)
+      else
+        %(<nav class="pagination">)
       end
     end
 

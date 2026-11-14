@@ -67,6 +67,7 @@ module Saci
     # may contain a `:page` (or `%{page}`) placeholder; otherwise page 1
     # links to `base` itself and the rest to `base/page/N` (or `?page=N`
     # when `base` already has a query string). Returns `""` for one page.
+    # Link texts are translated like `Saci::Pagination.paginate_nav`.
     def self.page_numbers(current : Int32, total : Int32, base : String, window : Int32 = 2) : String
       return "" if total <= 1
       current = current.clamp(1, total)
@@ -79,13 +80,13 @@ module Saci
         end
       end
       String.build do |io|
-        io << %(<nav class="pagination">)
+        io << Saci::Pagination.nav_open_tag
         if current > 1
-          io << %(<a href="#{HTML.escape(page_url(base, current - 1))}" rel="prev">« Prev</a>)
+          io << %(<a href="#{HTML.escape(page_url(base, current - 1))}" rel="prev">#{Saci::Pagination.label(:prev)}</a>)
         end
         pages.each do |p|
           if p.nil?
-            io << %(<span class="gap">…</span>)
+            io << %(<span class="gap">#{Saci::Pagination.label(:gap)}</span>)
           elsif p == current
             io << %(<span class="current">#{p}</span>)
           else
@@ -93,7 +94,7 @@ module Saci
           end
         end
         if current < total
-          io << %(<a href="#{HTML.escape(page_url(base, current + 1))}" rel="next">Next »</a>)
+          io << %(<a href="#{HTML.escape(page_url(base, current + 1))}" rel="next">#{Saci::Pagination.label(:next)}</a>)
         end
         io << "</nav>"
       end
