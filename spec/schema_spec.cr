@@ -222,6 +222,12 @@ describe "Saci::CLI::Schema" do
     src.should contain("File.write(\"db/schema.cr\", content)")
   end
 
+  it "escapes the template's interpolation for embedding in db/schema.cr" do
+    open = "#" + "{"
+    src = Saci::CLI::Schema.dump_runner_source("sqlite3://./db/demo_" + open + "env_name}.db")
+    src.should contain("url_embed = \"sqlite3://./db/demo_\\" + open + "env_name}.db\"")
+  end
+
   it "documents db:schema commands in help" do
     Saci::CLI.run(["help", "db:schema:dump"]).should eq(0)
     Saci::CLI.run(["help", "db:schema:load"]).should eq(0)

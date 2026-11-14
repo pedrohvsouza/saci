@@ -85,8 +85,12 @@ module Saci
       # then snapshots each target into `db/schema.cr`. `url_template`
       # carries a literal `#{env_name}` interpolation, resolved here for
       # connecting and preserved (escaped) for embedding in schema.cr.
+      # `#` + `{`, spelled out: `crystal tool format` rewrites the escaped
+      # literal for it into a real interpolation, which breaks the build.
+      INTERPOLATION_OPEN = "#" + "{"
+
       def self.dump_runner_source(url_template : String) : String
-        escaped = url_template.gsub("\\", "\\\\").gsub("\"", "\\\"").gsub("#\{", "\\#\{")
+        escaped = url_template.gsub("\\", "\\\\").gsub("\"", "\\\"").gsub(INTERPOLATION_OPEN, "\\" + INTERPOLATION_OPEN)
         <<-CRYSTAL
         # Temporary runner written by `saci db:schema:dump` (removed afterwards).
         # Connects exactly like db/migrate.cr, then writes db/schema.cr.
