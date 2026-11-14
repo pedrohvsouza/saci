@@ -4,7 +4,8 @@ require "./notifications"
 
 # Structured logging extensions loaded from `saci/logging.cr` (Router is
 # already defined there). Provides request tags, JSON output, a broadcast
-# logger, and the slow-query hook.
+# logger, the default text/JSON backend, query logging and the slow-query
+# hook.
 module Saci
   # `:json` when `SACI_LOG_FORMAT=json`, otherwise `:text`.
   def self.log_format : Symbol
@@ -58,22 +59,143 @@ module Saci
   class JsonLogFormatter
     include ::Log::Formatter
 
+    def initialize
+    end
+
     def format(entry : ::Log::Entry, io : IO) : Nil
-      payload = {
-        "time"    => entry.timestamp.to_rfc3339,
-        "level"   => entry.severity.label,
-        "source"  => entry.source,
-        "message" => entry.message,
-      } of String => String
-      if exception = entry.exception
-        payload["exception"] = "#{exception.class}: #{exception.message}"
+      JSON.build(io) do |json|
+        json.object do
+          json.field "time", entry.timestamp.to_rfc3339(fraction_digits: 6)
+          json.field "level", entry.severity.label
+          json.field "source", entry.source
+          json.field "message", entry.message
+          entry.data.each do |key, value|
+            case raw = value.raw
+            when Int, Float, Bool then json.field key.to_s, raw
+            else                       json.field key.to_s, value.to_s
+            end
+          end
+          if exception = entry.exception
+            json.field "exception", "#{exception.class}: #{exception.message}"
+          end
+        end
       end
-      io << payload.to_json
     end
   end
 
   def self.json_log_backend(io : IO = STDOUT) : ::Log::IOBackend
     ::Log::IOBackend.new(io, formatter: JsonLogFormatter.new)
+  end
+
+  # Timestamp format of text log lines: `2026/11/14 03:15:02.494236`.
+  LOG_TIME_FORMAT = "%Y/%m/%d %H:%M:%S.%6N"
+
+  # Whether log lines written to `io` get ANSI colors: only on a terminal,
+  # never with `NO_COLOR`. `SACI_LOG_COLOR=1`/`0` forces it on or off.
+  def self.log_color?(io : IO = STDOUT) : Bool
+    case ENV["SACI_LOG_COLOR"]?.try(&.downcase)
+    when "1", "true", "always" then return true
+    when "0", "false", "never" then return false
+    end
+    return false if ENV["NO_COLOR"]?.presence
+    io.tty?
+  end
+
+  # Text formatter for terminal logs:
+  # `2026/11/14 03:15:02.494236 INFO  saci: Completed 200 in 1.2ms | ...`.
+  # Query entries (source `saci.sql`) render Rails-style, with the
+  # statement colored by kind.
+  class TextLogFormatter
+    include ::Log::Formatter
+
+    RESET  = "\e[0m"
+    BOLD   = "\e[1m"
+    DIM    = "\e[2m"
+    RED    = "\e[31m"
+    GREEN  = "\e[32m"
+    YELLOW = "\e[33m"
+    BLUE   = "\e[34m"
+    PURPLE = "\e[35m"
+    CYAN   = "\e[36m"
+
+    def initialize(@color : Bool = false)
+    end
+
+    def format(entry : ::Log::Entry, io : IO) : Nil
+      paint(io, entry.timestamp.to_local.to_s(LOG_TIME_FORMAT), DIM)
+      io << ' '
+      paint(io, entry.severity.label.ljust(5), severity_color(entry.severity))
+      io << ' '
+      if entry.source == SQL_LOG_SOURCE
+        format_query(entry, io)
+      else
+        unless entry.source.empty?
+          paint(io, entry.source, DIM)
+          io << ": "
+        end
+        io << entry.message
+      end
+      if exception = entry.exception
+        io << '\n'
+        paint(io, exception.inspect_with_backtrace, RED)
+      end
+    end
+
+    private def format_query(entry : ::Log::Entry, io : IO) : Nil
+      label = String.build do |str|
+        str << "SQL"
+        if duration = entry.data[:duration_ms]?.try(&.raw)
+          str << " (" << duration << "ms)"
+        end
+      end
+      paint(io, label, "#{BOLD}#{CYAN}")
+      io << "  "
+      paint(io, entry.message, "#{BOLD}#{sql_color(entry.message)}")
+    end
+
+    private def paint(io : IO, text : String, code : String) : Nil
+      if @color
+        io << code << text << RESET
+      else
+        io << text
+      end
+    end
+
+    private def severity_color(severity : ::Log::Severity) : String
+      case severity
+      when .trace?, .debug? then CYAN
+      when .info?, .notice? then GREEN
+      when .warn?           then YELLOW
+      else                       "#{BOLD}#{RED}"
+      end
+    end
+
+    # Rails' palette: reads blue, inserts green, updates yellow, deletes
+    # and rollbacks red, transactions cyan, everything else purple.
+    private def sql_color(sql : String) : String
+      verb = sql.sub(/\A\s*(?:\/\*.*?\*\/\s*)*/m, "").split(/\s/, 2).first?.try(&.upcase) || ""
+      case verb
+      when "SELECT", "WITH"                          then BLUE
+      when "INSERT"                                  then GREEN
+      when "UPDATE"                                  then YELLOW
+      when "DELETE", "ROLLBACK"                      then RED
+      when "BEGIN", "COMMIT", "SAVEPOINT", "RELEASE" then CYAN
+      else                                                PURPLE
+      end
+    end
+  end
+
+  def self.text_log_backend(io : IO = STDOUT, color : Bool = log_color?(io)) : ::Log::IOBackend
+    ::Log::IOBackend.new(io, formatter: TextLogFormatter.new(color))
+  end
+
+  # Installs the default backend for every source: text (colored on a
+  # terminal) or JSON with `SACI_LOG_FORMAT=json`, at `LOG_LEVEL` (info by
+  # default). Runs when Saci is required; set `SACI_LOG_SETUP=0` to keep
+  # Crystal's default, or call `Log.setup` afterwards to override it.
+  def self.setup_logging(io : IO = STDOUT) : Nil
+    backend = log_json? ? json_log_backend(io) : text_log_backend(io)
+    ::Log.setup_from_env(backend: backend)
   end
 
   # Logger that fans out to several sinks (Rails `BroadcastLogger`). This is a
@@ -110,6 +232,28 @@ module Saci
     end
   end
 
+  # Source of the per-query log entries (`Log.for("saci.sql")`).
+  SQL_LOG_SOURCE = "saci.sql"
+  SQL_LOG        = ::Log.for(SQL_LOG_SOURCE)
+
+  # Every SQL statement is logged (info, source `saci.sql`) unless this is
+  # off: `Saci.log_queries = false` or `SACI_LOG_QUERIES=0`.
+  @@log_queries : Bool = !%w(0 false off no).includes?(ENV["SACI_LOG_QUERIES"]?.try(&.downcase))
+  @@log_queries_mutex = Mutex.new
+
+  def self.log_queries : Bool
+    @@log_queries_mutex.synchronize { @@log_queries }
+  end
+
+  def self.log_queries=(value : Bool) : Nil
+    @@log_queries_mutex.synchronize { @@log_queries = value }
+  end
+
+  def self.log_query(sql : String, duration_ms : Float64, adapter : String? = nil) : Nil
+    return unless log_queries
+    SQL_LOG.info &.emit(sql, duration_ms: duration_ms.round(1), adapter: adapter.to_s)
+  end
+
   @@slow_query_threshold : Time::Span = 200.milliseconds
   @@slow_query_mutex = Mutex.new
   @@slow_query_handler : Proc(String, Time::Span, Nil)? = nil
@@ -140,13 +284,16 @@ module Saci
   end
 end
 
-# Slow-query logging listens to `sql.saci` (published by the ORM
+# Query and slow-query logging listen to `sql.saci` (published by the ORM
 # instrumentation) so the ORM never has to know about logging.
 Saci::Notifications.subscribe("sql.saci") do |event|
   if sql = event["sql"]?.try(&.to_s)
+    Saci.log_query(sql, event.duration, event["adapter"]?.try(&.to_s))
     Saci.log_slow_query(sql, event.duration.milliseconds)
   end
 end
+
+Saci.setup_logging unless ENV["SACI_LOG_SETUP"]? == "0"
 
 module Saci
   class Router
