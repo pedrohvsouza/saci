@@ -39,6 +39,9 @@ module Saci
     # not exist; set `enabled = false` to turn it off explicitly.
     property public_file_server : Middleware::Static::Settings = Middleware::Static::Settings.new
 
+    # Development asset server (`/assets/*` from `src/assets/`).
+    property assets : Middleware::DevAssets::Settings = Middleware::DevAssets::Settings.new
+
     # Built-in response compression (opt-in).
     property compression : Middleware::Compression::Settings = Middleware::Compression::Settings.new
 
@@ -93,6 +96,7 @@ module Saci
       @middleware.use(Middleware::RemoteIp.new(self))
       @middleware.use(Middleware::HostAuthorization.new(self))
       @middleware.use(Middleware::SSL.new(self))
+      @middleware.use(Middleware::DevAssets.new(self))
       @middleware.use(Middleware::Static.new(self))
       @middleware.use(Middleware::HealthCheck.new(self))
       @middleware.use(Middleware::CORS.new(self))

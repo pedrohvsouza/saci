@@ -36,6 +36,7 @@ require "./cli/info_command"
 require "./cli/ci_command"
 require "./cli/app_update_command"
 require "./cli/importmap_command"
+require "./cli/assets_command"
 require "./cli/watch"
 
 module Saci
@@ -109,6 +110,10 @@ module Saci
         ImportmapCommand.run(["pin"] + args)
       when "importmap:pin_all_from"
         ImportmapCommand.run(["pin_all_from"] + args)
+      when "assets:precompile"
+        AssetsCommand.run(args, "precompile")
+      when "assets:clobber"
+        AssetsCommand.run(args, "clobber")
       when "ci"
         CICommand.run(args)
       when "app:update"
@@ -250,6 +255,8 @@ module Saci
         HELP
       when "task", "tasks", "task:list", "task:run", "rake"
         TaskCommand.help
+      when "assets:precompile", "assets:clobber", "assets"
+        AssetsCommand.help
       when "ci"
         CICommand.help
       when "app:update"
@@ -309,6 +316,7 @@ module Saci
           db:seed                   run db/seed.cr (or db/seeds.cr) in app context
           ci                        run config/ci.cr local CI steps
           importmap:install|json    write/inspect the import map (pin, pin_all_from)
+          assets:precompile|clobber fingerprint src/assets into public/assets (production)
           app:update                copy missing scaffold files (--force to overwrite)
           routes [--expanded] [--grep PATTERN]
           about|stats|notes|middleware|initializers|dbconsole

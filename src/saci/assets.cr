@@ -1,13 +1,18 @@
 require "digest/sha256"
+require "file_utils"
 require "json"
 
 module Saci
   # Minimal asset pipeline (Propshaft/Sprockets equivalent).
   #
-  # In development there is no manifest: `asset_path("app.css")` falls back
-  # to the logical URL `/assets/app.css` (documented fallback — a missing
-  # asset never raises, so templates keep rendering). For production, build
-  # a fingerprint manifest:
+  # Sources live in `src/assets/`. In development there is no manifest:
+  # `asset_path("app.css")` falls back to the logical URL `/assets/app.css`
+  # (documented fallback — a missing asset never raises, so templates keep
+  # rendering), which `Middleware::DevAssets` serves straight from
+  # `src/assets/`. For production, `saci assets:precompile` (also run by
+  # the generated Dockerfile) copies them into `public/assets/` (build
+  # output, gitignored) under fingerprinted names plus a manifest;
+  # `saci assets:clobber` removes that output again. The underlying call:
   #
   # ```
   # Saci::Assets.build_manifest("src/assets", "public/assets")
@@ -153,8 +158,8 @@ module Saci
     # `source_dir` and copying it to `output_dir` under its digested name.
     # The manifest maps logical relative paths to fingerprinted paths.
     #
-    # This is the API a scaffold/`saci assets:precompile` task can call;
-    # it is plain Crystal (no external shard).
+    # `precompile` wraps it for `saci assets:precompile`; it is plain
+    # Crystal (no external shard).
     def self.build_manifest(source_dir : String, output_dir : String, manifest_name : String = ".manifest.json") : Hash(String, String)
       source = source_dir.rstrip('/')
       output = output_dir.rstrip('/')
@@ -187,6 +192,79 @@ module Saci
         @@manifest_mtime = File.info(path).modification_time
       end
       manifest
+    end
+
+    DEFAULT_SOURCE = "src/assets"
+    DEFAULT_OUTPUT = "public/assets"
+
+    # `saci assets:precompile`: rebuilds *output* from *source*. Every file
+    # is written under its fingerprinted name (served by `Static` with
+    # `immutable` caching) and under its plain name (for references such
+    # as a CSS `url(font.woff2)` that cannot know the digest), next to the
+    # manifest. Previous output is clobbered first, so removed sources do
+    # not linger.
+    def self.precompile(source : String = DEFAULT_SOURCE, output : String = DEFAULT_OUTPUT) : Hash(String, String)
+      source_dir = File.expand_path(source)
+      output_dir = File.expand_path(output)
+      raise ArgumentError.new("assets source directory does not exist: #{source}") unless Dir.exists?(source_dir)
+      if source_dir == output_dir || output_dir.starts_with?(source_dir + "/") || source_dir.starts_with?(output_dir + "/")
+        raise ArgumentError.new("assets source (#{source}) and output (#{output}) must be separate directories")
+      end
+      clobber(output, source)
+      manifest = build_manifest(source, output)
+      manifest.each_key do |logical|
+        dest = File.join(output, logical)
+        Dir.mkdir_p(File.dirname(dest))
+        File.copy(File.join(source, logical), dest)
+      end
+      manifest
+    end
+
+    # `saci assets:clobber`: deletes what `precompile` wrote to *output* —
+    # the manifest, the fingerprinted files it lists and the plain copies of
+    # files that exist in *source* — and prunes emptied directories. Files
+    # it did not produce are left alone, so pointing it at a directory of
+    # hand-written assets is harmless. Returns the number of files removed.
+    def self.clobber(output : String = DEFAULT_OUTPUT, source : String = DEFAULT_SOURCE) : Int32
+      removed = 0
+      MANIFEST_NAMES.each do |name|
+        path = File.join(output, name)
+        next unless File.file?(path)
+        entries = begin
+          parse_manifest(path)
+        rescue ArgumentError
+          {} of String => String
+        end
+        separate = File.expand_path(output) != File.expand_path(source)
+        entries.each do |logical, hashed|
+          digested = File.join(output, hashed.lchop("/").lchop("assets/"))
+          if File.file?(digested)
+            File.delete(digested)
+            removed += 1
+          end
+          plain = File.join(output, logical)
+          if separate && File.file?(plain) && File.file?(File.join(source, logical))
+            File.delete(plain)
+            removed += 1
+          end
+        end
+        File.delete(path)
+        removed += 1
+      end
+      prune_empty_dirs(output)
+      reset!
+      @@mutex.synchronize { @@manifest_path = nil }
+      removed
+    end
+
+    private def self.prune_empty_dirs(dir : String) : Nil
+      return unless Dir.exists?(dir)
+      Dir.children(dir).each do |child|
+        path = File.join(dir, child)
+        prune_empty_dirs(path) if File.directory?(path) && !File.symlink?(path)
+      end
+      Dir.delete(dir) if Dir.empty?(dir)
+    rescue File::Error
     end
 
     def self.exists?(source : String) : Bool
