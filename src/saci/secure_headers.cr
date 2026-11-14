@@ -1,5 +1,6 @@
 require "./permissions_policy"
 require "./csp_nonce"
+require "./csp_check"
 
 module Saci
   # Secure response headers, applied to every controller response unless
@@ -20,6 +21,13 @@ module Saci
   # Extras: `permissions_policy`, `csp_nonce` interpolation (`'nonce'`
   # placeholder in a CSP value), conditional HSTS (when `Saci.force_ssl` or
   # `SecureHeaders.hsts = true`), and `regexp_timeout` (see below).
+  #
+  # The default CSP is `default-src 'self'`: inline `<style>`/`<script>`,
+  # `style="..."` attributes and every external origin (Google Fonts, CDNs)
+  # are blocked until the policy allows them. Generated apps spell the
+  # policy out in `config/initializers/content_security_policy.cr`, and in
+  # development each HTML response is checked against its policy, with a
+  # log warning for markup the browser would block (`csp_check.cr`).
   module SecureHeaders
     DEFAULTS = {
       "X-Frame-Options"                   => "SAMEORIGIN",

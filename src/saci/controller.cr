@@ -700,6 +700,7 @@ module Saci
       if !json.nil?
         respond(plain: json.to_json, content_type: content_type || "application/json; charset=utf-8", status: code)
       elsif h = html
+        SecureHeaders.warn_csp_violations(request, response, h) if SecureHeaders.csp_warnings?
         respond(plain: h, content_type: content_type || "text/html; charset=utf-8", status: code)
       elsif x = xml
         respond(plain: x, content_type: content_type || "application/xml; charset=utf-8", status: code)
