@@ -236,6 +236,12 @@ Generators: `model`, `controller`, `migration`, `scaffold`,
 - `serve --watch` polls the source tree, rebuilds with `crystal build` and
   restarts a single supervised binary. Build failures wait for the next
   save. Path dependencies (such as a local Saci checkout) are watched too.
+- Every command that compiles (`serve`, `test`, `runner`, `console`,
+  `routes --boot`, `db:*`) shows a progress line while the compiler runs
+  (`⠹ Compiling app… 4.2s`, then `✓ Compiled app in 11.8s`) and prints
+  the compiler's warnings or errors after it. The animation only runs on
+  a terminal; pipes and CI get two plain lines. `SACI_SPINNER=0` turns it
+  off, `SACI_SPINNER=1` forces it.
 - `ci` runs the steps declared in `config/ci.cr` with `CI.step` and
   `CI.run`. `app:update` re-applies the scaffold, prompting before
   it changes any file you edited.

@@ -140,9 +140,8 @@ module Saci
       end
 
       private def self.build(entry : String, bin_path : String, build_base : Array(String)) : Bool
-        cmd = build_base + ["-o", bin_path, entry]
-        puts "[saci] building: #{cmd.join(" ")}"
-        Process.run(cmd[0], args: cmd[1..], output: STDOUT, error: STDERR).success?
+        # build_base is [crystal, "build", flags...].
+        Compile.build(build_base[2..] + ["-o", bin_path, entry], entry)
       end
 
       private def self.spawn_app(bin_path : String, env : Hash(String, String)) : Process

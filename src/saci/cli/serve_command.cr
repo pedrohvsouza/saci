@@ -105,12 +105,11 @@ module Saci
           out_path = File.join("tmp", ".saci-serve-#{name}")
           Watch.serve(entry, out_path, env, build_base, opts[:interval])
         else
-          run_cmd = [crystal, "run"]
-          run_cmd << "--release" if opts[:release]
-          run_cmd << "-Dexecution_context" if opts[:mt]
-          run_cmd = run_cmd + opts[:crystal_extra] + [entry]
-          puts "Serving #{name} (PORT=#{opts[:port]} HOST=#{opts[:host]}#{opts[:mt] ? " MT" : ""}) via: #{run_cmd.join(" ")}"
-          Process.exec(run_cmd[0], args: run_cmd[1..], env: env)
+          puts "Serving #{name} (PORT=#{opts[:port]} HOST=#{opts[:host]}#{opts[:mt] ? " MT" : ""})"
+          Dir.mkdir_p("tmp")
+          bin = File.join("tmp", ".saci-serve-#{name}")
+          return 1 unless Compile.build(build_base[2..] + ["-o", bin, entry], name)
+          Process.exec(bin, env: env)
         end
       end
     end
@@ -178,11 +177,8 @@ module Saci
         script_args = parsed[:script_args]
         crystal_flags = parsed[:crystal_flags]
 
-        crystal = Util.crystal_bin!
-        crystal_args = ["run"] + crystal_flags + ["db/migrate.cr", "--", action] + script_args
-        puts "Running: #{crystal} #{crystal_args.join(" ")}#{" (all databases)" if parsed[:all]}"
-        status = Process.run(crystal, args: crystal_args, output: STDOUT, error: STDERR)
-        status.success? ? 0 : 1
+        puts "Running db:#{action} on all databases" if parsed[:all]
+        Compile.run("db/migrate.cr", crystal_flags, [action] + script_args, name: "migrations")
       end
     end
   end

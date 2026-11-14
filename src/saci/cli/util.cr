@@ -1,3 +1,5 @@
+require "./progress"
+
 module Saci
   module CLI
     class Error < Exception

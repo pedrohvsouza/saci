@@ -116,13 +116,12 @@ module Saci
         # Runs the entrypoint with `SACI_ROUTES_DUMP=1` and reads the table
         # `Saci::Application#dump_routes_if_requested` prints.
         def self.booted_rows(entry : String, crystal_flags : Array(String) = [] of String) : Array(Row)
-          crystal = Util.crystal_bin!
           output = IO::Memory.new
           error = IO::Memory.new
-          STDERR.puts "Compiling #{entry} to read its routes..."
-          status = Process.run(crystal, args: ["run"] + crystal_flags + [entry],
+          status = Compile.run_status(entry, crystal_flags, name: "#{entry} to read its routes",
             env: {Saci::Application::ROUTES_DUMP_ENV => "1"},
             output: output, error: error)
+          raise Error.new("could not compile #{entry} to list its routes (see the errors above).") if status.nil?
           rows = parse_dump(output.to_s)
           if rows.nil?
             details = error.to_s.strip
@@ -401,11 +400,7 @@ module Saci
         end
 
         def self.exec_wrapper(path : String, script_args : Array(String), crystal_flags : Array(String)) : Int32
-          crystal = Util.crystal_bin!
-          crystal_args = ["run"] + crystal_flags + [path, "--"] + script_args
-          puts "Running: #{crystal} #{crystal_args.join(" ")}"
-          status = Process.run(crystal, args: crystal_args, output: STDOUT, error: STDERR)
-          status.success? ? 0 : 1
+          Compile.run(path, crystal_flags, script_args, name: "app")
         end
       end
 

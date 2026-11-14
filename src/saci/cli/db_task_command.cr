@@ -528,11 +528,7 @@ module Saci
         Dir.mkdir_p("tmp")
         File.write(path, source)
         begin
-          crystal = Util.crystal_bin!
-          crystal_args = ["run"] + flags + [path, "--"] + args
-          puts "Running: #{crystal} #{crystal_args.join(" ")}" if output == STDOUT
-          status = Process.run(crystal, args: crystal_args, output: output, error: STDERR)
-          status.success? ? 0 : 1
+          Compile.run(path, flags, args, name: label, output: output)
         ensure
           File.delete(path) if File.exists?(path)
         end
@@ -543,11 +539,7 @@ module Saci
         Dir.mkdir_p("tmp")
         File.write(path, source)
         begin
-          crystal = Util.crystal_bin!
-          crystal_args = ["run"] + flags + [path, "--"] + args
-          puts "Running: #{crystal} #{crystal_args.join(" ")}"
-          status = Process.run(crystal, args: crystal_args, output: STDOUT, error: STDERR, env: env)
-          status.success? ? 0 : 1
+          Compile.run(path, flags, args, name: label, env: env)
         ensure
           File.delete(path) if File.exists?(path)
         end

@@ -32,11 +32,8 @@ module Saci
           end
         end
 
-        crystal = Util.crystal_bin!
-        crystal_args = ["run"] + crystal_flags + ["db/migrate.cr", "--", "schema:check"] + script_args
-        puts "Running: #{crystal} #{crystal_args.join(" ")}#{" (all databases)" if all}"
-        status = Process.run(crystal, args: crystal_args, output: STDOUT, error: STDERR)
-        status.success? ? 0 : 1
+        puts "Checking all databases" if all
+        Compile.run("db/migrate.cr", crystal_flags, ["schema:check"] + script_args, name: "migrations")
       end
     end
   end

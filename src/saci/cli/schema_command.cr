@@ -55,12 +55,10 @@ module Saci
         template = migrate_url_default || "sqlite3://./db/#{Util.shard_name(Dir.current)}_\#{env_name}.db"
         Dir.mkdir_p("tmp")
         File.write(RUNNER_PATH, dump_runner_source(template))
-        crystal = Util.crystal_bin!
-        crystal_args = ["run"] + parsed[:crystal_flags] + [RUNNER_PATH, "--"] + (parsed[:all] ? ["--all"] : [] of String)
-        puts "Dumping schema to db/schema.cr#{" (all databases)" if parsed[:all]} via: #{crystal} #{crystal_args.join(" ")}"
-        status = Process.run(crystal, args: crystal_args, output: STDOUT, error: STDERR)
+        puts "Dumping schema to db/schema.cr#{" (all databases)" if parsed[:all]}"
+        code = Compile.run(RUNNER_PATH, parsed[:crystal_flags], parsed[:all] ? ["--all"] : [] of String, name: "schema dumper")
         File.delete(RUNNER_PATH) if File.exists?(RUNNER_PATH)
-        status.success? ? 0 : 1
+        code
       end
 
       def self.load(args : Array(String)) : Int32
@@ -68,11 +66,7 @@ module Saci
         raise Error.new("db/schema.cr not found. Run `saci db:schema:dump` first.") unless File.exists?("db/schema.cr")
         parsed = parse(args)
         raise Error.new("Usage: saci db:schema:load [-- crystal flags]") unless parsed[:script_args].empty?
-        crystal = Util.crystal_bin!
-        crystal_args = ["run"] + parsed[:crystal_flags] + ["db/schema.cr"]
-        puts "Loading db/schema.cr via: #{crystal} #{crystal_args.join(" ")}"
-        status = Process.run(crystal, args: crystal_args, output: STDOUT, error: STDERR)
-        status.success? ? 0 : 1
+        Compile.run("db/schema.cr", parsed[:crystal_flags], name: "db/schema.cr")
       end
 
       # Default `DATABASE_URL` expression from the app's migrate runner

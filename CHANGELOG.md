@@ -21,6 +21,16 @@
   `admin_controller.cr`). The entrypoint, `spec/spec_helper.cr` and
   `db/migrate.cr` now require the `application_*` files before the globs.
   Existing apps can add the same requires.
+- The CLI shows a progress line while it compiles: `serve` (and each
+  `--watch` rebuild), `test`, `runner`, `console`, `routes --boot`,
+  `db:migrate` and the other `db:*` commands print `⠹ Compiling …` with
+  the elapsed time, then `✓ Compiled … in 11.8s` or `✗ … failed`, with the
+  compiler output right below. It animates only on a terminal
+  (`SACI_SPINNER=0|1` overrides; `CI` and `TERM=dumb` turn it off).
+  These commands now build with `crystal build` and run the binary
+  (`saci test` builds what `crystal spec` would, `file:line` filters
+  included) instead of `crystal run`, and no longer print the full
+  compiler command line.
 
 ## 0.6.1 — 2026-11-14
 
