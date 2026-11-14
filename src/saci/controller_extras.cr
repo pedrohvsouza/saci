@@ -313,20 +313,62 @@ module Saci
 
     # `http_basic_authenticate_with name: "admin", password: "secret"`
     # installs a before filter (Rails G60 convenience macro).
+    #
+    # `name:` / `password:` are evaluated on every request and may be
+    # `String?`; a nil or empty expected value denies everyone (fails
+    # closed), so a missing secret never opens the door:
+    #
+    # ```
+    # http_basic_authenticate_with name: ENV["ADMIN_USER"]?, password: ENV["ADMIN_PASSWORD"]?
+    # ```
+    #
+    # `credentials: "moderation"` reads `moderation.name` (or
+    # `moderation.user`) and `moderation.password` from the encrypted
+    # credentials, also failing closed when any of them (or the master key)
+    # is missing:
+    #
+    # ```
+    # http_basic_authenticate_with credentials: "moderation", only: [:index]
+    # ```
     macro http_basic_authenticate_with(**options)
-      {% unless options[:name] && options[:password] %}
-        {% raise "http_basic_authenticate_with requires name: and password:" %}
+      {% unless options[:credentials] || (options[:name] && options[:password]) %}
+        {% raise "http_basic_authenticate_with requires name: and password: (or credentials:)" %}
       {% end %}
       {% realm = options[:realm].nil? ? "Application" : options[:realm] %}
       {% suffix = options[:only] ? "_" + options[:only].stringify.gsub(/[^a-zA-Z0-9_]/, "_") : "" %}
       {% filter_name = "__saci_http_basic_authenticate" + suffix %}
       private def {{filter_name.id}} : Nil
+        {% if options[:credentials] %}
+          __saci_expected = Saci::Controller.http_basic_credentials({{options[:credentials]}})
+        {% else %}
+          __saci_expected = { ({{options[:name]}}).as(String?), ({{options[:password]}}).as(String?) }
+        {% end %}
         authenticate_or_request_with_http_basic({{realm}}) do |__saci_user, __saci_password|
-          Saci::Controller.secure_compare(__saci_user, {{options[:name]}}) &&
-            Saci::Controller.secure_compare(__saci_password, {{options[:password]}})
+          Saci::Controller.http_basic_match?(__saci_user, __saci_password, __saci_expected[0], __saci_expected[1])
         end
       end
       before_action :{{filter_name.id}}, only: {{options[:only]}}, except: {{options[:except]}}
+    end
+
+    # Constant-time check of a Basic login against expected values. Nil or
+    # empty expectations never match.
+    def self.http_basic_match?(user : String, password : String, expected_name : String?, expected_password : String?) : Bool
+      return false if expected_name.nil? || expected_name.empty?
+      return false if expected_password.nil? || expected_password.empty?
+      name_ok = secure_compare(user, expected_name)
+      password_ok = secure_compare(password, expected_password)
+      name_ok && password_ok
+    end
+
+    # `{name, password}` from the credentials entry *key* (`name:` or
+    # `user:` plus `password:`); nils when the entry, a value or the
+    # master key is missing.
+    def self.http_basic_credentials(key : String | Symbol) : Tuple(String?, String?)
+      prefix = key.to_s
+      name = Saci::Credentials.dig("#{prefix}.name") || Saci::Credentials.dig("#{prefix}.user")
+      {name, Saci::Credentials.dig("#{prefix}.password")}
+    rescue
+      {nil, nil}
     end
 
     # Blocks requests from unsupported browsers with a 406. Supports the

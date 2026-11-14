@@ -1,6 +1,7 @@
 require "spec"
 require "http/client"
 require "base64"
+require "file_utils"
 require "../src/saci"
 
 class SpecExtrasBoomError < Exception
@@ -273,6 +274,25 @@ class SpecExtrasBasicMacroController < Saci::Controller
   end
 end
 
+# A credential that may be missing (`Saci::Credentials.dig` is `String?`).
+SPEC_EXTRAS_MISSING_PASSWORD = ENV["SACI_SPEC_SURELY_UNSET_PASSWORD"]?
+
+class SpecExtrasBasicNilableController < Saci::Controller
+  http_basic_authenticate_with name: "admin", password: SPEC_EXTRAS_MISSING_PASSWORD
+
+  def index
+    render json: {ok: true}
+  end
+end
+
+class SpecExtrasBasicCredentialsController < Saci::Controller
+  http_basic_authenticate_with credentials: "moderation", realm: "Moderation"
+
+  def index
+    render json: {ok: true}
+  end
+end
+
 class SpecExtrasRenderController < Saci::Controller
   rescue_from Saci::Controller::UnsafeFilePath do
     render plain: "unsafe", status: :bad_request
@@ -504,6 +524,8 @@ def spec_extras_router : Saci::Router
     r.get "/auth/optional-basic", SpecExtrasAuthController, :optional_basic
     r.get "/auth/optional-token", SpecExtrasAuthController, :optional_token
     r.get "/auth/basic-macro", SpecExtrasBasicMacroController, :index
+    r.get "/auth/basic-nilable", SpecExtrasBasicNilableController, :index
+    r.get "/auth/basic-credentials", SpecExtrasBasicCredentialsController, :index
 
     r.get "/render/body", SpecExtrasRenderController, :body
     r.get "/render/file", SpecExtrasRenderController, :file
@@ -719,6 +741,37 @@ describe "controller extras (integration)" do
 
     resp = session.not_nil!.get("/auth/basic-macro", basic_auth("admin", "secret"))
     resp.status_code.should eq(200)
+  end
+
+  it "fails closed when http_basic_authenticate_with gets a nil password" do
+    session.not_nil!.get("/auth/basic-nilable").status_code.should eq(401)
+    session.not_nil!.get("/auth/basic-nilable", basic_auth("admin", "")).status_code.should eq(401)
+  end
+
+  it "reads http_basic_authenticate_with credentials: from encrypted credentials" do
+    dir = "/tmp/opencode/saci-basic-creds-#{Random.rand(1_000_000)}"
+    Dir.mkdir_p(dir)
+    old_file = Saci::Credentials.file_path
+    old_key = Saci::Credentials.key_path
+    begin
+      Saci::Credentials.file_path = File.join(dir, "credentials.yml.enc")
+      Saci::Credentials.key_path = File.join(dir, "master.key")
+      # No master key and no file yet: everyone is denied.
+      session.not_nil!.get("/auth/basic-credentials", basic_auth("mod", "pw")).status_code.should eq(401)
+
+      File.write(Saci::Credentials.key_path, Saci::Credentials.generate_key)
+      moderation = {YAML::Any.new("user") => YAML::Any.new("mod"), YAML::Any.new("password") => YAML::Any.new("pw")}
+      Saci::Credentials.write({"moderation" => YAML::Any.new(moderation)})
+      resp = session.not_nil!.get("/auth/basic-credentials")
+      resp.status_code.should eq(401)
+      resp.headers["WWW-Authenticate"].should contain("Moderation")
+      session.not_nil!.get("/auth/basic-credentials", basic_auth("mod", "nope")).status_code.should eq(401)
+      session.not_nil!.get("/auth/basic-credentials", basic_auth("mod", "pw")).status_code.should eq(200)
+    ensure
+      Saci::Credentials.file_path = old_file
+      Saci::Credentials.key_path = old_key
+      FileUtils.rm_rf(dir)
+    end
   end
 
   it "renders body:, file:, template:, action:, partial: and render_to_string" do
