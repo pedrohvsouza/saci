@@ -318,7 +318,7 @@ module Saci
           importmap:install|json    write/inspect the import map (pin, pin_all_from)
           assets:precompile|clobber fingerprint src/assets into public/assets (production)
           app:update                copy missing scaffold files (--force to overwrite)
-          routes [--expanded] [--grep PATTERN]
+          routes [--boot] [--expanded] [--grep PATTERN]
           about|stats|notes|middleware|initializers|dbconsole
           dev:cache|log:clear|tmp:clear|time:zones|restart
           secret                    print a random SECRET_KEY_BASE

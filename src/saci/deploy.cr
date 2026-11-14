@@ -42,9 +42,10 @@ module Saci
         server.max_request_line_size = size
       end
 
+      dump_routes_if_requested
+      port = Application.bind!(server, host, port, reuse_port.nil? ? settings.reuse_port : reuse_port)
       print Saci::ServerUrls.banner(host, port)
       puts (@router.routes_table + @router.ws_routes_table).join("\n")
-      server.bind_tcp(host, port, reuse_port: reuse_port.nil? ? settings.reuse_port : reuse_port)
       graceful.run(server)
     end
   end

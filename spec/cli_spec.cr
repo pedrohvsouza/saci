@@ -529,6 +529,66 @@ describe "saci new db/seed.cr" do
   end
 end
 
+class CliRoutesDumpController < Saci::Controller
+  def show
+    render text: "ok"
+  end
+end
+
+describe "saci routes --boot" do
+  it "lists routes drawn in loops from the router itself" do
+    router = Saci::Router.new.draw do |r|
+      ["/jogo-a", "/jogo-b"].each { |path| r.get path, CliRoutesDumpController, :show }
+      r.post("/inline") { |_ctx, _params| nil }
+      r.fallback CliRoutesDumpController, :show
+    end
+    rows = router.route_rows
+    rows.should contain({"GET", "/jogo-a", "CliRoutesDumpController#show"})
+    rows.should contain({"GET", "/jogo-b", "CliRoutesDumpController#show"})
+    rows.should contain({"POST", "/inline", "(block)"})
+    rows.last.should eq({"*", "*", "(fallback)"})
+  end
+
+  it "parses the table the booted app prints between markers" do
+    text = String.build do |io|
+      io << "boot noise\n" << Saci::Application::ROUTES_DUMP_BEGIN << "\n"
+      io << "GET\t/jogo-a\tPlaygroundsController#soon\n"
+      io << "WS\t/cable\t(socket)\n"
+      io << Saci::Application::ROUTES_DUMP_END << "\n"
+    end
+    rows = Saci::CLI::Inspect::Routes.parse_dump(text).not_nil!
+    rows.map { |r| "#{r.verb} #{r.path} #{r.target}" }.should eq(["GET /jogo-a PlaygroundsController#soon", "WS /cable (socket)"])
+    Saci::CLI::Inspect::Routes.parse_dump("compile error").should be_nil
+  end
+end
+
+describe "saci serve port check" do
+  it "detects a port that is already taken" do
+    server = TCPServer.new("127.0.0.1", 0)
+    port = server.local_address.port
+    begin
+      Saci::CLI::Serve.port_in_use?("127.0.0.1", port).should be_true
+      Saci::CLI::Serve.free_port("127.0.0.1", port.to_s).should be > port
+    ensure
+      server.close
+    end
+    Saci::CLI::Serve.port_in_use?("127.0.0.1", port).should be_false
+    Saci::CLI::Serve.free_port("127.0.0.1", port.to_s).should eq(port)
+  end
+
+  it "binds the app to the next port when the requested one is taken" do
+    taken = TCPServer.new("127.0.0.1", 0)
+    port = taken.local_address.port
+    server = HTTP::Server.new { |ctx| ctx.response.print "ok" }
+    begin
+      Saci::Application.bind!(server, "127.0.0.1", port).should be > port
+    ensure
+      server.close
+      taken.close
+    end
+  end
+end
+
 describe "saci routes" do
   it "falls back to the entrypoint when src/routes.cr is absent" do
     with_tmp_app(name: "cli_routes_app") do |dir|

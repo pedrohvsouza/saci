@@ -1,3 +1,4 @@
+require "socket"
 require "./watch"
 
 module Saci
@@ -85,6 +86,8 @@ module Saci
         entry = File.join("src", "#{name}.cr")
         raise Error.new("Entrypoint #{entry} not found.") unless File.exists?(entry)
 
+        port = free_port(opts[:host], opts[:port])
+        opts = opts.merge(port: port.to_s)
         crystal = Util.crystal_bin!
         # Compiler flags go BEFORE the entrypoint; program args after `--`.
         build_base = [crystal, "build"]
@@ -109,6 +112,35 @@ module Saci
           puts "Serving #{name} (PORT=#{opts[:port]} HOST=#{opts[:host]}#{opts[:mt] ? " MT" : ""}) via: #{run_cmd.join(" ")}"
           Process.exec(run_cmd[0], args: run_cmd[1..], env: env)
         end
+      end
+    end
+
+    module Serve
+      # Picks the port before a long compile: `port_value` when it is free,
+      # otherwise the next free one (the app does the same at bind time,
+      # which also covers restarts under `--watch`).
+      def self.free_port(host : String, port_value : String, attempts : Int32 = 100) : Int32
+        port = port_value.to_i? || raise Error.new("Invalid port '#{port_value}'.")
+        candidate = port
+        while port_in_use?(host, candidate)
+          candidate += 1
+          if candidate > 65535 || candidate - port >= attempts
+            raise Error.new("#{host}:#{port} and the next #{attempts - 1} ports are all in use.")
+          end
+        end
+        STDERR.puts "warning: #{host}:#{port} is already in use; using port #{candidate} instead." if candidate != port
+        candidate
+      end
+
+      def self.port_in_use?(host : String, port : Int32) : Bool
+        return false if port == 0
+        server = TCPServer.new(host, port)
+        server.close
+        false
+      rescue ex : Socket::BindError
+        ex.os_error == Errno::EADDRINUSE || ex.message.to_s.includes?("Address already in use")
+      rescue Socket::Error
+        false
       end
     end
 

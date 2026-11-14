@@ -30,12 +30,19 @@ module Saci
             return 0
           end
           expanded = false
+          boot = false
           grep : String? = nil
           positional = [] of String
+          crystal_flags = [] of String
           i = 0
           while i < args.size
             a = args[i]
             case a
+            when "--"
+              crystal_flags = args[(i + 1)..]
+              break
+            when "--boot"
+              boot = true
             when "--expanded"
               expanded = true
             when "--grep"
@@ -55,8 +62,14 @@ module Saci
             raise Error.new("Unexpected argument '#{positional.first}'. See `saci help routes`.")
           end
           name = Util.shard_name(Dir.current)
-          source = locate!(name)
-          rows = parse(File.read(source))
+          if boot
+            source = File.join("src", "#{name}.cr")
+            raise Error.new("Entrypoint #{source} not found.") unless File.exists?(source)
+            rows = booted_rows(source, crystal_flags)
+          else
+            source = locate!(name)
+            rows = parse(File.read(source))
+          end
           rows = filter(rows, grep) if grep
           if rows.empty?
             puts grep ? "(no routes matched #{grep.inspect} in #{source})" : "(no routes found in #{source})"
@@ -91,7 +104,46 @@ module Saci
         end
 
         def self.help : String
-          "Usage: saci routes [--expanded] [--grep PATTERN]\n\nPrints VERB PATH -> Controller#action for the app without booting the server.\nReads src/routes.cr when present, otherwise src/<app>.cr.\n--expanded prints one detail block per route; --grep filters case-insensitively."
+          "Usage: saci routes [--boot] [--expanded] [--grep PATTERN] [-- crystal flags]\n\n" \
+          "Prints VERB PATH -> Controller#action for the app without booting the server.\n" \
+          "Reads src/routes.cr when present, otherwise src/<app>.cr. That parse is static (best effort):\n" \
+          "routes drawn in loops or helper methods do not show up.\n" \
+          "--boot compiles and boots the app instead (SACI_ROUTES_DUMP=1: it prints the router's real\n" \
+          "table and exits before binding a port), so every route is listed. Slower, needs the app to compile.\n" \
+          "--expanded prints one detail block per route; --grep filters case-insensitively."
+        end
+
+        # Runs the entrypoint with `SACI_ROUTES_DUMP=1` and reads the table
+        # `Saci::Application#dump_routes_if_requested` prints.
+        def self.booted_rows(entry : String, crystal_flags : Array(String) = [] of String) : Array(Row)
+          crystal = Util.crystal_bin!
+          output = IO::Memory.new
+          error = IO::Memory.new
+          STDERR.puts "Compiling #{entry} to read its routes..."
+          status = Process.run(crystal, args: ["run"] + crystal_flags + [entry],
+            env: {Saci::Application::ROUTES_DUMP_ENV => "1"},
+            output: output, error: error)
+          rows = parse_dump(output.to_s)
+          if rows.nil?
+            details = error.to_s.strip
+            details = output.to_s.strip if details.empty?
+            raise Error.new("could not boot #{entry} to list its routes (exit #{status.exit_code}).#{details.empty? ? "" : "\n#{details}"}")
+          end
+          rows
+        end
+
+        # Rows between the dump markers; nil when the markers are missing
+        # (the app failed, or never reached `listen`).
+        def self.parse_dump(text : String) : Array(Row)?
+          lines = text.lines
+          start = lines.index(Saci::Application::ROUTES_DUMP_BEGIN)
+          finish = lines.index(Saci::Application::ROUTES_DUMP_END)
+          return nil unless start && finish && finish > start
+          lines[(start + 1)...finish].compact_map do |line|
+            verb, path, target = line.split('\t', 3) + ["", ""]
+            next if verb.empty?
+            Row.new(verb, path, target)
+          end
         end
 
         def self.locate!(name : String) : String

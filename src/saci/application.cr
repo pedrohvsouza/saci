@@ -53,6 +53,52 @@ module Saci
     def initialize(@router : Router, @config : Configuration = Saci.config)
     end
 
+    # `saci routes --boot` runs the app with this set: once booted, the
+    # app prints its real route table between the markers and exits
+    # instead of binding a port. Routes added in loops or helpers, which
+    # the static `saci routes` parser cannot see, show up this way.
+    ROUTES_DUMP_ENV   = "SACI_ROUTES_DUMP"
+    ROUTES_DUMP_BEGIN = "--- saci routes ---"
+    ROUTES_DUMP_END   = "--- end saci routes ---"
+
+    # Prints the route table and exits when `SACI_ROUTES_DUMP=1`.
+    def dump_routes_if_requested : Nil
+      return unless ENV[ROUTES_DUMP_ENV]? == "1"
+      STDOUT.puts ROUTES_DUMP_BEGIN
+      @router.route_rows.each { |verb, path, target| STDOUT.puts "#{verb}\t#{path}\t#{target}" }
+      STDOUT.puts ROUTES_DUMP_END
+      STDOUT.flush
+      exit 0
+    end
+
+    # How many consecutive ports `bind!` tries before giving up.
+    PORT_ATTEMPTS = 100
+
+    # Binds the server and returns the port actually bound. When `port` is
+    # already in use, tries the next ones (up to `PORT_ATTEMPTS`) instead of
+    # crashing, and says which port it picked.
+    def self.bind!(server : HTTP::Server, host : String, port : Int32, reuse_port : Bool = false) : Int32
+      candidate = port
+      loop do
+        begin
+          bound = server.bind_tcp(host, candidate, reuse_port: reuse_port).port
+          STDERR.puts "warning: #{host}:#{port} is already in use; listening on port #{bound} instead." if candidate != port
+          return bound
+        rescue ex : Socket::BindError
+          raise ex unless address_in_use?(ex)
+          candidate += 1
+          if port == 0 || candidate > 65535 || candidate - port >= PORT_ATTEMPTS
+            STDERR.puts "error: #{host}:#{port} and the next #{PORT_ATTEMPTS - 1} ports are all in use."
+            exit 1
+          end
+        end
+      end
+    end
+
+    def self.address_in_use?(ex : Socket::BindError) : Bool
+      ex.os_error == Errno::EADDRINUSE || ex.message.to_s.includes?("Address already in use")
+    end
+
     # Runs the initializer lifecycle exactly once. `listen` calls this; tests
     # that build the handler chain manually can call it explicitly.
     def boot : self
@@ -120,9 +166,10 @@ module Saci
       if size = @config.max_request_line_size
         server.max_request_line_size = size
       end
+      dump_routes_if_requested
+      port = Application.bind!(server, host, port)
       print Saci::ServerUrls.banner(host, port)
       puts (@router.routes_table + @router.ws_routes_table).join("\n")
-      server.bind_tcp(host, port)
       server.listen
     end
   end

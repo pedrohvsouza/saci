@@ -1408,6 +1408,22 @@ module Saci
       end
     end
 
+    # `{verb, path, "Controller#action"}` for every route, websocket route
+    # and the fallback, as `saci routes --boot` prints them.
+    def route_rows : Array(Tuple(String, String, String))
+      rows = @routes.map do |route|
+        target = if controller = route.controller
+                   "#{controller.name}##{route.action}"
+                 else
+                   "(block)"
+                 end
+        {route.http_method, route.pattern, target}
+      end
+      @ws_routes.each { |(_, _, pattern, _)| rows << {"WS", pattern, "(socket)"} }
+      rows << {"*", "*", "(fallback)"} if @fallback
+      rows
+    end
+
     # Structured, one-line-per-route view for CLI consumers.
     def routes_table_expanded : Array(String)
       @routes.map do |route|
