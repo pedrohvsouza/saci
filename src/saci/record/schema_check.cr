@@ -26,6 +26,18 @@ module Saci
     # bookkeeping and the durable job queue).
     SCHEMA_CHECK_SKIP_TABLES = ["schema_migrations", "saci_jobs", "saci_dead_jobs"]
 
+    # Framework-owned tables (DB-backed jobs, cache, cable, mailbox...) are
+    # created by the feature that uses them, never by an app migration.
+    FRAMEWORK_TABLE_PREFIX = "saci_"
+
+    # Models Saci itself defines (`Saci::Mailbox::InboundEmail`,
+    # `Saci::Storage::Blob`, ...). They are registered just by being
+    # compiled in, whether or not the app uses the feature, so a missing
+    # table means "feature not set up", not drift.
+    def self.framework_model?(model : Base.class) : Bool
+      model.name.starts_with?("Saci::")
+    end
+
     # Compares the database against the registered models and returns one
     # warning string per mismatch (never raises on drift):
     #
@@ -36,7 +48,10 @@ module Saci
     #
     # Comparison is adapter-agnostic (table/column NAMES only — types are
     # intentionally ignored). Column-less models (e.g. `ApplicationRecord`
-    # intermediates) are skipped: they own no table by design.
+    # intermediates) are skipped: they own no table by design. Framework
+    # models are only checked once their table exists, and `saci_*` tables
+    # without a model belong to framework features, so neither shows up as
+    # drift in an app that never enabled the feature.
     #
     # ```
     # Saci::Record.check_schema!.each { |w| STDERR.puts "warning: #{w}" }
@@ -51,13 +66,14 @@ module Saci
       end
       db_tables.each_key do |t|
         next if SCHEMA_CHECK_SKIP_TABLES.includes?(t)
-        unless by_table.has_key?(t)
+        unless by_table.has_key?(t) || t.starts_with?(FRAMEWORK_TABLE_PREFIX)
           warnings << "Table #{t.inspect} exists in the database but has no registered model (missing model?)"
         end
       end
       by_table.each do |t, m|
         db_cols = db_tables[t]?
         if db_cols.nil?
+          next if framework_model?(m)
           warnings << "Model #{m.name} (table #{t.inspect}) has no matching table in the database (missing migration?)"
           next
         end

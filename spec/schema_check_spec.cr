@@ -110,6 +110,34 @@ describe "Saci::Record.check_schema!" do
     end
   end
 
+  it "ignores framework models whose feature was never set up" do
+    with_sc_db([SC_WIDGET_TABLE]) do |db|
+      models = sc_models(SchemaCheckWidget, Saci::Mailbox::InboundEmail)
+      Saci::Record.check_schema!(db, models).should be_empty
+    end
+  end
+
+  it "still checks a framework model once its table exists" do
+    with_sc_db([
+      SC_WIDGET_TABLE,
+      "CREATE TABLE \"saci_inbound_emails\" (\"id\" INTEGER PRIMARY KEY AUTOINCREMENT)",
+    ]) do |db|
+      warnings = Saci::Record.check_schema!(db, sc_models(SchemaCheckWidget, Saci::Mailbox::InboundEmail))
+      warnings.should_not be_empty
+      warnings.all?(&.includes?("saci_inbound_emails")).should be_true
+    end
+  end
+
+  it "ignores framework-owned saci_* tables without a model" do
+    with_sc_db([
+      SC_WIDGET_TABLE,
+      "CREATE TABLE \"saci_cable_messages\" (\"id\" INTEGER PRIMARY KEY AUTOINCREMENT)",
+      "CREATE TABLE \"saci_job_processes\" (\"id\" INTEGER PRIMARY KEY AUTOINCREMENT)",
+    ]) do |db|
+      Saci::Record.check_schema!(db, sc_models(SchemaCheckWidget)).should be_empty
+    end
+  end
+
   it "reports every drift kind at once" do
     with_sc_db([
       "CREATE TABLE \"sc_widgets\" (\"id\" INTEGER PRIMARY KEY AUTOINCREMENT, \"created_at\" TEXT NOT NULL, \"updated_at\" TEXT NOT NULL, \"stray\" TEXT)",
