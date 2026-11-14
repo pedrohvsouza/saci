@@ -133,7 +133,7 @@ module Saci
           query["X-Amz-Security-Token"] = token
         end
 
-        canonical_uri = URI.encode_path(uri.path)
+        canonical_uri = uri.path
         canonical_query = canonical_query_string(query)
         canonical_headers = "host:#{host}\n"
         canonical_request = [
@@ -181,7 +181,7 @@ module Saci
           end
         end
         signed_headers = canonical_header_names.select { |name| headers[name]? }.join(";")
-        canonical_uri = URI.encode_path(uri.path)
+        canonical_uri = uri.path
         canonical_query = canonical_query_string(query_pairs(uri.query))
         canonical_request = [
           method, canonical_uri, canonical_query, canonical_headers,
@@ -214,8 +214,18 @@ module Saci
         # Path-style addressing works on AWS S3, MinIO, R2 and most S3
         # clones without DNS wildcard certificates. Set `endpoint` to the
         # service root (e.g. https://s3.eu-central-1.amazonaws.com).
-        path = "#{prefix}/#{bucket}/#{key}"
-        URI.parse("#{base.scheme}://#{host_header(base)}#{path}")
+        # The key is encoded the way SigV4 canonicalizes paths, and the
+        # request is sent with that exact path, so the two always agree.
+        path = "#{prefix}/#{bucket}/#{S3Service.encode_key(key)}"
+        URI.new(scheme: base.scheme, host: base.host, port: base.port, path: path)
+      end
+
+      # Percent-encodes every byte of `key` except the unreserved
+      # characters and `/` (SigV4 `UriEncode` with slashes kept).
+      def self.encode_key(key : String) : String
+        String.build do |io|
+          URI.encode(key, io) { |byte| URI.unreserved?(byte) || byte == '/'.ord }
+        end
       end
 
       private def host_header(uri : URI) : String
@@ -239,9 +249,17 @@ module Saci
 
       private def canonical_query_string(query : Hash(String, String) | Array(Tuple(String, String))) : String
         pairs = query.is_a?(Hash(String, String)) ? query.to_a : query
-        encoded = pairs.map { |(key, value)| {URI.encode_path_segment(key), URI.encode_path_segment(value)} }
+        encoded = pairs.map { |(key, value)| {S3Service.encode_query(key), S3Service.encode_query(value)} }
         encoded.sort_by! { |(key, value)| {key, value} }
         encoded.map { |(key, value)| "#{key}=#{value}" }.join("&")
+      end
+
+      # SigV4 `UriEncode` for query names and values: every byte except
+      # the unreserved characters, `/` included.
+      def self.encode_query(value : String) : String
+        String.build do |io|
+          URI.encode(value, io) { |byte| URI.unreserved?(byte) }
+        end
       end
 
       private def safe_key!(key : String) : Nil
