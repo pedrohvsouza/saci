@@ -6,6 +6,16 @@ on:
   pull_request:
 
 jobs:
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: crystal-lang/install-crystal@v1
+        with:
+          crystal: "1.22"
+      - name: Formatting
+        run: crystal tool format --check src spec examples
+
   spec:
     runs-on: ubuntu-latest
     steps:
@@ -19,6 +29,20 @@ jobs:
         run: crystal spec
       - name: Specs (multithreaded)
         run: CRYSTAL_WORKERS=4 crystal spec -Dexecution_context
+
+  # Generates an app with `saci new` plus every `saci generate` kind, then
+  # checks that it is formatted, compiles and passes its own specs.
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: crystal-lang/install-crystal@v1
+        with:
+          crystal: "1.22"
+      - name: Install dependencies
+        run: shards install
+      - name: Generated app smoke test
+        run: SACI_SMOKE=1 crystal spec spec/generated_app_smoke_spec.cr
 
   live:
     runs-on: ubuntu-latest
