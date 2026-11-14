@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.8.0 — 2026-11-14
+
+Models gain single-table inheritance and `default_scope`/`unscoped`.
+Storage ships image variant processors (vips, ImageMagick) with PDF and
+video previews, and the PostgreSQL Cable adapter can push broadcasts
+with `LISTEN/NOTIFY` instead of waiting for the next poll. Specs keep
+Saci's log format.
 
 - **Fixed: specs switched to Crystal's log format halfway through.**
   `crystal spec` resets logging right before the examples run, so log
