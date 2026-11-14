@@ -137,18 +137,20 @@ crystal run examples/forem_lite_app.cr     # demo community app using most subsy
 ## CLI
 
 ```sh
-saci new NAME [--db=sqlite|postgres|mysql] [--devcontainer] [--skip-git] [--skip-shards]
+saci new NAME [--db=sqlite|postgres|mysql] [--devcontainer] [--saci-path PATH] [--skip-git] [--skip-shards]
 saci generate KIND NAME [fields...] [--pretend] [--force]
 saci destroy KIND NAME
 saci serve [--port 3000] [--host] [--watch] [--mt [--workers N]] [-- crystal flags]
 saci test [spec paths] [-- crystal flags]
-saci routes [--grep PATTERN]
+saci routes [--grep PATTERN] [--boot [-- crystal flags]]
 saci runner -e CODE | saci runner FILE [args]
 saci console [-e CODE]
 saci db:migrate [--all] | db:rollback [STEPS] [--all] | db:seed
 saci db:prepare | db:setup | db:reset | db:create | db:drop | db:version | db:migrate:status
 saci db:schema:dump [--all] | db:schema:load | db:schema:check [--all]
-saci credentials:show | credentials:edit | credentials:keygen | credentials:fetch KEY
+saci credentials:show | credentials:edit | credentials:keygen
+saci credentials:get KEY | credentials:set KEY VALUE|--stdin | credentials:unset KEY
+saci assets:precompile [--source DIR] [--output DIR] | assets:clobber
 saci task NAME | task:list
 saci importmap:install | importmap:pin | importmap:json
 saci ci | app:update | secret | about | stats | notes | middleware | initializers
@@ -175,7 +177,24 @@ Generators: `model`, `controller`, `migration`, `scaffold`,
   `DATABASE_URL_<NAME>`. After each run the runner prints schema drift
   warnings.
 - `routes` parses the route DSL statically, with no compilation, and
-  prints `VERB PATH -> Controller#action`.
+  prints `VERB PATH -> Controller#action`. Routes drawn in loops or
+  helper methods are invisible to that parse; `routes --boot` compiles
+  the app and prints the router it actually builds (it sets
+  `SACI_ROUTES_DUMP`, so the app prints its routes and exits before
+  binding a port).
+- When the port is taken, `serve` (before compiling) and
+  `Application#listen` move on to the next free port and print which one
+  they picked, instead of raising `Address already in use`.
+- `saci new` depends on Saci from GitHub (`version: ~> X.Y.Z`), so the app
+  builds on any machine and in Docker. `--saci-path PATH` uses a local
+  checkout (`path:`) instead.
+- `credentials:set` writes one dotted key without an editor
+  (`saci credentials:set admin.password --stdin < secret.txt`), which
+  works in scripts and CI. `credentials:get` prints one value;
+  `credentials:unset` removes it.
+- `assets:precompile` copies `src/assets` into `public/assets` with
+  SHA-256 fingerprints plus a manifest, so `asset_path` returns digested
+  URLs. `assets:clobber` removes only what it wrote.
 - `runner` and `console` compile a temporary wrapper under `tmp/` with
   models, initializers and the database connection loaded. Crystal has
   no runtime eval, so `console` recompiles on every line. Put multi-line
@@ -495,8 +514,20 @@ end
 
 - `<%= %>` does **not** escape. Use `h()` for user input. Helpers that
   build HTML escape their own arguments.
-- Layouts use `<%= content %>`. `content_for` and `capture` fill named
-  slots. `render_template(:x, layout: false)` renders without a layout.
+- Layouts use `<%= content %>`. `render_template(:x, layout: false)`
+  renders without a layout.
+- `content_for` and `capture` take ECR blocks, so markup inside them goes
+  to the slot instead of the page:
+
+  ```erb
+  <% content_for(:head) do %>
+    <link rel="preload" href="/fonts/inter.woff2" as="font" crossorigin>
+  <% end %>
+  ```
+
+  The layout prints it with `<%= content_for(:head) %>`.
+- Partials have **no** leading underscore: `render_partial("shared/header")`
+  reads `src/views/shared/header.ecr` (Rails would look for `_header`).
 - Forms: `form_with`, `fields_for`, `collection_select`, the `*_tag`
   helpers, HTML5 input types, CSRF tokens, and `_method` overrides.
   `link_to(..., method: :delete)` renders a small form, so it works
@@ -506,12 +537,21 @@ end
   `number_with_delimiter`, `distance_of_time_in_words`, `markdown`
   (escape-first), `page_numbers`, `rss_feed`, `tag`, `content_tag`,
   `button_to`, `mail_to`.
-- Assets: `Saci::Assets.build_manifest(src, out)` fingerprints files.
-  `asset_path`, `stylesheet_link_tag`, `javascript_include_tag` and
-  `image_tag` resolve through the manifest and fall back to `/assets/...`
-  in development.
+- Assets live in `src/assets`. In development and test,
+  `Middleware::DevAssets` serves them under `/assets/` with
+  `Cache-Control: no-cache`, so edits show up on reload. For production,
+  `saci assets:precompile` (run by the generated Dockerfile) writes
+  fingerprinted copies to `public/assets`. `asset_path`,
+  `stylesheet_link_tag`, `javascript_include_tag` and `image_tag` resolve
+  through its manifest and fall back to `/assets/...` without one.
+  Fingerprinted files are served `public, max-age=31536000, immutable`;
+  other static files get `no-cache` in development and test and
+  `public, max-age=3600` elsewhere unless you set
+  `config.public_file_server.cache_control`.
 - Pagination: `Saci::Pagination.paginate(query, page:, per_page:)` returns
-  a page object, and `paginate_nav` renders windowed links.
+  a page object, and `paginate_nav` renders windowed links. Its labels come
+  from I18n: `saci.pagination.prev`, `saci.pagination.next`,
+  `saci.pagination.gap` and `saci.pagination.label` (the `aria-label`).
 
 ## Frontend: Turbo, Stimulus, importmap
 
@@ -686,6 +726,7 @@ end
 
 user.avatar.attach(io, filename: "me.png")
 user.avatar.url                                   # expiring signed URL
+user.photo.attach(io, filename: "a.png", public: true)  # unsigned public/ key
 
 r.get "/files/*key", Saci::Storage::FilesController, :show
 r.post "/direct_uploads", Saci::Storage::DirectUploadsController, :create
@@ -694,7 +735,9 @@ r.post "/direct_uploads", Saci::Storage::DirectUploadsController, :create
 - `DiskService` stores files under sharded keys. Private files are served
   through expiring HMAC-signed URLs. Signing keys can be rotated: old URLs
   keep working until they expire. A `public/` key prefix is served
-  without signatures.
+  without signatures. `DiskService.new(public: true)` makes that the
+  default for every upload to the service; `attach(..., public:)` overrides
+  it per file. Variants keep their original's visibility.
 - `S3Service` works with AWS, MinIO, R2 and other S3-compatible stores,
   using its own SigV4 signer. `MirrorService` writes to several services
   at once.
@@ -743,6 +786,13 @@ requests get 403. If the store is unreachable, requests are allowed and a
 warning is logged. In controllers, `rate_limit to:, within:` uses the
 same store.
 
+`client_ip` is the address `Middleware::RemoteIp` resolved. It never reads
+`X-Forwarded-For` itself, because clients can send any value there. Behind
+a proxy or CDN, list its addresses in `config.trusted_proxies` (generated
+apps trust private networks in `config/initializers/trusted_proxies.cr`;
+add your CDN's published ranges there). Otherwise every request is keyed
+on the proxy's address.
+
 ## Security
 
 ```crystal
@@ -764,11 +814,33 @@ user.signed_id(purpose: "login", expires_in: 15.minutes)
 ```
 
 - **CSRF**: double-submit cookie, with masked and per-form tokens checked
-  in constant time.
+  in constant time. The cookie is only set when a page asks for a token
+  (`form_authenticity_token`, forms, `csrf_meta_tags`), so plain GETs stay
+  cookie-free and cacheable. It is always `HttpOnly`, and `Secure` on
+  HTTPS requests or with `force_ssl` / `assume_ssl`.
 - **Headers**: secure defaults (`X-Frame-Options`, `nosniff`,
   `Referrer-Policy`, CSP `default-src 'self'`), CSP nonces
   (`content_security_policy_nonce`), Permissions-Policy, and HSTS. Change
-  them per action with `csp` / `skip_csp`.
+  them per action with `csp` / `skip_csp`. Generated apps keep the policy
+  in `config/initializers/content_security_policy.cr`.
+- **CSP warnings**: in development, each HTML response is checked against
+  its policy, and anything the browser would block (inline `<style>`,
+  `style=""` attributes, `on*` handlers, stylesheets, scripts, images or
+  fonts from other hosts, such as Google Fonts) is logged once per path.
+  Toggle with `Saci::SecureHeaders.csp_warnings = true|false`.
+- **CSP nonces and HTTP caching**: a nonce changes on every response. A
+  `304` from `stale?` carries the new nonce in its header, but the browser
+  reuses the cached body with the old one, so nonced styles and scripts
+  stop applying. On pages you cache with ETags, use external files under
+  `'self'` instead of nonces.
+- **Errors**: error pages render the app's `public/<status>.html` (the
+  generated 404, 422 and 500 pages) when it exists. Unknown routes answer
+  browsers with that page and API clients with a JSON body; in production
+  the exceptions app answers non-HTML clients with plain text instead.
+- **HTTP basic auth**: `http_basic_authenticate_with credentials: "admin"`
+  reads `admin.name` (or `admin.user`) and `admin.password` from encrypted
+  credentials, and nil or empty values deny every request instead of
+  opening the action.
 - **Sessions and cookies**: `session`, `flash`, `cookies.signed` and
   `cookies.encrypted` (AES-256-GCM). Signing keys can be rotated. Session
   stores: cookie (the default), memory, cache, or database.
@@ -891,8 +963,13 @@ r.get "/metrics", Saci::Metrics::Controller, :index    # JSON, or Prometheus wit
 ```
 
 Every request logs one line with the status, duration, method, path,
-filtered params and request id. Set `SACI_LOG_FORMAT=json` for structured
-output. `Saci::Notifications` publishes instrumentation events
+filtered params and request id, and every SQL statement logs one line
+with its duration (source `saci.sql`; turn it off with
+`Saci.log_queries = false` or `SACI_LOG_QUERIES=0`). Text lines start with
+the local time as `2026/11/14 03:15:02.494236` and are colored on a
+terminal (`NO_COLOR` or `SACI_LOG_COLOR=0` disables, `SACI_LOG_COLOR=1`
+forces). Set `SACI_LOG_FORMAT=json` for structured output, or
+`SACI_LOG_SETUP=0` to keep Crystal's default log backend. `Saci::Notifications` publishes instrumentation events
 (`process_action.saci`, `sql.saci`, `perform.saci`, ...) and the
 slow-query logger subscribes to them. Metrics are kept in process
 (requests, routes, jobs, cache, database gauges) and have no built-in
@@ -918,12 +995,19 @@ fiber, and shared registries are mutex-guarded.
 - `config/credentials.yml.enc` plus `config/master.key` (or
   `RAILS_MASTER_KEY`). Read values with
   `Saci::Credentials.dig("aws.access_key")` and edit them with
-  `saci credentials:edit`.
+  `saci credentials:edit`, or one key at a time with
+  `saci credentials:set` (no editor needed).
 - `saci new` generates a multi-stage Dockerfile, `bin/docker-entrypoint`,
   a Kamal 2 configuration (`config/deploy.yml`, `.kamal/secrets`), a
   GitHub Actions workflow, `config/server.yml`, public error pages and an
   optional devcontainer. `bin/thrust` documents the proxy setup; Saci
   does not bundle an HTTP/2 proxy.
+- The generated image builds on the same Ubuntu release as the Crystal
+  image (so the binaries find their glibc), precompiles assets, runs as a
+  non-root `saci` user and reads `RAILS_MASTER_KEY`. `config/deploy.yml`
+  declares named volumes for `storage/` (and `db/` on SQLite) and notes
+  `forward_headers: true` for proxies such as Cloudflare. See the
+  generated README for `docker run`.
 - `app.listen_gracefully(port, host, shutdown: Saci::Deploy::GracefulShutdown.new(timeout: 10.seconds))`
   waits for in-flight requests on SIGTERM. `Saci::Deploy.doctor` checks
   the secret, the database URL and writable directories.

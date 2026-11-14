@@ -1,5 +1,79 @@
 # Changelog
 
+## Unreleased
+
+Fixes from building and deploying a real app with Saci.
+
+### Behavior changes
+
+- `saci serve` and `Application#listen` / `#listen_gracefully` no longer
+  stop when the port is taken: they bind the next free port (up to 100
+  tries) and print which one they picked.
+- Saci installs its own log backend when required. Text lines start with
+  the local time as `2026/11/14 03:15:02.494236`, have colored severities
+  on a terminal (`NO_COLOR` / `SACI_LOG_COLOR` control it), and every SQL
+  statement is logged with its duration (`Saci.log_queries = false` or
+  `SACI_LOG_QUERIES=0` turns that off). `SACI_LOG_SETUP=0` keeps Crystal's
+  default backend.
+- `JsonLogFormatter` lines carry microsecond timestamps and the entry's
+  data fields (`duration_ms`, `adapter` on query lines).
+
+- **Security: `Throttle.client_ip` no longer reads `X-Forwarded-For`.** It
+  returns the address `Middleware::RemoteIp` resolved, which honors the
+  header only from `config.trusted_proxies`. Before, any client could send
+  a new address in the header on every request and get past rate limits.
+  Apps behind a proxy or CDN that is not listed in `trusted_proxies` now
+  see the proxy's address for every request, so add its ranges there.
+- The CSRF cookie is set only when a page asks for a token, not on every
+  GET. It is now `HttpOnly` and, on HTTPS requests or with `force_ssl` /
+  `assume_ssl`, `Secure`.
+- `Static` sends `Cache-Control: no-cache` in development and test and
+  `public, max-age=3600` elsewhere, unless `cache_control` is set.
+  Fingerprinted files get `public, max-age=31536000, immutable`.
+- Unknown routes render `public/404.html` (or a built-in HTML page) for
+  browsers instead of JSON, and the production exceptions app uses the
+  app's `public/<status>.html` pages.
+- `saci new` depends on Saci from GitHub (`version: ~> 0.5.0`) instead of
+  an absolute `path:`. `--saci-path PATH` keeps the local checkout.
+
+### Added
+
+- `saci assets:precompile` / `assets:clobber` (`Saci::Assets.precompile`,
+  `Saci::Assets.clobber`) and `Middleware::DevAssets`, which serves
+  `src/assets` under `/assets/` in development.
+- Development warnings for markup the response's CSP blocks (inline
+  styles and scripts, `style` attributes, `on*` handlers, other hosts such
+  as Google Fonts), logged once per path.
+- `saci routes --boot`, which prints the routes the compiled app actually
+  draws, including those drawn in loops.
+- `saci credentials:set` / `credentials:get` / `credentials:unset` and
+  `Saci::Credentials.set` / `unset`.
+- `http_basic_authenticate_with credentials: "key"`. Nil or empty
+  credentials deny every request.
+- `attach(..., public:)`, and `DiskService.new(public: true)` now applies
+  to attachments.
+- I18n keys for `paginate_nav` labels (`saci.pagination.*`).
+- `Middleware::RemoteIp::PRIVATE_NETWORKS`.
+
+### Fixed
+
+- `content_for` and `capture` with ECR blocks wrote the block's markup to
+  the page instead of the slot.
+- Length and numericality validation messages showed the constant's name
+  (`maximum is NICKNAME_MAX characters`) instead of its value.
+- `db:schema:check` warned about framework models (`Saci::*`) and their
+  `saci_*` tables in apps that do not use them.
+- `saci serve` and `Application#listen` stop with a short message when the
+  port is taken, instead of a stack trace.
+- Generated Dockerfile: builds with SQLite, installs from `shard.lock`,
+  precompiles assets, runs on the Crystal image's Ubuntu release (the
+  older base could not start the binaries), and copies the encrypted
+  credentials. `config/deploy.yml` declares named volumes and passes
+  `RAILS_MASTER_KEY`; `.kamal/secrets` reads it from `config/master.key`.
+- Generated apps ship a layout with a viewport and stylesheet tag,
+  `src/assets/application.css`, and initializers for the CSP and trusted
+  proxies.
+
 ## 0.5.0 — 2026-10-21
 
 The largest release so far. It covers most of the surface a Rails

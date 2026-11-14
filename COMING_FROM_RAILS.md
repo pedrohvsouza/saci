@@ -120,6 +120,12 @@ not supported.
     never renders returns a 500 that tells you so.
   - `render_partial("comments/comment", collection: list)` renders a
     collection.
+  - Partial files have no leading underscore: `render_partial("shared/header")`
+    reads `src/views/shared/header.ecr`, not `_header.ecr`.
+  - `<% content_for(:head) do %>...<% end %>` and `capture` work with ECR
+    blocks as in ERB. Print the slot with `<%= content_for(:head) %>`.
+  - Assets live in `src/assets` (served directly in development).
+    `saci assets:precompile` replaces `rails assets:precompile`.
 - **Routes**
   - Routes are values, not a global file. Draw them on a router and pass
     the router to `Saci::Application`.
