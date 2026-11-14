@@ -44,6 +44,11 @@ class ViewHelperDemoController < Saci::Controller
     render_template("spec_helpers/block_slots", layout: "spec_helpers")
   end
 
+  def block_form
+    @form_id = 7
+    render_template("spec_helpers/block_form", layout: false)
+  end
+
   def slot_values
     content_for(:side, "A")
     content_for(:side) { "<b>B</b>" }
@@ -124,6 +129,7 @@ def view_helper_router : Saci::Router
     r.get "/tags", ViewHelperDemoController, :tags
     r.get "/slots", ViewHelperDemoController, :slots
     r.get "/block-slots", ViewHelperDemoController, :block_slots
+    r.get "/block-form", ViewHelperDemoController, :block_form
     r.get "/slot-values", ViewHelperDemoController, :slot_values
     r.get "/forms", ViewHelperDemoController, :forms
     r.get "/form-tags", ViewHelperDemoController, :form_tags
@@ -300,6 +306,21 @@ describe "content_for and capture" do
       main.should_not contain("<style>")
       main.scan(%(<div class="card">)).size.should eq(2)
       body.scan("<style>").size.should eq(1)
+    end
+  end
+
+  it "writes form_with ECR blocks into the page in place" do
+    Saci::TestSession.serve(view_helper_router) do |app|
+      body = app.get("/block-form").body
+      body.scan("<form").size.should eq(2)
+      patch = body[body.index!(%(<form action="/sessions/7"))...body.index!("</form>")]
+      patch.should contain(%(name="_method" value="PATCH"))
+      patch.should contain(%(name="email"))
+      patch.should contain("Sign in")
+      body.index!("before").should be < body.index!(%(action="/sessions/7"))
+      body.index!(%(action="/sessions/7")).should be < body.index!(%(action="/search"))
+      body.index!(%(action="/search")).should be < body.index!("after")
+      body.should contain(%(name="q"))
     end
   end
 

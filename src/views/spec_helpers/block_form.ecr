@@ -1,0 +1,9 @@
+<main>
+<p>before</p>
+<% form_with("/sessions/#{@form_id}", method: :patch, authenticity_token: "tok") do |f| %>
+  <label>Email <%= f.text_field("email") %></label>
+  <%= f.submit("Sign in") %>
+<% end %>
+<%= form_with("/search", method: :get) { |f| f.text_field("q") } %>
+<p>after</p>
+</main>

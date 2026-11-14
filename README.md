@@ -541,6 +541,10 @@ class PostsController < ApplicationController
     @post = Post.find(params["id"])
     render_template :show            # src/views/posts/show.ecr inside layouts/application.ecr
   end
+
+  def feed
+    render_template "shared/feed"    # a name with a slash is a path from src/views/
+  end
 end
 ```
 
@@ -548,9 +552,18 @@ end
 <h1><%= h(@post.title) %></h1>
 <%= render_partial("comments/comment", collection: @post.comments.to_a) %>
 <%= cache(cache_key(@post)) { render_partial("posts/sidebar", post: @post) } %>
-<%= form_with("/posts", model: @post, scope: "post") { |f| f.text_field("title") + f.error_messages + f.submit } %>
+<% form_with("/posts/#{@post.id}", method: :patch, model: @post, scope: "post") do |f| %>
+  <%= f.error_messages %>
+  <label>Title <%= f.text_field("title") %></label>
+  <%= f.submit %>
+<% end %>
 <%= link_to("Delete", path_for(:post, @post.id), method: :delete) %>
 ```
+
+- `form_with` with an ECR block uses `<% %>`, not `<%= %>` (ECR has no
+  block output tag), and writes the form into the page. A block that
+  returns the fields as a String works with `<%= %>`:
+  `<%= form_with("/search", method: :get) { |f| f.text_field("q") } %>`.
 
 - `<%= %>` does **not** escape. Use `h()` for user input. Helpers that
   build HTML escape their own arguments.

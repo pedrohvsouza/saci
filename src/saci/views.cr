@@ -455,7 +455,9 @@ module Saci
 
     # Renders `views/<path>.ecr` (Symbol = relative to this controller's
     # view dir, e.g. `render_template(:show)` in PostsController renders
-    # `views/posts/show.ecr`) inside `views/layouts/<layout>.ecr`
+    # `views/posts/show.ecr`; a name with a slash, `:"admin/posts/index"`
+    # or `"admin/posts/index"`, is a path from `views/`) inside
+    # `views/layouts/<layout>.ecr`
     # (`layout: false` skips the layout). `status:` sets the response code
     # (e.g. `render_template :new, status: 422`). Templates see controller
     # instance variables (`@post`) and helpers — escape output with `h()`.
@@ -465,7 +467,7 @@ module Saci
     macro render_template(name, layout = "application", status = 200)
       {% views_root = system("pwd").strip + "/src/views" %}
       {% ctrl_path = @type.name.stringify.split("::").map { |p| p.gsub(/Controller$/, "").underscore }.join("/") %}
-      {% if name.is_a?(SymbolLiteral) %}
+      {% if name.is_a?(SymbolLiteral) && !name.id.stringify.includes?("/") %}
         {% template = ctrl_path + "/" + name.id.stringify %}
       {% else %}
         {% template = name.id.stringify %}
@@ -528,11 +530,36 @@ module Saci
     # With `model:` + `scope:`, fields bind to the model and scope their
     # names (`story[title]`); `multipart: true` sets the upload encoding.
     # All values are escaped.
-    def form_with(url : String, method : String | Symbol = "post", authenticity_token : String? = nil, model : Saci::Record::Base? = nil, scope : String? = nil, multipart : Bool = false, & : FormBuilder -> String) : String
+    #
+    # In ECR, write the fields inside the block and the form goes straight
+    # into the template (ECR has no `<%= helper do %>`):
+    #
+    # ```text
+    # <% form_with("/login") do |f| %>
+    #   <%= f.email_field("email") %>
+    #   <%= f.submit("Sign in") %>
+    # <% end %>
+    # ```
+    #
+    # A block that returns the fields as a String gets the form back
+    # instead: `<%= form_with("/q", method: :get) { |f| f.text_field("q") } %>`.
+    def form_with(url : String, method : String | Symbol = "post", authenticity_token : String? = nil, model : Saci::Record::Base? = nil, scope : String? = nil, multipart : Bool = false, & : FormBuilder -> _) : String
       verb = method.to_s.downcase
       token = authenticity_token.nil? && verb != "get" ? form_authenticity_token : authenticity_token
       builder = FormBuilder.new(url, verb, token, model, scope, multipart)
-      builder.build(yield builder)
+      result = nil
+      buffer = @__saci_output_buffers.try(&.last?)
+      captured = buffer ? buffer.capture { result = yield builder } : (result = yield builder; "")
+      value = result
+      return builder.build(value) if value.is_a?(String) && captured.empty?
+      # ECR block: its markup went to the template buffer, so the form does too.
+      html = builder.build(captured)
+      if buffer
+        buffer << html
+        ""
+      else
+        html
+      end
     end
 
     # Standalone link, or a self-contained mini-form for non-GET methods
