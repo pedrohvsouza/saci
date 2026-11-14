@@ -1613,12 +1613,12 @@ module Saci
               unless %len_str{{col.id}}.nil?
                 {% unless lmin.is_a?(NilLiteral) %}
                   if %len_str{{col.id}}.not_nil!.size < {{lmin}}
-                    errors.add({{col.id.stringify}}, "is too short (minimum is {{lmin}} characters)")
+                    errors.add({{col.id.stringify}}, "is too short (minimum is #{ {{lmin}} } characters)")
                   end
                 {% end %}
                 {% unless lmax.is_a?(NilLiteral) %}
                   if %len_str{{col.id}}.not_nil!.size > {{lmax}}
-                    errors.add({{col.id.stringify}}, "is too long (maximum is {{lmax}} characters)")
+                    errors.add({{col.id.stringify}}, "is too long (maximum is #{ {{lmax}} } characters)")
                   end
                 {% end %}
               end
@@ -1709,27 +1709,27 @@ module Saci
                   {% end %}
                   {% unless n_gt.is_a?(NilLiteral) %}
                     if %num_val{{col.id}} <= {{n_gt}}
-                      errors.add({{col.id.stringify}}, "must be greater than {{n_gt}}")
+                      errors.add({{col.id.stringify}}, "must be greater than #{ {{n_gt}} }")
                     end
                   {% end %}
                   {% unless n_gte.is_a?(NilLiteral) %}
                     if %num_val{{col.id}} < {{n_gte}}
-                      errors.add({{col.id.stringify}}, "must be greater than or equal to {{n_gte}}")
+                      errors.add({{col.id.stringify}}, "must be greater than or equal to #{ {{n_gte}} }")
                     end
                   {% end %}
                   {% unless n_lt.is_a?(NilLiteral) %}
                     if %num_val{{col.id}} >= {{n_lt}}
-                      errors.add({{col.id.stringify}}, "must be less than {{n_lt}}")
+                      errors.add({{col.id.stringify}}, "must be less than #{ {{n_lt}} }")
                     end
                   {% end %}
                   {% unless n_lte.is_a?(NilLiteral) %}
                     if %num_val{{col.id}} > {{n_lte}}
-                      errors.add({{col.id.stringify}}, "must be less than or equal to {{n_lte}}")
+                      errors.add({{col.id.stringify}}, "must be less than or equal to #{ {{n_lte}} }")
                     end
                   {% end %}
                   {% unless n_eq.is_a?(NilLiteral) %}
                     if %num_val{{col.id}} != {{n_eq}}
-                      errors.add({{col.id.stringify}}, "must be equal to {{n_eq}}")
+                      errors.add({{col.id.stringify}}, "must be equal to #{ {{n_eq}} }")
                     end
                   {% end %}
                 end
