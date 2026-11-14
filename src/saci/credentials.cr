@@ -61,6 +61,63 @@ module Saci
       File.write(path, MessageEncryptor.encrypt_and_sign(master_key, data.to_yaml.to_slice))
     end
 
+    # Stores *value* under a (dotted) key, creating intermediate mappings
+    # and replacing a scalar that sits in the way. Re-encrypts the file.
+    def self.set(dot_path : String, value : String, path : String = file_path) : Nil
+      keys = split_key!(dot_path)
+      data = read(path)
+      data[keys.first] = assign(data[keys.first]?, keys[1..], value)
+      write(data, path)
+    end
+
+    # Removes a (dotted) key. Returns false when it was not present.
+    def self.unset(dot_path : String, path : String = file_path) : Bool
+      keys = split_key!(dot_path)
+      data = read(path)
+      if keys.size == 1
+        return false unless data.delete(keys.first)
+      else
+        return false unless top = data[keys.first]?
+        updated = remove(top, keys[1..])
+        return false unless updated
+        data[keys.first] = updated
+      end
+      write(data, path)
+      true
+    end
+
+    private def self.split_key!(dot_path : String) : Array(String)
+      keys = dot_path.split(".")
+      if keys.empty? || keys.any?(&.empty?)
+        raise ArgumentError.new("invalid credentials key #{dot_path.inspect}")
+      end
+      keys
+    end
+
+    private def self.assign(node : YAML::Any?, keys : Array(String), value : String) : YAML::Any
+      return YAML::Any.new(value) if keys.empty?
+      hash = node.try(&.as_h?).try(&.dup) || {} of YAML::Any => YAML::Any
+      key = YAML::Any.new(keys.first)
+      hash[key] = assign(hash[key]?, keys[1..], value)
+      YAML::Any.new(hash)
+    end
+
+    # Copy of *node* without the nested key, or nil when it is absent.
+    private def self.remove(node : YAML::Any, keys : Array(String)) : YAML::Any?
+      hash = node.as_h?.try(&.dup)
+      return nil unless hash
+      key = YAML::Any.new(keys.first)
+      if keys.size == 1
+        return nil unless hash.has_key?(key)
+        hash.delete(key)
+      else
+        return nil unless child = hash[key]?
+        return nil unless updated = remove(child, keys[1..])
+        hash[key] = updated
+      end
+      YAML::Any.new(hash)
+    end
+
     def self.dig(dot_path : String, path : String = file_path) : String?
       keys = dot_path.split(".")
       hash = read(path)

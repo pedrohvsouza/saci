@@ -132,4 +132,30 @@ describe "Saci::CLI::Credentials" do
       end
     end
   end
+
+  it "sets, gets and unsets keys without an editor" do
+    with_cred_env do
+      Dir.cd(CRED_TMP) do
+        Dir.mkdir_p("config")
+        Saci::CLI::Credentials.run([] of String, "keygen").should eq(0)
+        Saci::Credentials.write({"api_key" => YAML::Any.new("KEEP"), "moderation" => YAML::Any.new("scalar")})
+
+        Saci::CLI::Credentials.run(["moderation.user", "mod"], "set").should eq(0)
+        Saci::CLI::Credentials.set(["moderation.password", "--stdin"], IO::Memory.new("s3cret\n")).should eq(0)
+        Saci::Credentials.dig("moderation.user").should eq("mod")
+        Saci::Credentials.dig("moderation.password").should eq("s3cret")
+        Saci::Credentials.dig("api_key").should eq("KEEP")
+        Saci::CLI::Credentials.run(["moderation.password"], "get").should eq(0)
+
+        Saci::CLI::Credentials.run(["moderation.user"], "unset").should eq(0)
+        Saci::Credentials.dig("moderation.user").should be_nil
+        Saci::Credentials.dig("moderation.password").should eq("s3cret")
+        Saci::CLI::Credentials.run(["moderation.user"], "unset").should eq(1)
+        Saci::CLI::Credentials.run(["absent"], "get").should eq(1)
+
+        expect_raises(Saci::CLI::Error, /Usage/) { Saci::CLI::Credentials.run(["only_key"], "set") }
+        expect_raises(Saci::CLI::Error, /invalid credentials key/) { Saci::CLI::Credentials.run(["a..b", "x"], "set") }
+      end
+    end
+  end
 end

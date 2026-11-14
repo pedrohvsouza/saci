@@ -145,6 +145,12 @@ module Saci
         Credentials.run(args, "keygen")
       when "credentials:fetch"
         Credentials.run(args, "fetch")
+      when "credentials:get"
+        Credentials.run(args, "get")
+      when "credentials:set"
+        Credentials.run(args, "set")
+      when "credentials:unset"
+        Credentials.run(args, "unset")
       else
         STDERR.puts "Unknown command '#{cmd}'.\n"
         puts help_text(nil)
@@ -219,8 +225,10 @@ module Saci
         Inspect::Seed.help
       when "credentials:show", "credentials:edit", "credentials:keygen"
         "Usage: saci credentials:show | credentials:edit [EDITOR] | credentials:keygen\n\nShows, edits ($EDITOR) or generates the key for the encrypted credentials file."
-      when "credentials:fetch"
-        "Usage: saci credentials:fetch KEY [--to PATH|--write PATH]\n\nPrints (or writes) a (dotted) key from encrypted credentials. Exits 1 when the key is missing."
+      when "credentials:fetch", "credentials:get"
+        "Usage: saci credentials:fetch KEY [--to PATH|--write PATH]\n\nPrints (or writes) a (dotted) key from encrypted credentials. Exits 1 when the key is missing. `credentials:get` is an alias."
+      when "credentials:set", "credentials:unset"
+        "Usage: saci credentials:set KEY VALUE | credentials:set KEY --stdin | credentials:unset KEY\n\nWrites or removes a (dotted) key in the encrypted credentials without an editor (`moderation.password`). --stdin reads the value from standard input, keeping it out of shell history."
       when "destroy"
         <<-HELP
         Usage: saci destroy KIND NAME [--pretend] [--force]
@@ -306,7 +314,7 @@ module Saci
           about|stats|notes|middleware|initializers|dbconsole
           dev:cache|log:clear|tmp:clear|time:zones|restart
           secret                    print a random SECRET_KEY_BASE
-          credentials:show|edit|keygen|fetch KEY
+          credentials:show|edit|keygen|fetch|get|set|unset KEY
           version                   print the version
           help [COMMAND]            show this help or command help
         HELP

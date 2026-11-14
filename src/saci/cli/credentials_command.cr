@@ -1,15 +1,17 @@
 module Saci
   module CLI
-    # `saci credentials:show|edit|keygen` — manages the encrypted
+    # `saci credentials:show|edit|keygen|fetch|get|set|unset` — manages the encrypted
     # credentials file (`config/credentials.yml.enc` + `config/master.key`).
     module Credentials
       def self.run(args : Array(String), action : String) : Int32
         case action
-        when "show"   then show
-        when "edit"   then edit(args.first?)
-        when "keygen" then keygen
-        when "fetch"  then return fetch(args)
-        else               raise Error.new("Unknown credentials action '#{action}' (expected show|edit|keygen|fetch)")
+        when "show"         then show
+        when "edit"         then edit(args.first?)
+        when "keygen"       then keygen
+        when "fetch", "get" then return fetch(args)
+        when "set"          then return set(args)
+        when "unset"        then return unset(args)
+        else                     raise Error.new("Unknown credentials action '#{action}' (expected show|edit|keygen|fetch|get|set|unset)")
         end
         0
       end
@@ -86,6 +88,50 @@ module Saci
           puts value
         end
         0
+      end
+
+      # `saci credentials:set KEY VALUE` (or `KEY --stdin`, which keeps the
+      # value out of shell history and process listings). Non-interactive
+      # counterpart of `credentials:edit` for setup scripts, CI and deploys.
+      def self.set(args : Array(String), input : IO = STDIN) : Int32
+        from_stdin = args.includes?("--stdin")
+        positional = args.reject { |a| a == "--stdin" }
+        usage = "Usage: saci credentials:set KEY VALUE | saci credentials:set KEY --stdin"
+        if bad = positional.find { |a| a.starts_with?("-") && a != "-" }
+          raise Error.new("Unknown option '#{bad}'. #{usage}")
+        end
+        key = positional[0]? || raise Error.new(usage)
+        value = if from_stdin || positional[1]? == "-"
+                  raise Error.new(usage) if positional.size > 2
+                  input.gets_to_end.chomp
+                else
+                  raise Error.new(usage) unless positional.size == 2
+                  positional[1]
+                end
+        begin
+          Saci::Credentials.set(key, value)
+        rescue ex : ArgumentError
+          raise Error.new(ex.message || "invalid key")
+        end
+        puts "Set #{key} in #{Saci::Credentials.file_path}."
+        0
+      end
+
+      # `saci credentials:unset KEY`. Exits 1 when the key is missing.
+      def self.unset(args : Array(String)) : Int32
+        raise Error.new("Usage: saci credentials:unset KEY") unless args.size == 1 && !args[0].starts_with?("-")
+        removed = begin
+          Saci::Credentials.unset(args[0])
+        rescue ex : ArgumentError
+          raise Error.new(ex.message || "invalid key")
+        end
+        if removed
+          puts "Removed #{args[0]} from #{Saci::Credentials.file_path}."
+          0
+        else
+          STDERR.puts "error: key '#{args[0]}' not found in #{Saci::Credentials.file_path}."
+          1
+        end
       end
 
       # Decrypted YAML text (empty mapping when nothing stored yet).
