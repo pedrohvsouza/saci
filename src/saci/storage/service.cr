@@ -66,6 +66,13 @@ module Saci
       # Local path + metadata for `FilesController`. Backends without local
       # files (S3) return nil and rely on `#url`.
       abstract def locate(key : String) : StoredFile?
+
+      # Whether uploads default to public (unsigned, non-expiring URLs).
+      # Only `DiskService.new(public: true)` turns it on; blobs created
+      # through attachments follow it (see `Blob.create_and_upload!`).
+      def public_mode? : Bool
+        false
+      end
     end
   end
 end

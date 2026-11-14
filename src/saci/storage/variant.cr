@@ -111,6 +111,7 @@ module Saci
             filename: filename,
             content_type: @blob.content_type,
             service_name: @blob.service_name,
+            public: @blob.key.try { |blob_key| Storage.public_key?(blob_key) } || false,
             identify: false,
             metadata: {
               "variant_of"      => JSON::Any.new(@blob.id || 0_i64),

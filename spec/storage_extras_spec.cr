@@ -258,6 +258,30 @@ describe "Saci::Storage blob/attachment extras" do
       post.avatar.filename.should eq("up.txt")
       String.new(post.avatar.download.not_nil!).should eq("uploaded-bytes")
     end
+
+    it "gives attachments public, unsigned URLs on a public DiskService" do
+      Saci::Storage.service = Saci::Storage::DiskService.new(STORAGE_EXTRAS_TMP, public: true)
+      post = StoragePost.create!(title: "gallery")
+      post.avatar.attach("pixels", filename: "art.png", content_type: "text/plain")
+      blob = post.avatar.blob.not_nil!
+      Saci::Storage.public_key?(blob.key.not_nil!).should be_true
+      url = post.avatar.url.not_nil!
+      url.should contain("/files/public/")
+      url.should_not contain("sig=")
+      url.should_not contain("expires=")
+
+      # An explicit `public: false` still yields a private, signed key.
+      post.avatar.attach("secret", filename: "hidden.txt", content_type: "text/plain", public: false)
+      Saci::Storage.public_key?(post.avatar.blob.not_nil!.key.not_nil!).should be_false
+      post.avatar.url.not_nil!.should contain("sig=")
+    end
+
+    it "accepts public: true on a private service" do
+      post = StoragePost.create!(title: "one public file")
+      post.avatar.attach("pixels", filename: "art.txt", content_type: "text/plain", public: true)
+      Saci::Storage.public_key?(post.avatar.blob.not_nil!.key.not_nil!).should be_true
+      post.avatar.url.not_nil!.should_not contain("sig=")
+    end
   end
 
   describe "has_many_attached" do

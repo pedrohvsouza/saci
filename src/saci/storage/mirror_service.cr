@@ -23,6 +23,11 @@ module Saci
         raise ArgumentError.new("MirrorService needs at least one mirror") if @mirrors.empty?
       end
 
+      # Follows the primary (the service that is read).
+      def public_mode? : Bool
+        @primary.public_mode?
+      end
+
       def upload(data : Bytes | IO | String, filename : String, content_type : String = "application/octet-stream", public : Bool? = nil, key : String? = nil) : String
         # Buffer once so the same bytes can be replayed to every service.
         bytes = Storage.read_upload(data)

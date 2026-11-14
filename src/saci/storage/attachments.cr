@@ -62,24 +62,26 @@ module Saci
         end
 
         # `post.avatar.attach(file.bytes, filename: file.filename, content_type: file.content_type)`
-        def attach(data : Bytes | IO | String, *, filename : String, content_type : String? = nil) : Attachment
+        def attach(data : Bytes | IO | String, *, filename : String, content_type : String? = nil, public : Bool? = nil) : Attachment
           blob = Blob.create_and_upload!(
             data,
             filename: filename,
             content_type: content_type,
             service_name: effective_service_name,
-            mirrors: @mirror_names
+            mirrors: @mirror_names,
+            public: public
           )
           replace_with(blob)
         end
 
-        def attach(file : Saci::Params::UploadedFile) : Attachment
+        def attach(file : Saci::Params::UploadedFile, *, public : Bool? = nil) : Attachment
           blob = Blob.create_and_upload!(
             file.bytes,
             filename: file.filename,
             content_type: file.content_type,
             service_name: effective_service_name,
-            mirrors: @mirror_names
+            mirrors: @mirror_names,
+            public: public
           )
           replace_with(blob)
         end
@@ -221,24 +223,26 @@ module Saci
           blobs.map { |blob| attach(blob) }
         end
 
-        def attach(data : Bytes | IO | String, *, filename : String, content_type : String? = nil) : Attachment
+        def attach(data : Bytes | IO | String, *, filename : String, content_type : String? = nil, public : Bool? = nil) : Attachment
           blob = Blob.create_and_upload!(
             data,
             filename: filename,
             content_type: content_type,
             service_name: effective_service_name,
-            mirrors: @mirror_names
+            mirrors: @mirror_names,
+            public: public
           )
           attach(blob)
         end
 
-        def attach(file : Saci::Params::UploadedFile) : Attachment
+        def attach(file : Saci::Params::UploadedFile, *, public : Bool? = nil) : Attachment
           blob = Blob.create_and_upload!(
             file.bytes,
             filename: file.filename,
             content_type: file.content_type,
             service_name: effective_service_name,
-            mirrors: @mirror_names
+            mirrors: @mirror_names,
+            public: public
           )
           attach(blob)
         end

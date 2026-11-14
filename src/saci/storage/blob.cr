@@ -236,6 +236,11 @@ module Saci
       #
       # `mirrors:` uploads the same key to additional registered services
       # (see `MirrorService`); the primary is always read.
+      #
+      # `public:` picks a public key (unsigned, non-expiring `#url`) or a
+      # private one; nil follows the primary service's `public_mode?`, so
+      # `DiskService.new(public: true)` makes every attachment public. An
+      # explicit `key:` wins over both.
       def self.create_and_upload!(data : Bytes | IO | String,
                                   *,
                                   filename : String,
@@ -243,6 +248,7 @@ module Saci
                                   service_name : String | Symbol | Nil = nil,
                                   mirrors : Array(String) | Array(Symbol) | String | Symbol | Nil = nil,
                                   key : String? = nil,
+                                  public : Bool? = nil,
                                   identify : Bool = true,
                                   metadata : Hash(String, JSON::Any)? = nil) : Blob
         bytes = Storage.read_upload(data)
@@ -255,7 +261,7 @@ module Saci
         mirror_list = normalize_service_names(mirrors)
         mirror_services = mirror_list.map { |name| Storage.service_named(name) }
 
-        generated_key = key || Storage.generate_key
+        generated_key = key || Storage.generate_key(public.nil? ? primary.public_mode? : public)
         raise InvalidUpload.new("invalid storage key: #{generated_key.inspect}") unless Storage.valid_key?(generated_key)
 
         uploaded_mirrors = [] of Service
