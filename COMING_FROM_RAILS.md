@@ -127,7 +127,9 @@ type behind `Saci::`.
   - `scope :published, -> { where(published: true) }` works and chains
     (`Post.published.recent`, `author.posts.published`). Lambda arguments
     need types: `scope :by, ->(id : Int64) { where(author_id: id) }`.
-    There is no `default_scope`.
+  - `default_scope { where(deleted_at: nil) }` and `unscoped` (also the
+    block form) work. `new` does not copy the default scope's `where`
+    values into the record.
   - Use `model_enum` instead of `enum` (`enum` is a reserved word in
     Crystal).
   - `t.references` does not add a foreign key unless you pass

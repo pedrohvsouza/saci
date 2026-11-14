@@ -104,6 +104,10 @@ module Saci
         # skipped by the check (no columns = no table by design).
         Saci::Record.register_model(self)
 
+        def self.__saci_apply_default_scope(q)
+          super(q)
+        end
+
         def self.__saci_column_names : Array(Tuple(String, String))
           super
         end
@@ -1146,7 +1150,7 @@ module Saci
 
       def reload : self
         pk = self.class.__saci_primary_key
-        fresh = self.class.find(__saci_get_attr(pk).as(Value))
+        fresh = self.class.unscoped { self.class.find(__saci_get_attr(pk).as(Value)) }
         self.class.__saci_column_names.each do |(name, _)|
           __saci_set_attr(name, fresh.__saci_get_attr(name))
         end
@@ -1343,7 +1347,67 @@ module Saci
       end
 
       def self.all : Query(self)
+        __saci_apply_default_scope(__saci_base_query)
+      end
+
+      # The query without this model's `default_scope` (Rails `unscoped`).
+      def self.unscoped : Query(self)
+        __saci_base_query
+      end
+
+      # The starting relation for every query on the model, before any
+      # `default_scope`. Conditions that `unscoped` must keep (such as a
+      # single-table-inheritance type filter) belong here.
+      def self.__saci_base_query : Query(self)
         Query(self).new(self)
+      end
+
+      # `Post.unscoped { Post.find(id) }` — inside the block (and on the
+      # current fiber only), queries on this model skip its `default_scope`.
+      # Other models keep theirs. Returns the block's value.
+      def self.unscoped(&block : -> T) : T forall T
+        Saci::Record.without_default_scope(self.name) { block.call }
+      end
+
+      # Default-scope chain: the identity here, extended by `default_scope`
+      # (parents first, then each `default_scope` in declaration order).
+      def self.__saci_apply_default_scope(q)
+        q
+      end
+
+      # Rails `default_scope`: conditions (or order, etc.) applied to every
+      # query on the model, including `find`, `count`, `where` chains and
+      # association queries.
+      #
+      # ```
+      # class Post < ApplicationRecord
+      #   default_scope { where(deleted_at: nil) }
+      #   default_scope { order(created_at: :desc) }
+      # end
+      #
+      # Post.unscoped.count # every row
+      # Post.unscoped { Post.find(id) }
+      # Post.all.unscope(:where) # drops the conditions, keeps the order
+      # ```
+      #
+      # The block runs with the query as its default receiver, like a
+      # `scope` body; it must not call `all` (that would recurse). Several
+      # `default_scope`s combine, and subclasses inherit them. Unlike
+      # Rails, `new` does not copy the scope's `where` values into the new
+      # record. Uniqueness validations and `reload` ignore the default
+      # scope.
+      macro default_scope(&block)
+        {% unless block %}
+          {% raise "default_scope needs a block: default_scope { where(...) }" %}
+        {% end %}
+        def self.__saci_apply_default_scope(q)
+          __saci_q = previous_def(q)
+          return __saci_q if Saci::Record.default_scope_skipped?(self.name)
+          __saci_r = __saci_q.__saci_within_scope do
+            {{block.body}}
+          end
+          __saci_r || __saci_q
+        end
       end
 
       # Rails `scope`: a named, chainable query.
@@ -1859,12 +1923,12 @@ module Saci
               {% if u_case_insensitive %}
                 %uq_col{{col.id}} = Saci::Record.quote({{col.id.stringify}}, %uad{{col.id}})
                 %uscope{{col.id}} = if %uad{{col.id}} == :sqlite
-                  self.class.where(%uq_col{{col.id}} + " = ? COLLATE NOCASE", Saci::Record.to_db(%uniq{{col.id}}, %uad{{col.id}}))
+                  self.class.unscoped.where(%uq_col{{col.id}} + " = ? COLLATE NOCASE", Saci::Record.to_db(%uniq{{col.id}}, %uad{{col.id}}))
                 else
-                  self.class.where("LOWER(" + %uq_col{{col.id}} + ") = LOWER(?)", Saci::Record.to_db(%uniq{{col.id}}, %uad{{col.id}}))
+                  self.class.unscoped.where("LOWER(" + %uq_col{{col.id}} + ") = LOWER(?)", Saci::Record.to_db(%uniq{{col.id}}, %uad{{col.id}}))
                 end
               {% else %}
-                %uscope{{col.id}} = self.class.where(Saci::Record.quote({{col.id.stringify}}, %uad{{col.id}}) + " = ?", Saci::Record.to_db(%uniq{{col.id}}, %uad{{col.id}}))
+                %uscope{{col.id}} = self.class.unscoped.where(Saci::Record.quote({{col.id.stringify}}, %uad{{col.id}}) + " = ?", Saci::Record.to_db(%uniq{{col.id}}, %uad{{col.id}}))
               {% end %}
               {% for s in u_scopes %}
                 %scv{{col.id}}{{s.id}} = __saci_get_attr({{s.id.stringify}})

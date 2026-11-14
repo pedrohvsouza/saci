@@ -42,6 +42,14 @@
   and `previewable?`. Attachments have `preview`, `variable?` and
   `previewable?`, and so does `Blob`. Variant blobs now record their
   dimensions in `metadata`.
+- **`default_scope` and `unscoped`.** `default_scope { where(deleted_at:
+  nil) }` applies to every query on the model (`find`, `count`, `where`
+  chains, scopes, association queries); several combine, and subclasses
+  inherit them. `Model.unscoped` returns a query without them, and
+  `Model.unscoped { ... }` turns them off for that model inside the
+  block, on the current fiber. `unscope(:where)` drops their conditions.
+  Uniqueness validations and `reload` ignore the default scope, as in
+  Rails.
 
 ## 0.7.0 — 2026-11-14
 

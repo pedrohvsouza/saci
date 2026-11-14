@@ -77,6 +77,32 @@ module Saci
       end
     end
 
+    # Fiber-local stack of model names whose `default_scope` is off
+    # (`Model.unscoped { ... }`).
+    @@unscoped_models = {} of UInt64 => Array(String)
+    @@unscoped_mutex = Mutex.new
+
+    def self.default_scope_skipped?(model : String) : Bool
+      @@unscoped_mutex.synchronize do
+        @@unscoped_models[Fiber.current.object_id]?.try(&.includes?(model)) || false
+      end
+    end
+
+    def self.without_default_scope(model : String, &block : -> T) : T forall T
+      key = Fiber.current.object_id
+      @@unscoped_mutex.synchronize { (@@unscoped_models[key] ||= [] of String) << model }
+      begin
+        yield
+      ensure
+        @@unscoped_mutex.synchronize do
+          if stack = @@unscoped_models[key]?
+            stack.pop?
+            @@unscoped_models.delete(key) if stack.empty?
+          end
+        end
+      end
+    end
+
     # `Base.transaction(isolation:)` implementation.
     #
     # Nested calls join the open transaction (isolation is ignored, matching
