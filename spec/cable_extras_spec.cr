@@ -499,11 +499,55 @@ describe "Saci::Cable DB adapter (G93/G164) and PostgreSQL entry (G282)" do
     adapter.max_id.should be >= 1_i64
   end
 
-  it "raises a clear error when LISTEN/NOTIFY is requested" do
-    Saci::Cable::PostgresServer.listen_notify_supported?.should be_false
-    expect_raises(NotImplementedError, /LISTEN\/NOTIFY/) do
-      Saci::Cable::PostgresServer.new(cable_extras_db, listen_notify: true)
+  it "raises a clear error when LISTEN/NOTIFY is requested without saci/cable_pg" do
+    saved = Saci::Cable::PostgresServer.listener_factory
+    Saci::Cable::PostgresServer.listener_factory = nil
+    begin
+      Saci::Cable::PostgresServer.listen_notify_supported?.should be_false
+      expect_raises(NotImplementedError, /require "saci\/cable_pg"/) do
+        Saci::Cable::PostgresServer.new(cable_extras_db, listen_notify: true)
+      end
+    ensure
+      Saci::Cable::PostgresServer.listener_factory = saved
     end
+  end
+
+  it "requires a LISTEN URL when LISTEN/NOTIFY is requested" do
+    saved = Saci::Cable::PostgresServer.listener_factory
+    saved_url = ENV["DATABASE_URL"]?
+    Saci::Cable::PostgresServer.listener_factory = ->(_server : Saci::Cable::PostgresServer, _url : String) do
+      raise "factory must not run without a URL"
+    end
+    ENV.delete("DATABASE_URL")
+    begin
+      Saci::Cable::PostgresServer.listen_notify_supported?.should be_true
+      expect_raises(ArgumentError, /listen_url/) do
+        Saci::Cable::PostgresServer.new(cable_extras_db, listen_notify: true)
+      end
+    ensure
+      Saci::Cable::PostgresServer.listener_factory = saved
+      ENV["DATABASE_URL"] = saved_url if saved_url
+    end
+  end
+
+  it "polls immediately when woken" do
+    CableDbProbeChannel.reset!
+    server = Saci::Cable::DbServer.new(cable_extras_db, adapter: :sqlite, poll_interval: 1.hour, cleanup_interval: 0)
+    begin
+      connection, _io = cable_extras_fake_connection(server)
+      cable_extras_subscribe(server, CableDbProbeChannel, connection, "CableDbProbeChannel")
+      # Let the poller finish its first pass and park on the hour-long timeout.
+      sleep 50.milliseconds
+      server.adapter.insert("db:probe", %({"woken":true}), Time.utc)
+      server.wake
+      server.wake # collapses into the pending wake-up
+      cable_extras_wait_until("woken poll") { !CableDbProbeChannel.received.empty? }
+      CableDbProbeChannel.received.should eq([%({"woken":true})])
+      connection.close
+    ensure
+      server.close
+    end
+    server.wake # no-op once closed
   end
 end
 

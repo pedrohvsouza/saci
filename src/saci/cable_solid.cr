@@ -168,8 +168,9 @@ module Saci
     #
     # Latency/limits (documented):
     # * cross-process delivery latency is bounded by `poll_interval`
-    #   (default 250ms) plus DB write latency; use `RedisServer` when
-    #   sub-100ms fan-out matters;
+    #   (default 250ms) plus DB write latency; use `RedisServer`, or
+    #   `PostgresServer` with `listen_notify: true`, when sub-100ms fan-out
+    #   matters;
     # * polling is one `SELECT` per interval per server, not per stream;
     # * retention defaults to 1 day and cleanup runs every
     #   `cleanup_interval` polls;
@@ -208,8 +209,21 @@ module Saci
         @cleanup_interval = cleanup_interval
         @last_seen = @adapter.max_id
         @stop = ::Channel(Nil).new(1)
+        @wake = ::Channel(Nil).new(1)
         @closed = Atomic(Bool).new(false)
         spawn { poll_loop } if start_polling
+      end
+
+      # Asks the background poller to poll now instead of waiting for the
+      # rest of `poll_interval`. Never blocks: wake-ups that arrive while
+      # one is already pending collapse into it. The PostgreSQL
+      # LISTEN/NOTIFY listener calls this; custom schedulers may too.
+      def wake : Nil
+        return if @closed.get
+        select
+        when @wake.send(nil)
+        else
+        end
       end
 
       def closed? : Bool
@@ -301,6 +315,7 @@ module Saci
           select
           when @stop.receive
             break
+          when @wake.receive
           when timeout(@poll_interval)
           end
         end
@@ -311,33 +326,78 @@ module Saci
 
     # PostgreSQL entry point (G282).
     #
-    # Polling mode works exactly like `DbServer` (`adapter: :postgres`).
-    # LISTEN/NOTIFY is *not* implemented, for two concrete reasons:
+    # Without `listen_notify`, this works exactly like `DbServer`
+    # (`adapter: :postgres`): every server polls the messages table every
+    # `poll_interval` (default 250ms).
     #
-    # 1. `crystal-db`'s public API exposes no async notification channel
-    #    (`PG::Connection#wait_for_notify` is unreachable through
-    #    `DB::Connection`), so a LISTEN loop would need to hold a raw
-    #    `PG::Connection`;
-    # 2. the framework deliberately does not `require "pg"` (see the
-    #    driver note in `src/saci/record.cr`): linking pg's auth path
-    #    breaks builds on systems with OpenSSL >= 3.2, including pure
-    #    SQLite deployments.
+    # With `listen_notify: true`, delivery is push-driven:
     #
-    # Passing `listen_notify: true` therefore raises with instructions
-    # instead of silently degrading. Apps that already depend on pg can
-    # run their own `LISTEN saci_cable` loop and call `#poll` when a
-    # notification arrives; `#broadcast` can be paired with
-    # `NOTIFY saci_cable` in the same transaction if desired.
+    # * `#broadcast` INSERTs the row, then runs
+    #   `SELECT pg_notify(notify_channel, <server id>)`. PostgreSQL sends
+    #   the notification after the INSERT has committed, so a woken peer
+    #   always sees the row;
+    # * a listener holds one dedicated connection that has run
+    #   `LISTEN notify_channel` and calls `#wake` when a peer's
+    #   notification arrives, so the poller fetches right away. The
+    #   server's own notifications are ignored;
+    # * the poller still runs every `poll_interval` (default 5s in this
+    #   mode) as a safety net for rows inserted without a NOTIFY and for
+    #   notifications lost while the listener was reconnecting;
+    # * when the LISTEN connection closes or fails, the listener
+    #   reconnects with backoff (0.1s doubling to 5s) and wakes the
+    #   poller once it is back. To catch connections that stay open but
+    #   stop delivering, it also pings itself on a private channel every
+    #   `listen_heartbeat` (default 10s) and reconnects after three
+    #   heartbeats without a notification.
+    #
+    # The listener lives in an opt-in file because the framework never
+    # requires the pg driver itself (see the driver note in
+    # `src/saci/record.cr`). Apps on PostgreSQL already depend on `pg`:
+    #
+    # ```
+    # require "pg"
+    # require "saci/cable_pg"
+    #
+    # db = Saci::Record.establish_connection("cable", ENV["CABLE_DATABASE_URL"])
+    # Saci::Cable.server = Saci::Cable::PostgresServer.new(db,
+    #   listen_notify: true, listen_url: ENV["CABLE_DATABASE_URL"])
+    # ```
+    #
+    # `crystal-db` does not expose a handle's URL, so the listener connects
+    # to `listen_url`, falling back to `ENV["DATABASE_URL"]`. Point it at
+    # PostgreSQL directly: PgBouncer in transaction pooling mode does not
+    # support LISTEN. Without `require "saci/cable_pg"`,
+    # `listen_notify: true` raises instead of silently falling back to
+    # polling.
     class PostgresServer < DbServer
       NOTIFY_CHANNEL = "saci_cable"
 
-      def self.listen_notify_supported? : Bool
-        false
+      # The LISTEN side of `listen_notify`. `saci/cable_pg` provides the
+      # implementation and registers it in `.listener_factory`.
+      abstract class Listener
+        abstract def connected? : Bool
+        abstract def close : Nil
       end
+
+      # Builds the listener for a server and its LISTEN URL. Set by
+      # `require "saci/cable_pg"`.
+      class_property listener_factory : Proc(PostgresServer, String, Listener)? = nil
+
+      def self.listen_notify_supported? : Bool
+        !listener_factory.nil?
+      end
+
+      # Channel that broadcasts NOTIFY and the listener LISTENs on.
+      getter notify_channel : String
+      # Interval between listener self-pings (see the class comment).
+      getter listen_heartbeat : Time::Span
+      getter listener : Listener?
 
       def initialize(db : DB::Database, *, listen_notify : Bool = false,
                      notify_channel : String = NOTIFY_CHANNEL,
-                     poll_interval : Time::Span = 250.milliseconds,
+                     listen_url : String? = nil,
+                     listen_heartbeat : Time::Span = 10.seconds,
+                     poll_interval : Time::Span? = nil,
                      retention : Time::Span = 1.day,
                      table : String = DbAdapter::MESSAGE_TABLE,
                      batch_size : Int32 = 500,
@@ -345,23 +405,65 @@ module Saci
                      start_polling : Bool = true,
                      max_connections : Int32 = 0,
                      message_buffer_size : Int32 = Connection::DEFAULT_MESSAGE_BUFFER_SIZE)
-        if listen_notify
-          raise NotImplementedError.new(
-            "Saci::Cable::PostgresServer does not implement LISTEN/NOTIFY: crystal-db exposes no async " \
-            "notification API and the framework does not link the pg driver (see the class comment). " \
-            "Use polling (listen_notify: false) or run your own PG::Connection LISTEN loop and call #poll. " \
-            "For low-latency fan-out use Saci::Cable::RedisServer."
-          )
-        end
         @notify_channel = notify_channel
-        super(db, adapter: :postgres, poll_interval: poll_interval, retention: retention,
-          table: table, batch_size: batch_size, cleanup_interval: cleanup_interval,
+        @listen_heartbeat = listen_heartbeat
+        @listener = nil
+        factory = nil
+        url = nil
+        if listen_notify
+          factory = self.class.listener_factory
+          unless factory
+            raise NotImplementedError.new(
+              "Saci::Cable::PostgresServer LISTEN/NOTIFY needs the pg driver: add `require \"pg\"` and " \
+              "`require \"saci/cable_pg\"` to your app. Use polling (listen_notify: false) or " \
+              "Saci::Cable::RedisServer otherwise."
+            )
+          end
+          url = listen_url || ENV["DATABASE_URL"]?
+          unless url && !url.empty?
+            raise ArgumentError.new(
+              "Saci::Cable::PostgresServer listen_notify: true needs listen_url: (or ENV[\"DATABASE_URL\"]); " \
+              "crystal-db does not expose the URL of an open database handle."
+            )
+          end
+        end
+        super(db, adapter: :postgres, poll_interval: poll_interval || (listen_notify ? 5.seconds : 250.milliseconds),
+          retention: retention, table: table, batch_size: batch_size, cleanup_interval: cleanup_interval,
           start_polling: start_polling, max_connections: max_connections,
           message_buffer_size: message_buffer_size)
+        if factory && url
+          @listener = factory.call(self, url)
+        end
       end
 
-      # Channel a user-managed LISTEN loop should subscribe to.
-      getter notify_channel : String
+      def listen_notify? : Bool
+        !@listener.nil?
+      end
+
+      # INSERTs the message like `DbServer#broadcast`, then NOTIFYs peers
+      # when `listen_notify` is on. A failed NOTIFY is reported and the
+      # message still reaches peers on their next safety-net poll.
+      def broadcast(stream : String, payload) : Nil
+        super
+        return unless listen_notify?
+        begin
+          notify(@id)
+        rescue ex
+          Cable.report_error(ex, "pg notify")
+        end
+      end
+
+      # Sends `payload` on `channel` with `pg_notify`. Raises on DB errors.
+      def notify(payload : String, channel : String = @notify_channel) : Nil
+        @db.exec("SELECT pg_notify($1, $2)", channel, payload)
+      end
+
+      # Stops the listener and the poller (idempotent). The DB handle stays
+      # open.
+      def close : Nil
+        @listener.try(&.close)
+        super
+      end
     end
   end
 end

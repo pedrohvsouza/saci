@@ -674,6 +674,12 @@ end
   (built-in RESP2 client, no extra dependency) or to `Cable::DbServer`
   (database polling, Solid Cable style). If Redis is down, broadcasts
   still reach local subscribers.
+- On PostgreSQL, `Cable::PostgresServer.new(db, listen_notify: true,
+  listen_url: ENV["DATABASE_URL"])` replaces polling with
+  `LISTEN/NOTIFY`: peers fetch a broadcast as soon as it commits, and a
+  5-second poll remains as a safety net. It needs `require "pg"` and
+  `require "saci/cable_pg"` in the app, plus a direct connection
+  (PgBouncer in transaction mode does not support `LISTEN`).
 - Writes go through a shared pool of writer fibers with bounded
   per-connection queues, so idle sockets stay cheap and slow readers get
   disconnected instead of piling up memory.

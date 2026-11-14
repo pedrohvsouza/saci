@@ -26,8 +26,8 @@ These are known gaps in the current release:
 - **Storage**: no image processor ships behind the variant/preview
   interface, and the S3 service has not been verified against a live
   bucket.
-- **Cable**: the database adapter polls. PostgreSQL `LISTEN/NOTIFY` is
-  not implemented.
+- **Cable**: the database adapter polls on SQLite and MySQL; only
+  PostgreSQL has push delivery (`LISTEN/NOTIFY`).
 - **Deploy**: the generated Dockerfile has not been verified by a
   container build in CI. There is no bundled HTTP/2 proxy (Thruster is
   only documented).

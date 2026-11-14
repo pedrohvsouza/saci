@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- **PostgreSQL `LISTEN/NOTIFY` for Cable.** `Cable::PostgresServer`
+  accepts `listen_notify: true` once the app requires `pg` and
+  `saci/cable_pg`. Each broadcast runs `pg_notify` after its INSERT, and a
+  listener connection wakes the peers' pollers, so cross-process delivery
+  no longer waits for the poll interval. In this mode the poll interval
+  defaults to 5 seconds and only acts as a safety net. The listener
+  reconnects with backoff when its connection drops, and also when its
+  own pings (every `listen_heartbeat`, 10 seconds by default) stop
+  arriving. `DbServer#wake` triggers an immediate poll. Without
+  `saci/cable_pg`, `listen_notify: true` still raises, and the error now
+  names the requires to add.
+
 ## 0.7.0 — 2026-11-14
 
 Models get the rest of the Rails callback chain, `throw_abort` to halt
