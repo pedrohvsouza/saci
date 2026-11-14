@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Fixed: specs switched to Crystal's log format halfway through.**
+  `crystal spec` resets logging right before the examples run, so log
+  lines printed during the examples lost Saci's format. Saci now
+  reinstalls its backend before the suite. Specs stay quiet unless
+  `LOG_LEVEL` is set, and `SACI_LOG_SETUP=0` still keeps Crystal's
+  backend. `Saci.setup_logging` takes a `default_level:`.
 - **PostgreSQL `LISTEN/NOTIFY` for Cable.** `Cable::PostgresServer`
   accepts `listen_notify: true` once the app requires `pg` and
   `saci/cable_pg`. Each broadcast runs `pg_notify` after its INSERT, and a

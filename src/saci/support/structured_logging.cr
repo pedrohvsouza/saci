@@ -190,12 +190,20 @@ module Saci
   end
 
   # Installs the default backend for every source: text (colored on a
-  # terminal) or JSON with `SACI_LOG_FORMAT=json`, at `LOG_LEVEL` (info by
-  # default). Runs when Saci is required; set `SACI_LOG_SETUP=0` to keep
-  # Crystal's default, or call `Log.setup` afterwards to override it.
-  def self.setup_logging(io : IO = STDOUT) : Nil
+  # terminal) or JSON with `SACI_LOG_FORMAT=json`, at `LOG_LEVEL`
+  # (*default_level* when unset). Runs when Saci is required; set
+  # `SACI_LOG_SETUP=0` to keep Crystal's default, or call `Log.setup`
+  # afterwards to override it.
+  #
+  # Under `crystal spec` it runs again before the suite with
+  # `default_level: :none`. The spec runner calls `Log.setup_from_env`
+  # just before the examples, which would otherwise swap in Crystal's
+  # formatter halfway through the output. Specs stay quiet unless
+  # `LOG_LEVEL` is set, as with plain `crystal spec`, and print Saci's
+  # format when it is.
+  def self.setup_logging(io : IO = STDOUT, default_level : ::Log::Severity = :info) : Nil
     backend = log_json? ? json_log_backend(io) : text_log_backend(io)
-    ::Log.setup_from_env(backend: backend)
+    ::Log.setup_from_env(backend: backend, default_level: default_level)
   end
 
   # Logger that fans out to several sinks (Rails `BroadcastLogger`). This is a
@@ -294,6 +302,19 @@ Saci::Notifications.subscribe("sql.saci") do |event|
 end
 
 Saci.setup_logging unless ENV["SACI_LOG_SETUP"]? == "0"
+
+# :nodoc:
+module Saci::SpecLogging
+  # Expanded once every file is required, so it sees `Spec` whether the
+  # app's spec_helper requires "spec" before or after "saci".
+  macro finished
+    {% if @top_level.has_constant?("Spec") %}
+      ::Spec.before_suite do
+        Saci.setup_logging(default_level: :none) unless ENV["SACI_LOG_SETUP"]? == "0"
+      end
+    {% end %}
+  end
+end
 
 module Saci
   class Router

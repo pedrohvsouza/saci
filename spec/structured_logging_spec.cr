@@ -83,3 +83,38 @@ describe "Saci.log_queries" do
     end
   end
 end
+
+# IOBackend dispatches asynchronously by default.
+private def wait_for_output(io : IO::Memory, text : String) : Nil
+  100.times do
+    break if io.to_s.includes?(text)
+    sleep 5.milliseconds
+  end
+end
+
+describe "Saci.setup_logging" do
+  it "uses default_level when LOG_LEVEL is unset and Saci's text format" do
+    io = IO::Memory.new
+    begin
+      with_env({"LOG_LEVEL" => nil, "SACI_LOG_FORMAT" => nil}) do
+        Saci.setup_logging(io, default_level: :warn)
+        Log.for("setup_probe").info { "hidden" }
+        Log.for("setup_probe").warn { "shown" }
+      end
+      wait_for_output(io, "shown")
+      io.to_s.should_not contain("hidden")
+      io.to_s.should match(/\A\d{4}\/\d\d\/\d\d \d\d:\d\d:\d\d\.\d{6} WARN  setup_probe: shown\n\z/)
+
+      io.clear
+      with_env({"LOG_LEVEL" => "debug", "SACI_LOG_FORMAT" => nil}) do
+        Saci.setup_logging(io, default_level: :none)
+        Log.for("setup_probe").debug { "env wins" }
+      end
+      wait_for_output(io, "env wins")
+      io.to_s.should contain("DEBUG setup_probe: env wins")
+    ensure
+      # What the suite runs with: Saci's backend, quiet unless LOG_LEVEL is set.
+      Saci.setup_logging(default_level: :none)
+    end
+  end
+end

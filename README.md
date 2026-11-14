@@ -1051,7 +1051,9 @@ with its duration (source `saci.sql`; turn it off with
 the local time as `2026/11/14 03:15:02.494236` and are colored on a
 terminal (`NO_COLOR` or `SACI_LOG_COLOR=0` disables, `SACI_LOG_COLOR=1`
 forces). Set `SACI_LOG_FORMAT=json` for structured output, or
-`SACI_LOG_SETUP=0` to keep Crystal's default log backend. `Notifications` publishes instrumentation events
+`SACI_LOG_SETUP=0` to keep Crystal's default log backend. Specs keep
+the same format and stay quiet unless `LOG_LEVEL` is set
+(`LOG_LEVEL=debug crystal spec`). `Notifications` publishes instrumentation events
 (`process_action.saci`, `sql.saci`, `perform.saci`, ...) and the
 slow-query logger subscribes to them. Metrics are kept in process
 (requests, routes, jobs, cache, database gauges) and have no built-in
