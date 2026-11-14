@@ -720,8 +720,8 @@ WelcomeJob.set(wait: 5.minutes, queue: :low).perform_later({email: "a@b.c"})
   client, moves jobs with atomic Lua scripts, and keeps the same
   priorities, retries, dead set, `unique` modes and continuation
   checkpoints. Jobs claimed by a worker that dies run again after
-  `lock_timeout` (10 minutes by default). The dashboard still reads only
-  the `:db` tables.
+  `lock_timeout` (10 minutes by default). The job dashboard reads it
+  too.
 - Payloads cross a JSON boundary. Records are serialized as GlobalID
   references. Delivery is at-least-once, so jobs must be idempotent.
 - Also available: callbacks and middleware, `limits_concurrency`, batches
@@ -731,7 +731,7 @@ WelcomeJob.set(wait: 5.minutes, queue: :low).perform_later({email: "a@b.c"})
   and `Recurring.every(1.hour, "cleanup") { ... }`, then
   `Recurring.start`. Missed ticks collapse into a single run.
 - Dashboard: mount `Job::DashboardController` to see pending and
-  dead jobs, with retry and drop actions. It is disabled in production by
+  dead jobs (`:db` or `:redis`), with retry and drop actions. It is disabled in production by
   default.
 
 ## Mailers

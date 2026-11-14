@@ -26,7 +26,8 @@
   script, claims follow priority, then run time, then enqueue order, and
   `unique`, `retry_on`, batches, continuation checkpoints and
   `enqueue_after_transaction_commit` work as with `:db`.
-  `Mailer#deliver_later(queue:)` uses the adapter directly too.
+  `Mailer#deliver_later(queue:)` uses the adapter directly too, and the
+  job dashboard shows its pending and dead jobs.
 
 ## 0.8.0 — 2026-11-14
 

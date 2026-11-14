@@ -16,11 +16,11 @@ module Saci
     # built-in — mount behind an admin gate if you enable it outside
     # development (same contract as `Saci::Mailer::Preview`).
     #
-    # Built only on public API (`Db.pending_count`/`dead_count`/`dead_jobs`/
-    # `retry_dead`/`drop_dead` plus `Record.query_compat` for the
-    # class/queue breakdown, aggregated in Ruby — no new tables). Works
-    # with the `:db` adapter; any other adapter renders an empty state
-    # (never a 500).
+    # Built only on public API (`pending_count`/`dead_count`/`dead_jobs`/
+    # `retry_dead`/`drop_dead` of `Job::Db` or `Job::Redis`, plus a
+    # class/queue breakdown — no new tables). Works with the `:db` and
+    # `:redis` adapters; any other adapter renders an empty state (never a
+    # 500).
     module Dashboard
       @@mutex = Mutex.new
       @@enabled_override : Bool? = nil
@@ -47,6 +47,31 @@ module Saci
         Job.queue_adapter == :db
       end
 
+      def self.redis_adapter? : Bool
+        Job.queue_adapter == :redis
+      end
+
+      # True for the adapters the dashboard can read (`:db`, `:redis`).
+      def self.supported_adapter? : Bool
+        db_adapter? || redis_adapter?
+      end
+
+      alias DeadRow = NamedTuple(id: Int64, job: String, attempts: Int64, error: String)
+
+      def self.dead_jobs : Array(DeadRow)
+        redis_adapter? ? Redis.dead_jobs : Db.dead_jobs
+      end
+
+      def self.retry_dead(id : Int64) : Bool
+        redis_adapter? ? Redis.retry_dead(id) : Db.retry_dead(id)
+      end
+
+      def self.drop_dead(id : Int64) : Bool
+        redis_adapter? ? Redis.drop_dead(id) : Db.drop_dead(id)
+      end
+
+      # `db_adapter` is true whenever the adapter is one the dashboard
+      # reads (see `supported_adapter?`); the name predates `:redis`.
       alias Stats = NamedTuple(
         db_adapter: Bool,
         pending: Int64?,
@@ -66,11 +91,12 @@ module Saci
         }
       end
 
-      # Read-only snapshot. Empty state when the adapter isn't `:db`;
+      # Read-only snapshot. Empty state when the adapter isn't supported;
       # degraded (`nil` counts, empty breakdowns) rather than raising when
-      # the queue tables are missing or the database is unreachable.
+      # the queue tables are missing or the store is unreachable.
       def self.stats : Stats
-        return empty_stats(false) unless db_adapter?
+        return empty_stats(false) unless supported_adapter?
+        return redis_stats if redis_adapter?
         pending = Db.pending_count
         dead = Db.dead_count
         by_class = {} of String => Int64
@@ -107,6 +133,20 @@ module Saci
         empty_stats(true)
       end
 
+      private def self.redis_stats : Stats
+        summary = Redis.pending_summary
+        {
+          db_adapter:         true,
+          pending:            Redis.pending_count.as(Int64?),
+          dead:               Redis.dead_count.as(Int64?),
+          by_class:           summary[:by_class],
+          by_queue:           summary[:by_queue],
+          oldest_pending_age: summary[:oldest].try { |t| Time.utc - t },
+        }
+      rescue
+        empty_stats(true)
+      end
+
       def self.format_age(span : Time::Span?) : String
         return "—" if span.nil?
         total = span.total_seconds.to_i
@@ -122,7 +162,7 @@ module Saci
         "<!doctype html><html><head><meta charset=\"utf-8\">" \
         "<title>Job dashboard</title></head><body>" \
         "<h1>Job dashboard</h1>" \
-        "<p>The job dashboard needs the <code>:db</code> queue adapter " \
+        "<p>The job dashboard needs the <code>:db</code> or <code>:redis</code> queue adapter " \
         "(current: <code>#{HTML.escape(Job.queue_adapter.to_s)}</code>). " \
         "Nothing to show — set <code>Saci::Job.queue_adapter = :db</code> " \
         "to persist jobs in <code>saci_jobs</code>.</p></body></html>"
@@ -202,11 +242,11 @@ module Saci
           render text: "Not found", status: :not_found
           return
         end
-        unless Dashboard.db_adapter?
+        unless Dashboard.supported_adapter?
           render html: Dashboard.empty_state_page
           return
         end
-        rows = Db.dead_jobs rescue [] of NamedTuple(id: Int64, job: String, attempts: Int64, error: String)
+        rows = Dashboard.dead_jobs rescue [] of Dashboard::DeadRow
         render html: Dashboard.dead_page(rows)
       end
 
@@ -216,9 +256,9 @@ module Saci
           return
         end
         id = params["id"]?.try(&.to_i64?)
-        ok = !id.nil? && Dashboard.db_adapter? && ((Db.retry_dead(id.not_nil!) rescue false))
+        ok = !id.nil? && Dashboard.supported_adapter? && ((Dashboard.retry_dead(id.not_nil!) rescue false))
         unless ok
-          if Dashboard.db_adapter?
+          if Dashboard.supported_adapter?
             render text: "No such dead job", status: :not_found
           else
             redirect_to "/saci/jobs/dead"
@@ -234,9 +274,9 @@ module Saci
           return
         end
         id = params["id"]?.try(&.to_i64?)
-        ok = !id.nil? && Dashboard.db_adapter? && ((Db.drop_dead(id.not_nil!) rescue false))
+        ok = !id.nil? && Dashboard.supported_adapter? && ((Dashboard.drop_dead(id.not_nil!) rescue false))
         unless ok
-          if Dashboard.db_adapter?
+          if Dashboard.supported_adapter?
             render text: "No such dead job", status: :not_found
           else
             redirect_to "/saci/jobs/dead"

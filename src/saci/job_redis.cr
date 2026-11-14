@@ -447,6 +447,34 @@ module Saci
         pipeline(commands).sum { |count| count.as?(Int64) || 0_i64 }
       end
 
+      # Unfinished jobs counted by class and by queue, plus the oldest
+      # `created_at`, for the dashboard. Reads every pending job hash, so
+      # its cost grows with the backlog.
+      def self.pending_summary : NamedTuple(by_class: Hash(String, Int64), by_queue: Hash(String, Int64), oldest: Time?)
+        by_class = {} of String => Int64
+        by_queue = {} of String => Int64
+        oldest : Time? = nil
+        p = prefix
+        known_queues.each do |name|
+          ids = %w[ready scheduled running].flat_map do |set|
+            strings(call(["ZRANGE", "#{p}:#{set}:#{name}", "0", "-1"]))
+          end
+          ids.each_slice(500) do |slice|
+            pipeline(slice.map { |id| ["HMGET", "#{p}:job:#{id}", "class", "created_at"] }).each do |row|
+              values = row.as?(Array(Cable::RedisWire::RedisValue))
+              next unless values && (job = values[0].as?(String))
+              by_class[job] = (by_class[job]? || 0_i64) + 1
+              by_queue[name] = (by_queue[name]? || 0_i64) + 1
+              if created = values[1].as?(String).try(&.to_i64?).try { |ms| Time.unix_ms(ms) }
+                o = oldest
+                oldest = created if o.nil? || created < o
+              end
+            end
+          end
+        end
+        {by_class: by_class, by_queue: by_queue, oldest: oldest}
+      end
+
       def self.dead_count : Int64
         call(["ZCARD", "#{prefix}:dead"]).as?(Int64) || 0_i64
       end

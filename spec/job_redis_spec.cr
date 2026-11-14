@@ -378,6 +378,33 @@ describe Saci::Job::Redis do
     end
   end
 
+  it "feeds the job dashboard" do
+    with_redis_jobs do
+      RedisProbeJob.perform_later({id: 1})
+      RedisProbeJob.set(queue: :low, wait: 1.hour).perform_later({id: 2})
+      RedisDoomedJob.perform_later({} of String => Int32)
+      Saci::Job::Redis.drain("default").should eq(1)
+
+      Saci::Job::Dashboard.supported_adapter?.should be_true
+      stats = Saci::Job::Dashboard.stats
+      stats[:db_adapter].should be_true
+      stats[:pending].should eq(2)
+      stats[:dead].should eq(1)
+      stats[:by_class].should eq({"RedisProbeJob" => 2_i64})
+      stats[:by_queue].should eq({"low" => 1_i64, "probes" => 1_i64})
+      stats[:oldest_pending_age].should_not be_nil
+      Saci::Job::Dashboard.index_page(stats).should contain("RedisProbeJob")
+
+      id = Saci::Job::Dashboard.dead_jobs.first[:id]
+      Saci::Job::Dashboard.dead_page(Saci::Job::Dashboard.dead_jobs).should contain("RedisDoomedJob")
+      Saci::Job::Dashboard.retry_dead(id).should be_true
+      Saci::Job::Dashboard.stats[:dead].should eq(0)
+      Saci::Job::Redis.drain("default").should eq(1)
+      Saci::Job::Dashboard.drop_dead(id).should be_true
+      Saci::Job::Dashboard.stats[:dead].should eq(0)
+    end
+  end
+
   it "delivers mail on a custom queue through the adapter" do
     with_redis_jobs do
       Saci::Mailer.delivery_adapter = :test
