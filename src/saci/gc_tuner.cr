@@ -120,6 +120,16 @@ module Saci::GCTuner
     nil
   end
 
+  # Live data in the heap. `GC.prof_stats` (`GC_get_heap_usage_safe`)
+  # reports `heap_size` and `free_bytes` with memory unmapped to the OS
+  # already left out of both, so it must not be subtracted again. Bytes
+  # allocated since the last collection are mostly garbage the next one
+  # reclaims: what remains is the live-data estimate. Saturates at zero.
+  def self.live_estimate(heap_size : UInt64, free_bytes : UInt64, bytes_since_gc : UInt64) : UInt64
+    used = heap_size > free_bytes ? heap_size - free_bytes : 0_u64
+    used > bytes_since_gc ? used - bytes_since_gc : used
+  end
+
   # Heap budget once memory outside the heap is accounted for.
   def self.heap_budget(limit : UInt64, rss : UInt64, heap_mapped : UInt64) : UInt64
     outside = rss > heap_mapped ? rss - heap_mapped : 0_u64
@@ -150,13 +160,10 @@ module Saci::GCTuner
   def self.adjust : Nil
     {% unless flag?(:gc_none) %}
       s = GC.prof_stats
-      used = s.heap_size - s.free_bytes - s.unmapped_bytes
-      # Bytes allocated since the last collection are mostly garbage the
-      # next one reclaims: what remains is the live-data estimate.
-      live = used > s.bytes_since_gc ? used - s.bytes_since_gc : used
+      live = live_estimate(s.heap_size, s.free_bytes, s.bytes_since_gc)
       budget = @@limit
       if @@rss_mode && (resident = rss)
-        budget = heap_budget(@@limit, resident, s.heap_size - s.unmapped_bytes)
+        budget = heap_budget(@@limit, resident, s.heap_size)
       end
       wanted = divisor_for(live, budget)
       LibGCTune.set_free_space_divisor(wanted) if wanted != divisor

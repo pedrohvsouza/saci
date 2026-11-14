@@ -31,6 +31,16 @@ describe Saci::GCTuner do
     Saci::GCTuner.allowance_for(400_u64 * mb, 380_u64 * mb).should eq(1)
   end
 
+  it "estimates live data without counting unmapped memory twice" do
+    mb = 1024_u64 * 1024
+    # heap_size and free_bytes already exclude unmapped memory.
+    Saci::GCTuner.live_estimate(100_u64 * mb, 30_u64 * mb, 20_u64 * mb).should eq(50_u64 * mb)
+    # Allocation since the last GC beyond the used heap keeps the used figure.
+    Saci::GCTuner.live_estimate(100_u64 * mb, 30_u64 * mb, 90_u64 * mb).should eq(70_u64 * mb)
+    # Never underflows.
+    Saci::GCTuner.live_estimate(10_u64 * mb, 30_u64 * mb, 0_u64).should eq(0)
+  end
+
   it "applies the divisor and the allowance for the current heap" do
     previous = Saci::GCTuner.divisor
     previous_min = Saci::GCTuner.min_bytes_allocd
