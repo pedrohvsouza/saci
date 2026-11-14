@@ -36,7 +36,7 @@ module Saci
   #   required. Cache failures fail OPEN (the job still runs; the in-process
   #   single-flight guard always applies). Default is in-memory only.
   module Recurring
-    DEFAULT_TICK = 30.seconds
+    DEFAULT_TICK      = 30.seconds
     DEFAULT_DEDUP_TTL = 1.hour
 
     # Five-field cron (minute hour dom month dow), parsed stdlib-only.
@@ -121,9 +121,9 @@ module Saci
         wday = time.day_of_week.value % 7 # Crystal: Monday=1..Sunday=7; cron: Sunday=0
         case
         when dom.nil? && dow.nil? then true
-        when dom.nil?              then dow.not_nil!.includes?(wday)
-        when dow.nil?              then dom.includes?(time.day)
-        else                            dom.includes?(time.day) || dow.includes?(wday)
+        when dom.nil?             then dow.not_nil!.includes?(wday)
+        when dow.nil?             then dom.includes?(time.day)
+        else                           dom.includes?(time.day) || dow.includes?(wday)
         end
       end
 

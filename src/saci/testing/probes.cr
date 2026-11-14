@@ -96,4 +96,3 @@ class Saci::Cable::Server
     end
   end
 end
-

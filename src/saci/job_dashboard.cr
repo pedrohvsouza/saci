@@ -161,9 +161,9 @@ module Saci
               io << "<td>" << row[:attempts] << "</td>"
               io << "<td>" << HTML.escape(row[:error]) << "</td>"
               io << "<td><form method=\"post\" action=\"/saci/jobs/dead/" << row[:id] << "/retry\">" \
-                    "<button type=\"submit\">Retry</button></form></td>"
+                                                                                         "<button type=\"submit\">Retry</button></form></td>"
               io << "<td><form method=\"post\" action=\"/saci/jobs/dead/" << row[:id] << "/drop\">" \
-                    "<button type=\"submit\">Drop</button></form></td></tr>"
+                                                                                         "<button type=\"submit\">Drop</button></form></td></tr>"
             end
             io << "</tbody></table>"
           end

@@ -7,7 +7,7 @@ module Saci
     # as timezone names are escaped here.
     #
     # ```
-    # Saci::Record::Dialect.extract(:year, "created_at")                 # SQLite
+    # Saci::Record::Dialect.extract(:year, "created_at") # SQLite
     # Saci::Record::Dialect.extract(:year, "created_at", :mysql)
     # Saci::Record::Dialect.timestampdiff(:day, "starts_at", "ends_at", :postgres)
     # Saci::Record::Dialect.json_extract("meta.color", "meta", :mysql)
@@ -16,19 +16,19 @@ module Saci
     module Dialect
       # Maps `EXTRACT` parts to SQLite `strftime` format strings.
       SQLITE_STRFTIME = {
-        "YEAR"        => "%Y",
-        "MONTH"       => "%m",
-        "DAY"         => "%d",
-        "HOUR"        => "%H",
-        "MINUTE"      => "%M",
-        "SECOND"      => "%S",
-        "DOW"         => "%w",
-        "DOY"         => "%j",
-        "WEEK"        => "%W",
-        "QUARTER"     => nil,
-        "EPOCH"       => "%s",
-        "DAYOFWEEK"   => "%w",
-        "DAYOFYEAR"   => "%j",
+        "YEAR"      => "%Y",
+        "MONTH"     => "%m",
+        "DAY"       => "%d",
+        "HOUR"      => "%H",
+        "MINUTE"    => "%M",
+        "SECOND"    => "%S",
+        "DOW"       => "%w",
+        "DOY"       => "%j",
+        "WEEK"      => "%W",
+        "QUARTER"   => nil,
+        "EPOCH"     => "%s",
+        "DAYOFWEEK" => "%w",
+        "DAYOFYEAR" => "%j",
       }
 
       # `EXTRACT(<part> FROM <col>)` on PostgreSQL/MySQL; SQLite emulates

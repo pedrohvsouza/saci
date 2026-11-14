@@ -24,7 +24,7 @@ class SchemaCheckAbstract < Saci::Record::Base
 end
 
 SC_WIDGET_TABLE = "CREATE TABLE \"sc_widgets\" (\"id\" INTEGER PRIMARY KEY AUTOINCREMENT, \"name\" VARCHAR(255), \"created_at\" TEXT NOT NULL, \"updated_at\" TEXT NOT NULL)"
-SC_GADGET_TABLE  = "CREATE TABLE \"sc_gadgets\" (\"id\" INTEGER PRIMARY KEY AUTOINCREMENT, \"code\" VARCHAR(255))"
+SC_GADGET_TABLE = "CREATE TABLE \"sc_gadgets\" (\"id\" INTEGER PRIMARY KEY AUTOINCREMENT, \"code\" VARCHAR(255))"
 
 def sc_models(*klasses : Saci::Record::Base.class) : Array(Saci::Record::Base.class)
   out = [] of Saci::Record::Base.class

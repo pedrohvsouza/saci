@@ -252,8 +252,8 @@ module Saci
       #   define_finders :email, :name
       # end
       #
-      # User.find_by_email("a@b.c")          # => User?
-      # User.find_by_email!("a@b.c")         # => User (raises RecordNotFound)
+      # User.find_by_email("a@b.c")           # => User?
+      # User.find_by_email!("a@b.c")          # => User (raises RecordNotFound)
       # User.find_or_initialize_by_email("x") # => User (new when missing)
       # ```
       #

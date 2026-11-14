@@ -39,7 +39,7 @@ class PaginationDemoController < Saci::Controller
       per_page: per
     )
     render html: page.records.map { |r| r.title.to_s }.join(",") +
-      Saci::Pagination.paginate_nav(page, "/items")
+                 Saci::Pagination.paginate_nav(page, "/items")
   end
 end
 

@@ -97,9 +97,9 @@ factory :testing_post, TestingPost do
   belongs_to :user, :testing_user, foreign_key: "user_id"
 end
 
-FIXTURE_DIR = "tmp/saci_testing_spec/fixtures"
-TESTING_DB_PATH     = "tmp/saci_testing_spec/db/app_test.db"
-DB_URL      = Saci::Testing.sqlite_url_for(TESTING_DB_PATH)
+FIXTURE_DIR     = "tmp/saci_testing_spec/fixtures"
+TESTING_DB_PATH = "tmp/saci_testing_spec/db/app_test.db"
+DB_URL          = Saci::Testing.sqlite_url_for(TESTING_DB_PATH)
 
 Dir.mkdir_p(FIXTURE_DIR)
 

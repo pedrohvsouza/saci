@@ -3,9 +3,9 @@ require "../src/saci"
 
 # Bounds given as constants must show their value, not the constant's name.
 class ValidationMessageProbe < Saci::Record::Base
-  NICKNAME_MIN = 3
-  NICKNAME_MAX = 8
-  SCORE_FLOOR  = 1
+  NICKNAME_MIN =  3
+  NICKNAME_MAX =  8
+  SCORE_FLOOR  =  1
   SCORE_CEIL   = 10
 
   table "validation_message_probes"

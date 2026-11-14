@@ -181,11 +181,11 @@ module Saci
         case v = Record.scalar_compat(db,
           "SELECT COALESCE(SUM(data_length + index_length), 0) " \
           "FROM information_schema.tables WHERE table_schema = DATABASE()")
-        when Int64 then v
-        when Int32 then v.to_i64
-        when UInt64 then v.to_i64
+        when Int64   then v
+        when Int32   then v.to_i64
+        when UInt64  then v.to_i64
         when Float64 then v.to_i64
-        else             nil
+        else              nil
         end
       else
         nil

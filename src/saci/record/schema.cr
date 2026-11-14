@@ -270,13 +270,13 @@ module Saci
 
       private def self.value_literal(v : Value) : String
         case v
-        when Nil              then "nil"
-        when Bool             then v ? "true" : "false"
-        when Int32, Int64     then "#{v}_i64"
-        when Float32, Float64 then v.to_s
+        when Nil                   then "nil"
+        when Bool                  then v ? "true" : "false"
+        when Int32, Int64          then "#{v}_i64"
+        when Float32, Float64      then v.to_s
         when Saci::Record::Decimal then "BigDecimal.new(#{v.to_s.inspect})"
-        when String           then v.inspect
-        else                       "nil"
+        when String                then v.inspect
+        else                            "nil"
         end
       end
 

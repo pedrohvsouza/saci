@@ -147,7 +147,7 @@ module Saci
         when "VARCHAR", "CHARACTER VARYING", "CHAR", "CHARACTER", "NCHAR", "NVARCHAR", "CLOB"  then :string
         when "TEXT", "DATE", "DATETIME", "TIMESTAMP"                                           then :text
         when "INTEGER", "INT", "BIGINT", "SMALLINT", "MEDIUMINT", "TINYINT", "BOOLEAN", "BOOL" then :integer
-        when "TEXT_DECIMAL"                                                                     then :decimal
+        when "TEXT_DECIMAL"                                                                    then :decimal
         when "REAL", "FLOAT", "DOUBLE", "DOUBLE PRECISION", "DECIMAL", "NUMERIC"               then :float
         when "BLOB"                                                                            then :binary
         else                                                                                        :text

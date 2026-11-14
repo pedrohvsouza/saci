@@ -204,12 +204,12 @@ module Saci
     end
 
     private NAMED_ENTITIES = {
-      "amp"   => "&",
-      "lt"    => "<",
-      "gt"    => ">",
-      "quot"  => "\"",
-      "apos"  => "'",
-      "nbsp"  => "\u00A0",
+      "amp"  => "&",
+      "lt"   => "<",
+      "gt"   => ">",
+      "quot" => "\"",
+      "apos" => "'",
+      "nbsp" => "\u00A0",
     }
 
     # Single-pass entity decoding (no recursive re-decoding, so `&amp;lt;`
@@ -279,8 +279,8 @@ module Saci
     def self.rich_text(value : String | RichText::Content | Nil) : String
       case value
       when RichText::Content then value.to_s
-      when String             then RichText.sanitize(value)
-      else                         ""
+      when String            then RichText.sanitize(value)
+      else                        ""
       end
     end
   end

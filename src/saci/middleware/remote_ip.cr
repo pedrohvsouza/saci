@@ -52,8 +52,8 @@ module Saci
         peer = context.remote_address
         peer_ip = case peer
                   when Socket::IPAddress then peer.address
-                  when Nil                then nil
-                  else                         peer.to_s
+                  when Nil               then nil
+                  else                        peer.to_s
                   end
         return call_next(context) unless peer_ip
         return call_next(context) unless Net.trusted_proxy?(peer_ip, trusted_proxies)

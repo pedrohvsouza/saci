@@ -39,7 +39,7 @@ module Saci
     # Key format: hex sharded over two levels (`ab/cd/<rest>`).
     # Public files live under a `public/` key prefix
     # (`public/ab/cd/<rest>`) and are served without a signature.
-    KEY_RE = /\A(public\/)?[0-9a-f\/]+\z/
+    KEY_RE        = /\A(public\/)?[0-9a-f\/]+\z/
     PUBLIC_PREFIX = "public/"
 
     # Content types that browsers may execute when served inline. Uploads

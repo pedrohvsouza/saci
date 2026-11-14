@@ -273,8 +273,8 @@ describe Saci::Middleware::CORS do
   it "answers allowed preflights with 204 and the negotiated headers" do
     Saci::TestSession.serve(middleware_router, config: middleware_cors_config) do |app|
       headers = HTTP::Headers{
-        "Origin"                        => "https://app.example.com",
-        "Access-Control-Request-Method" => "PATCH",
+        "Origin"                         => "https://app.example.com",
+        "Access-Control-Request-Method"  => "PATCH",
         "Access-Control-Request-Headers" => "Content-Type, Authorization",
       }
       response = app.options("/demo", headers)

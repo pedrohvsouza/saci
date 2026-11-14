@@ -3,8 +3,8 @@ module Saci
   #
   # ```
   # Saci::PageCache.write("/stories", rendered_html)
-  # Saci::PageCache.read("/stories")     # => String | nil
-  # Saci::PageCache.expire("/stories")   # => Bool
+  # Saci::PageCache.read("/stories")       # => String | nil
+  # Saci::PageCache.expire("/stories")     # => Bool
   # Saci::PageCache.expire_dir("/stories") # => Int32 (files removed)
   # ```
   #

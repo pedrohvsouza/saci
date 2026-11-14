@@ -2,10 +2,10 @@ require "spec"
 require "../src/saci"
 
 {% if env("PG_URL") %}
-require "pg"
+  require "pg"
 {% end %}
 {% if env("MYSQL_URL") %}
-require "mysql"
+  require "mysql"
 {% end %}
 
 # Adapter support (SQLite live; PostgreSQL/MySQL via SQL-generation specs —
@@ -104,7 +104,7 @@ describe "database adapters" do
     t.boolean :published, default: false
     t.timestamps
     sqlite = (Saci::Record::ColumnDef.new("id", :serial, false, nil, true).to_sql(:sqlite) + ", " +
-      t.columns.map(&.to_sql(:sqlite)).join(", "))
+              t.columns.map(&.to_sql(:sqlite)).join(", "))
     sqlite.should contain(%("created_at" TEXT NOT NULL))
     pg_cols = t.columns.map(&.to_sql(:postgres)).join(", ")
     pg_cols.should contain(%("published" BOOLEAN DEFAULT FALSE))
@@ -635,193 +635,193 @@ end
 # reports these as pending.
 
 {% if env("PG_URL") %}
-class PgProbeArticle < Saci::Record::Base
-  table "pg_probe_articles"
-  column id : Int64, primary: true
-  column status : String
-  column tags : Array(String)
-  column published_at : Time
-  timestamps
+  class PgProbeArticle < Saci::Record::Base
+    table "pg_probe_articles"
+    column id : Int64, primary: true
+    column status : String
+    column tags : Array(String)
+    column published_at : Time
+    timestamps
 
-  validates :status, inclusion: {in: ["draft", "published"]}, allow_nil: true
-end
+    validates :status, inclusion: {in: ["draft", "published"]}, allow_nil: true
+  end
 
-class PgProbeEnums < Saci::Record::Migration
-  def change
-    create_table :pg_probe_articles do |t|
-      t.enum :status, values: ["draft", "published"]
-      t.string_array :tags
-      t.datetime :published_at, precision: 6
-      t.timestamps precision: 6
+  class PgProbeEnums < Saci::Record::Migration
+    def change
+      create_table :pg_probe_articles do |t|
+        t.enum :status, values: ["draft", "published"]
+        t.string_array :tags
+        t.datetime :published_at, precision: 6
+        t.timestamps precision: 6
+      end
     end
   end
-end
 
-describe "PostgreSQL enum/array/precision live" do
-  it "round-trips enums, native arrays and microsecond timestamps, dropping the type on rollback" do
-    url = ENV["PG_URL"]?
-    next if url.nil?
-    db : DB::Database? = nil
-    begin
-      db = Saci::Record.establish_connection("adapter_spec_pg", url)
-    rescue
-      next
-    end
-    db = db.as(DB::Database)
-    begin
-      ad = Saci::Record.adapter_of(db)
-      tbl = Saci::Record.quote("pg_probe_articles", ad)
-      sm = Saci::Record.quote("schema_migrations", ad)
-      c_name = Saci::Record.quote("name", ad)
+  describe "PostgreSQL enum/array/precision live" do
+    it "round-trips enums, native arrays and microsecond timestamps, dropping the type on rollback" do
+      url = ENV["PG_URL"]?
+      next if url.nil?
+      db : DB::Database? = nil
       begin
-        Saci::Record.exec_compat(db, "DROP TABLE IF EXISTS #{tbl}")
-        Saci::Record.exec_compat(db, "DROP TYPE IF EXISTS #{Saci::Record.quote("pg_probe_articles_status_enum", ad)}")
-        Saci::Record.exec_compat(db, "DELETE FROM #{sm} WHERE #{c_name} = ?", ["PgProbeEnums"] of Saci::Record::Value)
+        db = Saci::Record.establish_connection("adapter_spec_pg", url)
       rescue
+        next
       end
-      Saci::Record::Migrator.migrate(db, [PgProbeEnums] of Saci::Record::Migration.class)
-
-      # Standalone type exists exactly once (the DO block is idempotent:
-      # running the CREATE again is a no-op, so reruns are safe).
-      Saci::Record.exec_compat(db, Saci::Record::Migration.create_enum_sql(ad, :pg_probe_articles, :status, ["draft", "published"]).not_nil!)
-      Saci::Record.scalar_compat(db,
-        "SELECT COUNT(*) FROM pg_type WHERE typname = ?",
-        ["pg_probe_articles_status_enum"] of Saci::Record::Value).should eq(1)
-      Saci::Record.scalar_compat(db,
-        "SELECT datetime_precision FROM information_schema.columns WHERE table_name = ? AND column_name = ?",
-        ["pg_probe_articles", "published_at"] of Saci::Record::Value).should eq(6)
-
-      expect_raises(Exception) do
-        db.exec("INSERT INTO #{tbl} (\"status\") VALUES ($1)", "bogus")
-      end
-
-      Saci::Record.connected_to("adapter_spec_pg") do
-        at = Time.utc(2024, 5, 1, 12, 30, 45, nanosecond: 123456_000)
-        row = PgProbeArticle.create!(status: "published", tags: ["a", "b"], published_at: at)
-        got = PgProbeArticle.find(row.id)
-        got.status.should eq("published")
-        got.tags.should eq(["a", "b"])
-        got.published_at.should eq(at)
-        row.tags = [] of String
-        row.save!
-        PgProbeArticle.find(row.id).tags.should eq([] of String)
-      end
-
-      Saci::Record::Migrator.rollback(db, [PgProbeEnums] of Saci::Record::Migration.class, 1)
-      Saci::Record.scalar_compat(db,
-        "SELECT COUNT(*) FROM pg_type WHERE typname = ?",
-        ["pg_probe_articles_status_enum"] of Saci::Record::Value).should eq(0)
-      Saci::Record::Migrator.migrate(db, [PgProbeEnums] of Saci::Record::Migration.class)
-    ensure
+      db = db.as(DB::Database)
       begin
-        Saci::Record.exec_compat(db, "DROP TABLE IF EXISTS #{Saci::Record.quote("pg_probe_articles", Saci::Record.adapter_of(db))}")
-        Saci::Record.exec_compat(db, "DROP TYPE IF EXISTS #{Saci::Record.quote("pg_probe_articles_status_enum", Saci::Record.adapter_of(db))}")
-      rescue
+        ad = Saci::Record.adapter_of(db)
+        tbl = Saci::Record.quote("pg_probe_articles", ad)
+        sm = Saci::Record.quote("schema_migrations", ad)
+        c_name = Saci::Record.quote("name", ad)
+        begin
+          Saci::Record.exec_compat(db, "DROP TABLE IF EXISTS #{tbl}")
+          Saci::Record.exec_compat(db, "DROP TYPE IF EXISTS #{Saci::Record.quote("pg_probe_articles_status_enum", ad)}")
+          Saci::Record.exec_compat(db, "DELETE FROM #{sm} WHERE #{c_name} = ?", ["PgProbeEnums"] of Saci::Record::Value)
+        rescue
+        end
+        Saci::Record::Migrator.migrate(db, [PgProbeEnums] of Saci::Record::Migration.class)
+
+        # Standalone type exists exactly once (the DO block is idempotent:
+        # running the CREATE again is a no-op, so reruns are safe).
+        Saci::Record.exec_compat(db, Saci::Record::Migration.create_enum_sql(ad, :pg_probe_articles, :status, ["draft", "published"]).not_nil!)
+        Saci::Record.scalar_compat(db,
+          "SELECT COUNT(*) FROM pg_type WHERE typname = ?",
+          ["pg_probe_articles_status_enum"] of Saci::Record::Value).should eq(1)
+        Saci::Record.scalar_compat(db,
+          "SELECT datetime_precision FROM information_schema.columns WHERE table_name = ? AND column_name = ?",
+          ["pg_probe_articles", "published_at"] of Saci::Record::Value).should eq(6)
+
+        expect_raises(Exception) do
+          db.exec("INSERT INTO #{tbl} (\"status\") VALUES ($1)", "bogus")
+        end
+
+        Saci::Record.connected_to("adapter_spec_pg") do
+          at = Time.utc(2024, 5, 1, 12, 30, 45, nanosecond: 123456_000)
+          row = PgProbeArticle.create!(status: "published", tags: ["a", "b"], published_at: at)
+          got = PgProbeArticle.find(row.id)
+          got.status.should eq("published")
+          got.tags.should eq(["a", "b"])
+          got.published_at.should eq(at)
+          row.tags = [] of String
+          row.save!
+          PgProbeArticle.find(row.id).tags.should eq([] of String)
+        end
+
+        Saci::Record::Migrator.rollback(db, [PgProbeEnums] of Saci::Record::Migration.class, 1)
+        Saci::Record.scalar_compat(db,
+          "SELECT COUNT(*) FROM pg_type WHERE typname = ?",
+          ["pg_probe_articles_status_enum"] of Saci::Record::Value).should eq(0)
+        Saci::Record::Migrator.migrate(db, [PgProbeEnums] of Saci::Record::Migration.class)
+      ensure
+        begin
+          Saci::Record.exec_compat(db, "DROP TABLE IF EXISTS #{Saci::Record.quote("pg_probe_articles", Saci::Record.adapter_of(db))}")
+          Saci::Record.exec_compat(db, "DROP TYPE IF EXISTS #{Saci::Record.quote("pg_probe_articles_status_enum", Saci::Record.adapter_of(db))}")
+        rescue
+        end
+        db.close
+        Saci::Record.remove_connection("adapter_spec_pg")
       end
-      db.close
-      Saci::Record.remove_connection("adapter_spec_pg")
     end
   end
-end
 {% else %}
-pending "live PostgreSQL enum/array/precision (set PG_URL at compile time, e.g. postgres://saci:saci@127.0.0.1:55432/saci_test)" do
-  raise "needs PG_URL"
-end
+  pending "live PostgreSQL enum/array/precision (set PG_URL at compile time, e.g. postgres://saci:saci@127.0.0.1:55432/saci_test)" do
+    raise "needs PG_URL"
+  end
 {% end %}
 
 {% if env("MYSQL_URL") %}
-class MyProbeArticle < Saci::Record::Base
-  table "my_probe_articles"
-  column id : Int64, primary: true
-  column status : String
-  column tags : Array(String)
-  column published_at : Time
-  timestamps
+  class MyProbeArticle < Saci::Record::Base
+    table "my_probe_articles"
+    column id : Int64, primary: true
+    column status : String
+    column tags : Array(String)
+    column published_at : Time
+    timestamps
 
-  validates :status, inclusion: {in: ["draft", "published"]}, allow_nil: true
-end
+    validates :status, inclusion: {in: ["draft", "published"]}, allow_nil: true
+  end
 
-class MyProbeEnums < Saci::Record::Migration
-  def change
-    create_table :my_probe_articles do |t|
-      t.enum :status, values: ["draft", "published"]
-      t.string_array :tags
-      t.datetime :published_at, precision: 6
-      t.timestamps precision: 6
+  class MyProbeEnums < Saci::Record::Migration
+    def change
+      create_table :my_probe_articles do |t|
+        t.enum :status, values: ["draft", "published"]
+        t.string_array :tags
+        t.datetime :published_at, precision: 6
+        t.timestamps precision: 6
+      end
     end
   end
-end
 
-describe "MySQL enum/array/precision live" do
-  it "round-trips inline enums, JSON-backed arrays and fractional timestamps" do
-    url = ENV["MYSQL_URL"]?
-    next if url.nil?
-    db : DB::Database? = nil
-    begin
-      db = Saci::Record.establish_connection("adapter_spec_mysql", url)
-    rescue
-      next
-    end
-    db = db.as(DB::Database)
-    begin
-      ad = Saci::Record.adapter_of(db)
-      tbl = Saci::Record.quote("my_probe_articles", ad)
-      sm = Saci::Record.quote("schema_migrations", ad)
-      c_name = Saci::Record.quote("name", ad)
+  describe "MySQL enum/array/precision live" do
+    it "round-trips inline enums, JSON-backed arrays and fractional timestamps" do
+      url = ENV["MYSQL_URL"]?
+      next if url.nil?
+      db : DB::Database? = nil
       begin
-        Saci::Record.exec_compat(db, "DROP TABLE IF EXISTS #{tbl}")
-        Saci::Record.exec_compat(db, "DELETE FROM #{sm} WHERE #{c_name} = ?", ["MyProbeEnums"] of Saci::Record::Value)
+        db = Saci::Record.establish_connection("adapter_spec_mysql", url)
       rescue
+        next
       end
-      Saci::Record::Migrator.migrate(db, [MyProbeEnums] of Saci::Record::Migration.class)
-
-      # ENUM is inline on MySQL; arrays are TEXT (JSON-encoded, like
-      # `:json`, because crystal-mysql cannot decode native JSON).
-      # `SHOW COLUMNS` is used instead of information_schema.scalar: the
-      # mysql driver's untyped scalar path cannot decode every
-      # information_schema metadata column.
-      column_types = {} of String => String
-      Saci::Record.query_compat(db, "SHOW COLUMNS FROM #{tbl}") do |rs|
-        rs.each do
-          col_name = rs.read(String)
-          col_type = rs.read(String)
-          rs.read(String?) # Null
-          rs.read(String?) # Key
-          rs.read(String?) # Default
-          rs.read(String?) # Extra
-          column_types[col_name] = col_type.downcase
+      db = db.as(DB::Database)
+      begin
+        ad = Saci::Record.adapter_of(db)
+        tbl = Saci::Record.quote("my_probe_articles", ad)
+        sm = Saci::Record.quote("schema_migrations", ad)
+        c_name = Saci::Record.quote("name", ad)
+        begin
+          Saci::Record.exec_compat(db, "DROP TABLE IF EXISTS #{tbl}")
+          Saci::Record.exec_compat(db, "DELETE FROM #{sm} WHERE #{c_name} = ?", ["MyProbeEnums"] of Saci::Record::Value)
+        rescue
         end
-      end
-      column_types["status"].should eq("enum('draft','published')")
-      column_types["tags"].should eq("text")
-      column_types["published_at"].should eq("datetime(6)")
+        Saci::Record::Migrator.migrate(db, [MyProbeEnums] of Saci::Record::Migration.class)
 
-      Saci::Record.connected_to("adapter_spec_mysql") do
-        at = Time.utc(2024, 5, 1, 12, 30, 45, nanosecond: 123456_000)
-        row = MyProbeArticle.create!(status: "draft", tags: ["x,y", "z"], published_at: at)
-        got = MyProbeArticle.find(row.id)
-        got.status.should eq("draft")
-        got.tags.should eq(["x,y", "z"])
-        got.published_at.should eq(at)
-      end
+        # ENUM is inline on MySQL; arrays are TEXT (JSON-encoded, like
+        # `:json`, because crystal-mysql cannot decode native JSON).
+        # `SHOW COLUMNS` is used instead of information_schema.scalar: the
+        # mysql driver's untyped scalar path cannot decode every
+        # information_schema metadata column.
+        column_types = {} of String => String
+        Saci::Record.query_compat(db, "SHOW COLUMNS FROM #{tbl}") do |rs|
+          rs.each do
+            col_name = rs.read(String)
+            col_type = rs.read(String)
+            rs.read(String?) # Null
+            rs.read(String?) # Key
+            rs.read(String?) # Default
+            rs.read(String?) # Extra
+            column_types[col_name] = col_type.downcase
+          end
+        end
+        column_types["status"].should eq("enum('draft','published')")
+        column_types["tags"].should eq("text")
+        column_types["published_at"].should eq("datetime(6)")
 
-      Saci::Record::Migrator.rollback(db, [MyProbeEnums] of Saci::Record::Migration.class, 1)
-      expect_raises(Exception) do
-        Saci::Record.exec_compat(db, "SELECT * FROM #{tbl}")
+        Saci::Record.connected_to("adapter_spec_mysql") do
+          at = Time.utc(2024, 5, 1, 12, 30, 45, nanosecond: 123456_000)
+          row = MyProbeArticle.create!(status: "draft", tags: ["x,y", "z"], published_at: at)
+          got = MyProbeArticle.find(row.id)
+          got.status.should eq("draft")
+          got.tags.should eq(["x,y", "z"])
+          got.published_at.should eq(at)
+        end
+
+        Saci::Record::Migrator.rollback(db, [MyProbeEnums] of Saci::Record::Migration.class, 1)
+        expect_raises(Exception) do
+          Saci::Record.exec_compat(db, "SELECT * FROM #{tbl}")
+        end
+        Saci::Record::Migrator.migrate(db, [MyProbeEnums] of Saci::Record::Migration.class)
+      ensure
+        begin
+          Saci::Record.exec_compat(db, "DROP TABLE IF EXISTS #{Saci::Record.quote("my_probe_articles", Saci::Record.adapter_of(db))}")
+        rescue
+        end
+        db.close
+        Saci::Record.remove_connection("adapter_spec_mysql")
       end
-      Saci::Record::Migrator.migrate(db, [MyProbeEnums] of Saci::Record::Migration.class)
-    ensure
-      begin
-        Saci::Record.exec_compat(db, "DROP TABLE IF EXISTS #{Saci::Record.quote("my_probe_articles", Saci::Record.adapter_of(db))}")
-      rescue
-      end
-      db.close
-      Saci::Record.remove_connection("adapter_spec_mysql")
     end
   end
-end
 {% else %}
-pending "live MySQL enum/array/precision (set MYSQL_URL at compile time, e.g. mysql://saci:saci@127.0.0.1:53306/saci_test)" do
-  raise "needs MYSQL_URL"
-end
+  pending "live MySQL enum/array/precision (set MYSQL_URL at compile time, e.g. mysql://saci:saci@127.0.0.1:53306/saci_test)" do
+    raise "needs MYSQL_URL"
+  end
 {% end %}

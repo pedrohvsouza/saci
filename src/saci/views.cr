@@ -268,10 +268,10 @@ module Saci
   # ```
   # form_with("/stories", model: @story, scope: "story") do |f|
   #   f.error_messages +
-  #   f.text_field("title") +
-  #   f.check_box("user_is_author") +
-  #   f.select("category", ["tech", "news"]) +
-  #   f.submit
+  #     f.text_field("title") +
+  #     f.check_box("user_is_author") +
+  #     f.select("category", ["tech", "news"]) +
+  #     f.submit
   # end
   # ```
   class FormBuilder

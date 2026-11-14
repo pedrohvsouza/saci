@@ -10,8 +10,8 @@ module Saci
   #   page: params.int("page", 1) || 1, # non-numeric query values fall back
   #   per_page: 25                      # to the default via `params.int`
   # )
-  # page.records      # => Array(Post) for the current page
-  # page.total_count  # => Int64 across all pages
+  # page.records     # => Array(Post) for the current page
+  # page.total_count # => Int64 across all pages
   # render html: Saci::Pagination.paginate_nav(page, "/posts")
   # ```
   #
@@ -26,7 +26,7 @@ module Saci
   # fetch. Filters and ordering on the given query are preserved.
   module Pagination
     MAX_PER_PAGE     = 100
-    DEFAULT_PER_PAGE = 25
+    DEFAULT_PER_PAGE =  25
 
     class Page(T)
       getter records : Array(T)

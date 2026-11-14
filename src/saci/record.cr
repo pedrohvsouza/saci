@@ -26,7 +26,7 @@ module Saci
   #     version: "~> 0.30.0"
   # ```
   #
-  # ```crystal
+  # ```
   # require "pg" # or require "mysql"
   # Saci::Record.connect("postgres://localhost/myapp")
   # ```
@@ -149,10 +149,10 @@ module Saci
     # schemes (fail fast on typos like `postgress://`).
     def self.adapter_for_url(url : String) : Adapter
       case url.split("://", 2)[0].downcase
-      when "sqlite3"                  then :sqlite
-      when "postgres", "postgresql"   then :postgres
-      when "mysql"                    then :mysql
-      else                                 raise ArgumentError.new("Unknown database adapter in URL #{url.inspect} (expected sqlite3://, postgres:// or mysql://)")
+      when "sqlite3"                then :sqlite
+      when "postgres", "postgresql" then :postgres
+      when "mysql"                  then :mysql
+      else                               raise ArgumentError.new("Unknown database adapter in URL #{url.inspect} (expected sqlite3://, postgres:// or mysql://)")
       end
     end
 
@@ -527,7 +527,7 @@ module Saci
           nil
         end
       when Bool then v ? BigDecimal.new(1) : BigDecimal.new(0)
-      else            nil
+      else           nil
       end
     end
 
@@ -565,12 +565,12 @@ module Saci
     # NUMERIC/DECIMAL type without a Float64 round-trip.
     def self.to_db(v : Object, adapter : Adapter = :sqlite) : Value
       case v
-      when Nil    then nil
-      when Bool   then adapter == :sqlite ? (v ? 1_i64 : 0_i64) : v
-      when Time   then adapter == :sqlite ? v.to_rfc3339 : v
-      when BigDecimal then v.to_s
+      when Nil                                           then nil
+      when Bool                                          then adapter == :sqlite ? (v ? 1_i64 : 0_i64) : v
+      when Time                                          then adapter == :sqlite ? v.to_rfc3339 : v
+      when BigDecimal                                    then v.to_s
       when String, Int32, Int64, Float32, Float64, Bytes then v
-      when Array(String) then adapter == :postgres ? v : v.to_json
+      when Array(String)                                 then adapter == :postgres ? v : v.to_json
       else
         raise ArgumentError.new("Unsupported query value: #{v.inspect} (#{v.class})")
       end
@@ -631,14 +631,14 @@ module Saci
     # a quoted JSON string.
     def self.column_default_sql(default : Value, adapter : Adapter = :sqlite) : String?
       case default
-      when Nil    then nil
-      when Bool   then adapter == :postgres ? (default ? "TRUE" : "FALSE") : (default ? "1" : "0")
-      when BigDecimal then "'#{default.to_s.gsub("'", "''")}'"
-      when Number then default.to_s
-      when String then "'#{default.gsub("'", "''")}'"
-      when Time   then "'#{default.to_rfc3339}'"
+      when Nil           then nil
+      when Bool          then adapter == :postgres ? (default ? "TRUE" : "FALSE") : (default ? "1" : "0")
+      when BigDecimal    then "'#{default.to_s.gsub("'", "''")}'"
+      when Number        then default.to_s
+      when String        then "'#{default.gsub("'", "''")}'"
+      when Time          then "'#{default.to_rfc3339}'"
       when Array(String) then "'#{default.to_json.gsub("'", "''")}'"
-      else             nil
+      else                    nil
       end
     end
 
@@ -653,11 +653,11 @@ module Saci
     # PostgreSQL, `DATETIME(fsp)` on MySQL, ignored on SQLite).
     def self.db_type(logical : Symbol, adapter : Adapter, enum_values : Array(String)? = nil, enum_type : String? = nil, precision : Int32? = nil, scale : Int32? = nil) : String
       case logical
-      when :string   then "VARCHAR(255)"
-      when :text     then "TEXT"
-      when :integer  then "INTEGER"
-      when :bigint   then adapter == :sqlite ? "INTEGER" : "BIGINT"
-      when :float    then adapter == :sqlite ? "REAL" : (adapter == :postgres ? "DOUBLE PRECISION" : "DOUBLE")
+      when :string  then "VARCHAR(255)"
+      when :text    then "TEXT"
+      when :integer then "INTEGER"
+      when :bigint  then adapter == :sqlite ? "INTEGER" : "BIGINT"
+      when :float   then adapter == :sqlite ? "REAL" : (adapter == :postgres ? "DOUBLE PRECISION" : "DOUBLE")
       when :decimal
         # SQLite's NUMERIC/REAL affinity would round exact decimals through
         # a binary float. `TEXT_DECIMAL` has TEXT affinity, so the canonical
@@ -672,12 +672,12 @@ module Saci
           end
           adapter == :postgres ? "NUMERIC(#{p},#{s})" : "DECIMAL(#{p},#{s})"
         end
-      when :date     then adapter == :sqlite ? "TEXT" : "DATE"
-      # crystal-mysql cannot decode the native JSON column type
-      # (MYSQL_TYPE_JSON), so JSON is stored as TEXT on MySQL (the JSON
-      # content itself is unchanged — String-backed round-trip).
-      when :json     then adapter == :postgres ? "JSONB" : "TEXT"
-      when :boolean  then adapter == :sqlite ? "INTEGER" : "BOOLEAN"
+      when :date then adapter == :sqlite ? "TEXT" : "DATE"
+        # crystal-mysql cannot decode the native JSON column type
+        # (MYSQL_TYPE_JSON), so JSON is stored as TEXT on MySQL (the JSON
+        # content itself is unchanged — String-backed round-trip).
+      when :json    then adapter == :postgres ? "JSONB" : "TEXT"
+      when :boolean then adapter == :sqlite ? "INTEGER" : "BOOLEAN"
       when :datetime
         if p = precision
           unless 0 <= p <= 6
@@ -707,11 +707,11 @@ module Saci
         else
           "TEXT"
         end
-      # PostgreSQL stores string arrays natively (`TEXT[]`, bound as a PG
-      # array); elsewhere they are JSON-encoded text (like `:json`).
+        # PostgreSQL stores string arrays natively (`TEXT[]`, bound as a PG
+        # array); elsewhere they are JSON-encoded text (like `:json`).
       when :string_array then adapter == :postgres ? "TEXT[]" : "TEXT"
-      when :serial   then adapter == :postgres ? "BIGSERIAL" : (adapter == :mysql ? "BIGINT" : "INTEGER")
-      else                raise ArgumentError.new("Unknown column type #{logical}")
+      when :serial       then adapter == :postgres ? "BIGSERIAL" : (adapter == :mysql ? "BIGINT" : "INTEGER")
+      else                    raise ArgumentError.new("Unknown column type #{logical}")
       end
     end
 
@@ -834,10 +834,10 @@ module Saci
       when "Int32"
         adapter == :sqlite ? rs.read(Int64?) : rs.read(Int32?)
       when "Float64" then rs.read(Float64?)
-      # Exact decimal. SQLite stores canonical text (`TEXT_DECIMAL`);
-      # crystal-pg decodes NUMERIC as `PG::Numeric`, whose `#to_s` is exact
-      # (no Float64 round-trip); crystal-mysql decodes DECIMAL as Float64
-      # (driver limitation — see the G297 notes), so convert through text.
+        # Exact decimal. SQLite stores canonical text (`TEXT_DECIMAL`);
+        # crystal-pg decodes NUMERIC as `PG::Numeric`, whose `#to_s` is exact
+        # (no Float64 round-trip); crystal-mysql decodes DECIMAL as Float64
+        # (driver limitation — see the G297 notes), so convert through text.
       when "Decimal"
         case v = rs.read
         when Nil        then nil
@@ -859,10 +859,10 @@ module Saci
         else
           rs.read(String?)
         end
-      when "Bytes"   then rs.read(Bytes?)
-      # `:string_array` (`column tags : Array(String)`): PostgreSQL
-      # decodes `TEXT[]` to a native array; SQLite/MySQL read back the
-      # JSON-encoded text `to_db` wrote.
+      when "Bytes" then rs.read(Bytes?)
+        # `:string_array` (`column tags : Array(String)`): PostgreSQL
+        # decodes `TEXT[]` to a native array; SQLite/MySQL read back the
+        # JSON-encoded text `to_db` wrote.
       when "Array(String)"
         case v = rs.read
         when Nil           then nil
@@ -872,7 +872,7 @@ module Saci
         when Bytes         then parse_string_array?(String.new(v))
         else                    nil
         end
-      else                rs.read(String?)
+      else rs.read(String?)
       end
     end
   end

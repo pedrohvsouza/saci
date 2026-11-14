@@ -757,8 +757,8 @@ describe "params upgrades" do
 
   it "parses multipart fields and files" do
     body = "--TESTBOUND\r\nContent-Disposition: form-data; name=\"title\"\r\n\r\nHello\r\n" +
-      "--TESTBOUND\r\nContent-Disposition: form-data; name=\"avatar\"; filename=\"a.png\"\r\nContent-Type: image/png\r\n\r\nPNGDATA\r\n" +
-      "--TESTBOUND--\r\n"
+           "--TESTBOUND\r\nContent-Disposition: form-data; name=\"avatar\"; filename=\"a.png\"\r\nContent-Type: image/png\r\n\r\nPNGDATA\r\n" +
+           "--TESTBOUND--\r\n"
     headers = HTTP::Headers{"Content-Type" => "multipart/form-data; boundary=TESTBOUND"}
     req = HTTP::Request.new("POST", "/upload", headers, body)
     params = Saci::Params.build(req, {} of String => String)
@@ -773,8 +773,8 @@ describe "params upgrades" do
 
   it "keeps the last file when a field repeats (pinned gap)" do
     body = "--B\r\nContent-Disposition: form-data; name=\"pic\"; filename=\"one.png\"\r\nContent-Type: image/png\r\n\r\nONE\r\n" +
-      "--B\r\nContent-Disposition: form-data; name=\"pic\"; filename=\"two.png\"\r\nContent-Type: image/png\r\n\r\nTWO\r\n" +
-      "--B--\r\n"
+           "--B\r\nContent-Disposition: form-data; name=\"pic\"; filename=\"two.png\"\r\nContent-Type: image/png\r\n\r\nTWO\r\n" +
+           "--B--\r\n"
     headers = HTTP::Headers{"Content-Type" => "multipart/form-data; boundary=B"}
     req = HTTP::Request.new("POST", "/upload", headers, body)
     params = Saci::Params.build(req, {} of String => String)

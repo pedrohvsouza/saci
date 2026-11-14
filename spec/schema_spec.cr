@@ -13,10 +13,10 @@ require "../src/saci/cli/schema_check_command"
 require "../src/saci/cli"
 
 {% if env("PG_URL") %}
-require "pg"
+  require "pg"
 {% end %}
 {% if env("MYSQL_URL") %}
-require "mysql"
+  require "mysql"
 {% end %}
 
 # SQLite round-trip migrations (raw DB handles, never registered — the
@@ -298,130 +298,130 @@ def schema_tables_equal(a : Array(Saci::Record::Schema::TableInfo), b : Array(Sa
 end
 
 {% if env("PG_URL") %}
-describe "Saci::Record::Schema (live PostgreSQL)" do
-  it "round-trips every column type, defaults and indexes" do
-    url = ENV["PG_URL"]?
-    next if url.nil?
-    db : DB::Database? = nil
-    begin
-      db = Saci::Record.establish_connection("schema_spec_pg", url)
-    rescue
-      next
-    end
-    db = db.as(DB::Database)
-    begin
-      # Cleanup-first: a previous run's `ensure` drops tables but keeps
-      # its schema_migrations row, which would make `migrate` skip DDL.
+  describe "Saci::Record::Schema (live PostgreSQL)" do
+    it "round-trips every column type, defaults and indexes" do
+      url = ENV["PG_URL"]?
+      next if url.nil?
+      db : DB::Database? = nil
       begin
-        Saci::Record.exec_compat(db, "DELETE FROM \"schema_migrations\" WHERE \"name\" = ?", ["SchemaPgCreateThings"] of Saci::Record::Value)
+        db = Saci::Record.establish_connection("schema_spec_pg", url)
       rescue
+        next
       end
-      db.exec("DROP TABLE IF EXISTS \"schema_pg_things\"")
-      Saci::Record::Migrator.migrate(db, [SchemaPgCreateThings] of Saci::Record::Migration.class)
-      tables = Saci::Record::Schema.introspect(db)
-      things = tables.find! { |t| t.name == "schema_pg_things" }
-      things.timestamps.should be_true
-      schema_col(tables, "schema_pg_things", "id").logical_type.should eq(:serial)
-      schema_col(tables, "schema_pg_things", "id").primary_key.should be_true
-      schema_col(tables, "schema_pg_things", "title").logical_type.should eq(:string)
-      schema_col(tables, "schema_pg_things", "title").default_value.should eq("hi")
-      schema_col(tables, "schema_pg_things", "body").logical_type.should eq(:text)
-      schema_col(tables, "schema_pg_things", "count").logical_type.should eq(:integer)
-      schema_col(tables, "schema_pg_things", "count").default_value.should eq(3_i64)
-      schema_col(tables, "schema_pg_things", "big").logical_type.should eq(:bigint)
-      schema_col(tables, "schema_pg_things", "score").logical_type.should eq(:float)
-      schema_col(tables, "schema_pg_things", "score").default_value.should eq(1.5)
-      schema_col(tables, "schema_pg_things", "amount").logical_type.should eq(:decimal)
-      schema_col(tables, "schema_pg_things", "amount").default_value.should eq(Saci::Record::Decimal.new("2.5"))
-      schema_col(tables, "schema_pg_things", "day").logical_type.should eq(:date)
-      schema_col(tables, "schema_pg_things", "meta").logical_type.should eq(:json)
-      schema_col(tables, "schema_pg_things", "flag").logical_type.should eq(:boolean)
-      schema_col(tables, "schema_pg_things", "flag").default_value.should eq(true)
-      schema_col(tables, "schema_pg_things", "at").logical_type.should eq(:datetime)
-      things.indexes.map(&.name).sort.should eq(["index_schema_pg_things_on_flag_and_count", "index_schema_pg_things_on_title"])
-      things.indexes.find! { |ix| ix.name == "index_schema_pg_things_on_title" }.unique.should be_true
-
-      first = Saci::Record::Schema.dump(db, url)
-      db.exec("DROP TABLE IF EXISTS \"schema_pg_things\"")
-      Saci::Record::Schema.load(db, tables)
-      schema_tables_equal(tables, Saci::Record::Schema.introspect(db))
-      Saci::Record::Schema.dump(db, url).should eq(first)
-    ensure
+      db = db.as(DB::Database)
       begin
+        # Cleanup-first: a previous run's `ensure` drops tables but keeps
+        # its schema_migrations row, which would make `migrate` skip DDL.
+        begin
+          Saci::Record.exec_compat(db, "DELETE FROM \"schema_migrations\" WHERE \"name\" = ?", ["SchemaPgCreateThings"] of Saci::Record::Value)
+        rescue
+        end
         db.exec("DROP TABLE IF EXISTS \"schema_pg_things\"")
-      rescue
+        Saci::Record::Migrator.migrate(db, [SchemaPgCreateThings] of Saci::Record::Migration.class)
+        tables = Saci::Record::Schema.introspect(db)
+        things = tables.find! { |t| t.name == "schema_pg_things" }
+        things.timestamps.should be_true
+        schema_col(tables, "schema_pg_things", "id").logical_type.should eq(:serial)
+        schema_col(tables, "schema_pg_things", "id").primary_key.should be_true
+        schema_col(tables, "schema_pg_things", "title").logical_type.should eq(:string)
+        schema_col(tables, "schema_pg_things", "title").default_value.should eq("hi")
+        schema_col(tables, "schema_pg_things", "body").logical_type.should eq(:text)
+        schema_col(tables, "schema_pg_things", "count").logical_type.should eq(:integer)
+        schema_col(tables, "schema_pg_things", "count").default_value.should eq(3_i64)
+        schema_col(tables, "schema_pg_things", "big").logical_type.should eq(:bigint)
+        schema_col(tables, "schema_pg_things", "score").logical_type.should eq(:float)
+        schema_col(tables, "schema_pg_things", "score").default_value.should eq(1.5)
+        schema_col(tables, "schema_pg_things", "amount").logical_type.should eq(:decimal)
+        schema_col(tables, "schema_pg_things", "amount").default_value.should eq(Saci::Record::Decimal.new("2.5"))
+        schema_col(tables, "schema_pg_things", "day").logical_type.should eq(:date)
+        schema_col(tables, "schema_pg_things", "meta").logical_type.should eq(:json)
+        schema_col(tables, "schema_pg_things", "flag").logical_type.should eq(:boolean)
+        schema_col(tables, "schema_pg_things", "flag").default_value.should eq(true)
+        schema_col(tables, "schema_pg_things", "at").logical_type.should eq(:datetime)
+        things.indexes.map(&.name).sort.should eq(["index_schema_pg_things_on_flag_and_count", "index_schema_pg_things_on_title"])
+        things.indexes.find! { |ix| ix.name == "index_schema_pg_things_on_title" }.unique.should be_true
+
+        first = Saci::Record::Schema.dump(db, url)
+        db.exec("DROP TABLE IF EXISTS \"schema_pg_things\"")
+        Saci::Record::Schema.load(db, tables)
+        schema_tables_equal(tables, Saci::Record::Schema.introspect(db))
+        Saci::Record::Schema.dump(db, url).should eq(first)
+      ensure
+        begin
+          db.exec("DROP TABLE IF EXISTS \"schema_pg_things\"")
+        rescue
+        end
+        db.close
+        Saci::Record.remove_connection("schema_spec_pg")
       end
-      db.close
-      Saci::Record.remove_connection("schema_spec_pg")
     end
   end
-end
 {% else %}
-pending "round-trips on live PostgreSQL (set PG_URL at compile time, e.g. postgres://saci:saci@127.0.0.1:55432/saci_test)" do
-  raise "needs PG_URL"
-end
+  pending "round-trips on live PostgreSQL (set PG_URL at compile time, e.g. postgres://saci:saci@127.0.0.1:55432/saci_test)" do
+    raise "needs PG_URL"
+  end
 {% end %}
 
 {% if env("MYSQL_URL") %}
-describe "Saci::Record::Schema (live MySQL)" do
-  it "round-trips every column type, defaults and indexes" do
-    url = ENV["MYSQL_URL"]?
-    next if url.nil?
-    db : DB::Database? = nil
-    begin
-      db = Saci::Record.establish_connection("schema_spec_mysql", url)
-    rescue
-      next
-    end
-    db = db.as(DB::Database)
-    begin
-      # Cleanup-first: a previous run's `ensure` drops tables but keeps
-      # its schema_migrations row, which would make `migrate` skip DDL.
+  describe "Saci::Record::Schema (live MySQL)" do
+    it "round-trips every column type, defaults and indexes" do
+      url = ENV["MYSQL_URL"]?
+      next if url.nil?
+      db : DB::Database? = nil
       begin
-        Saci::Record.exec_compat(db, "DELETE FROM `schema_migrations` WHERE `name` = ?", ["SchemaMyCreateThings"] of Saci::Record::Value)
+        db = Saci::Record.establish_connection("schema_spec_mysql", url)
       rescue
+        next
       end
-      db.exec("DROP TABLE IF EXISTS `schema_my_things`")
-      Saci::Record::Migrator.migrate(db, [SchemaMyCreateThings] of Saci::Record::Migration.class)
-      tables = Saci::Record::Schema.introspect(db)
-      things = tables.find! { |t| t.name == "schema_my_things" }
-      things.timestamps.should be_true
-      schema_col(tables, "schema_my_things", "id").logical_type.should eq(:serial)
-      schema_col(tables, "schema_my_things", "id").primary_key.should be_true
-      schema_col(tables, "schema_my_things", "title").logical_type.should eq(:string)
-      schema_col(tables, "schema_my_things", "title").default_value.should eq("hi")
-      schema_col(tables, "schema_my_things", "body").logical_type.should eq(:text)
-      schema_col(tables, "schema_my_things", "count").logical_type.should eq(:integer)
-      schema_col(tables, "schema_my_things", "count").default_value.should eq(3_i64)
-      schema_col(tables, "schema_my_things", "big").logical_type.should eq(:bigint)
-      schema_col(tables, "schema_my_things", "score").logical_type.should eq(:float)
-      schema_col(tables, "schema_my_things", "amount").logical_type.should eq(:decimal)
-      schema_col(tables, "schema_my_things", "amount").default_value.should eq(Saci::Record::Decimal.new("2.5"))
-      schema_col(tables, "schema_my_things", "day").logical_type.should eq(:date)
-      schema_col(tables, "schema_my_things", "meta").logical_type.should eq(:text)
-      schema_col(tables, "schema_my_things", "flag").logical_type.should eq(:boolean)
-      schema_col(tables, "schema_my_things", "flag").default_value.should eq(true)
-      schema_col(tables, "schema_my_things", "at").logical_type.should eq(:datetime)
-      things.indexes.map(&.name).sort.should eq(["index_schema_my_things_on_flag_and_count", "index_schema_my_things_on_title"])
-      things.indexes.find! { |ix| ix.name == "index_schema_my_things_on_title" }.unique.should be_true
-
-      first = Saci::Record::Schema.dump(db, url)
-      db.exec("DROP TABLE IF EXISTS `schema_my_things`")
-      Saci::Record::Schema.load(db, tables)
-      schema_tables_equal(tables, Saci::Record::Schema.introspect(db))
-      Saci::Record::Schema.dump(db, url).should eq(first)
-    ensure
+      db = db.as(DB::Database)
       begin
+        # Cleanup-first: a previous run's `ensure` drops tables but keeps
+        # its schema_migrations row, which would make `migrate` skip DDL.
+        begin
+          Saci::Record.exec_compat(db, "DELETE FROM `schema_migrations` WHERE `name` = ?", ["SchemaMyCreateThings"] of Saci::Record::Value)
+        rescue
+        end
         db.exec("DROP TABLE IF EXISTS `schema_my_things`")
-      rescue
+        Saci::Record::Migrator.migrate(db, [SchemaMyCreateThings] of Saci::Record::Migration.class)
+        tables = Saci::Record::Schema.introspect(db)
+        things = tables.find! { |t| t.name == "schema_my_things" }
+        things.timestamps.should be_true
+        schema_col(tables, "schema_my_things", "id").logical_type.should eq(:serial)
+        schema_col(tables, "schema_my_things", "id").primary_key.should be_true
+        schema_col(tables, "schema_my_things", "title").logical_type.should eq(:string)
+        schema_col(tables, "schema_my_things", "title").default_value.should eq("hi")
+        schema_col(tables, "schema_my_things", "body").logical_type.should eq(:text)
+        schema_col(tables, "schema_my_things", "count").logical_type.should eq(:integer)
+        schema_col(tables, "schema_my_things", "count").default_value.should eq(3_i64)
+        schema_col(tables, "schema_my_things", "big").logical_type.should eq(:bigint)
+        schema_col(tables, "schema_my_things", "score").logical_type.should eq(:float)
+        schema_col(tables, "schema_my_things", "amount").logical_type.should eq(:decimal)
+        schema_col(tables, "schema_my_things", "amount").default_value.should eq(Saci::Record::Decimal.new("2.5"))
+        schema_col(tables, "schema_my_things", "day").logical_type.should eq(:date)
+        schema_col(tables, "schema_my_things", "meta").logical_type.should eq(:text)
+        schema_col(tables, "schema_my_things", "flag").logical_type.should eq(:boolean)
+        schema_col(tables, "schema_my_things", "flag").default_value.should eq(true)
+        schema_col(tables, "schema_my_things", "at").logical_type.should eq(:datetime)
+        things.indexes.map(&.name).sort.should eq(["index_schema_my_things_on_flag_and_count", "index_schema_my_things_on_title"])
+        things.indexes.find! { |ix| ix.name == "index_schema_my_things_on_title" }.unique.should be_true
+
+        first = Saci::Record::Schema.dump(db, url)
+        db.exec("DROP TABLE IF EXISTS `schema_my_things`")
+        Saci::Record::Schema.load(db, tables)
+        schema_tables_equal(tables, Saci::Record::Schema.introspect(db))
+        Saci::Record::Schema.dump(db, url).should eq(first)
+      ensure
+        begin
+          db.exec("DROP TABLE IF EXISTS `schema_my_things`")
+        rescue
+        end
+        db.close
+        Saci::Record.remove_connection("schema_spec_mysql")
       end
-      db.close
-      Saci::Record.remove_connection("schema_spec_mysql")
     end
   end
-end
 {% else %}
-pending "round-trips on live MySQL (set MYSQL_URL at compile time, e.g. mysql://saci:saci@127.0.0.1:53306/saci_test)" do
-  raise "needs MYSQL_URL"
-end
+  pending "round-trips on live MySQL (set MYSQL_URL at compile time, e.g. mysql://saci:saci@127.0.0.1:53306/saci_test)" do
+    raise "needs MYSQL_URL"
+  end
 {% end %}
