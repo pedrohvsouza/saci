@@ -39,6 +39,11 @@ class ViewHelperDemoController < Saci::Controller
     render_template("spec_helpers/slots", layout: "spec_helpers")
   end
 
+  def block_slots
+    @slot_label = "x<y"
+    render_template("spec_helpers/block_slots", layout: "spec_helpers")
+  end
+
   def slot_values
     content_for(:side, "A")
     content_for(:side) { "<b>B</b>" }
@@ -118,6 +123,7 @@ def view_helper_router : Saci::Router
   Saci::Router.new.draw do |r|
     r.get "/tags", ViewHelperDemoController, :tags
     r.get "/slots", ViewHelperDemoController, :slots
+    r.get "/block-slots", ViewHelperDemoController, :block_slots
     r.get "/slot-values", ViewHelperDemoController, :slot_values
     r.get "/forms", ViewHelperDemoController, :forms
     r.get "/form-tags", ViewHelperDemoController, :form_tags
@@ -281,6 +287,19 @@ describe "content_for and capture" do
       body.should contain(%(<head><meta name="slot" content="yes"></head>))
       body.should contain(%(<p><meta name="slot" content="yes"></p>))
       body.should contain("slot? true")
+    end
+  end
+
+  it "captures ECR do...end blocks instead of writing them in place" do
+    Saci::TestSession.serve(view_helper_router) do |app|
+      body = app.get("/block-slots").body
+      head = body[body.index!("<head>")...body.index!("</head>")]
+      head.should contain(%(<style>.orb { color: red; }</style>))
+      head.should contain(%(<meta name="second" content="x&lt;y">))
+      main = body[body.index!("<main>")...body.index!("</main>")]
+      main.should_not contain("<style>")
+      main.scan(%(<div class="card">)).size.should eq(2)
+      body.scan("<style>").size.should eq(1)
     end
   end
 

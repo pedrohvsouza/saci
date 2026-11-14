@@ -1,4 +1,5 @@
 require "ecr"
+require "./output_buffer"
 require "./assets"
 require "./asset_tags"
 require "./view_helpers"
@@ -470,16 +471,18 @@ module Saci
         {% template = name.id.stringify %}
       {% end %}
       {% if layout.is_a?(StringLiteral) %}
-        __saci_view_io = IO::Memory.new
-        ECR.embed("{{views_root + "/" + template + ".ecr"}}", "__saci_view_io")
-        @__content = __saci_view_io.to_s
-        __saci_layout_io = IO::Memory.new
-        ECR.embed("{{views_root + "/layouts/" + layout.id.stringify + ".ecr"}}", "__saci_layout_io")
-        render html: __saci_layout_io.to_s, status: {{status}}
+        @__content = __saci_buffered do |__saci_view_io|
+          ECR.embed("{{views_root + "/" + template + ".ecr"}}", "__saci_view_io")
+        end
+        __saci_layout_html = __saci_buffered do |__saci_layout_io|
+          ECR.embed("{{views_root + "/layouts/" + layout.id.stringify + ".ecr"}}", "__saci_layout_io")
+        end
+        render html: __saci_layout_html, status: {{status}}
       {% else %}
-        __saci_view_io = IO::Memory.new
-        ECR.embed("{{views_root + "/" + template + ".ecr"}}", "__saci_view_io")
-        render html: __saci_view_io.to_s, status: {{status}}
+        __saci_view_html = __saci_buffered do |__saci_view_io|
+          ECR.embed("{{views_root + "/" + template + ".ecr"}}", "__saci_view_io")
+        end
+        render html: __saci_view_html, status: {{status}}
       {% end %}
     end
 
@@ -491,7 +494,7 @@ module Saci
     # overrides it):
     #   render_partial("comments/comment", collection: comments)
     #   render_partial("shared/row", collection: rows, as: "row")
-    # Buffers are block-scoped (`String.build`) so a partial that renders
+    # Buffers are block-scoped (`__saci_buffered`) so a partial that renders
     # another partial can never rebind/clobber the caller's buffer.
     macro render_partial(path, **locals)
       {% views_root = system("pwd").strip + "/src/views" %}
@@ -504,7 +507,7 @@ module Saci
         String.build do |__saci_collection_out|
           ({{locals["collection".id]}}).each do |__saci_item|
             {{local_name.id}} = __saci_item
-            __saci_collection_out << String.build do |__saci_collection_io|
+            __saci_collection_out << __saci_buffered do |__saci_collection_io|
               ECR.embed("{{views_root + "/" + path.id.stringify + ".ecr"}}", "__saci_collection_io")
             end
           end
@@ -515,7 +518,7 @@ module Saci
             {{k.id}} = {{v}}
           {% end %}
         {% end %}
-        String.build do |__saci_partial_io|
+        __saci_buffered do |__saci_partial_io|
           ECR.embed("{{views_root + "/" + path.id.stringify + ".ecr"}}", "__saci_partial_io")
         end
       {% end %}

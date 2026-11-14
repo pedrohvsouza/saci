@@ -114,14 +114,14 @@ module Saci
             {% template = tmpl.id.stringify %}
           {% end %}
           {% if layout.is_a?(StringLiteral) %}
-            @__content = String.build do |__saci_rts_view_io|
+            @__content = __saci_buffered do |__saci_rts_view_io|
               ECR.embed("{{views_root + "/" + template + ".ecr"}}", "__saci_rts_view_io")
             end
-            String.build do |__saci_rts_layout_io|
+            __saci_buffered do |__saci_rts_layout_io|
               ECR.embed("{{views_root + "/layouts/" + layout.id.stringify + ".ecr"}}", "__saci_rts_layout_io")
             end
           {% else %}
-            String.build do |__saci_rts_view_io|
+            __saci_buffered do |__saci_rts_view_io|
               ECR.embed("{{views_root + "/" + template + ".ecr"}}", "__saci_rts_view_io")
             end
           {% end %}

@@ -741,8 +741,15 @@ module Saci
   #
   # ```
   # <% content_for(:head) { "<meta name=\"x\" content=\"y\">" } %>
+  # <% content_for(:head) do %>
+  #   <link rel="stylesheet" href="/page.css">
+  # <% end %>
   # <%= content_for(:head) %>  <!-- in layouts/application.ecr -->
   # ```
+  #
+  # Both block forms work in ECR: markup written inside a `do ... end`
+  # block is captured (see `Views::OutputBuffer`) instead of leaking into
+  # the template at the call site.
   #
   # ECR has no `yield(:name)` (templates compile into controller methods),
   # so `yield(:head)` is spelled `content_for(:head)`; `yield_content(:head)`
@@ -755,8 +762,8 @@ module Saci
       ""
     end
 
-    def content_for(name : String | Symbol, &block : -> String) : String
-      content_for(name, block.call)
+    def content_for(name : String | Symbol, & : -> _) : String
+      content_for(name, __saci_capture { yield })
     end
 
     def content_for(name : String | Symbol) : String
@@ -774,10 +781,10 @@ module Saci
       content_for(name)
     end
 
-    # Captures a block's rendered String (ECR partials render to Strings
-    # already; this keeps Rails-style call sites working).
-    def capture(&block : -> String) : String
-      block.call
+    # The markup a block renders: ECR written inside
+    # `<% html = capture do %>…<% end %>`, or the block's String value.
+    def capture(& : -> _) : String
+      __saci_capture { yield }
     end
 
     def safe_join(parts : Array, separator : String = "") : String

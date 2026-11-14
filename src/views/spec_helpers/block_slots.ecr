@@ -1,0 +1,4 @@
+<% content_for(:head) do %><style>.orb { color: red; }</style><% end %>
+<% content_for(:head) do %><meta name="second" content="<%= h(@slot_label) %>"><% end %>
+<% card = capture do %><div class="card"><%= render_partial("spec_parts/greet", name: "Ada") %></div><% end %>
+<main><%= card %><%= card %></main>
