@@ -117,11 +117,17 @@ type behind `Saci::`.
 
 - **Models**
   - Declare columns in the model: `column name : Type`, and `timestamps`.
-  - Callbacks: `before_validation`, `before_save`, `after_save`,
-    `after_create`, `after_commit` and `after_destroy`. There is no
-    `before_create`, `before_update`, `before_destroy` or `around_*`.
-  - There is no `scope` macro or `default_scope`. Define class methods
-    that return a `Query`.
+  - Callbacks: `before_validation`, `before_/after_save`,
+    `before_/after_create`, `before_/after_update`,
+    `before_/after_destroy`, `around_save/create/update/destroy` and
+    `after_commit` (`on: :create | :update | :destroy`). Halt a save or
+    destroy with `throw_abort` instead of `throw :abort`. There is no
+    `after_validation`, `after_initialize`, `after_find`, `prepend:` or
+    `if:`/`unless:` on callbacks.
+  - `scope :published, -> { where(published: true) }` works and chains
+    (`Post.published.recent`, `author.posts.published`). Lambda arguments
+    need types: `scope :by, ->(id : Int64) { where(author_id: id) }`.
+    There is no `default_scope`.
   - Use `model_enum` instead of `enum` (`enum` is a reserved word in
     Crystal).
   - `t.references` does not add a foreign key unless you pass

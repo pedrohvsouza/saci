@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- **More model callbacks.** `before_create`, `before_update`,
+  `after_update`, `before_destroy` and `around_save`, `around_create`,
+  `around_update`, `around_destroy` join the existing ones and run in
+  Rails order. `around_*` takes method names that `yield` or a
+  `|record, proceed|` block. `after_commit` accepts `on: :destroy`.
+- **Halting callbacks.** `throw_abort` (Rails `throw :abort`) in
+  `before_validation`, any `before_*` callback, or an `around_*` one
+  before it yields stops the save or destroy without writing: `save` and
+  `destroy` return false, `save!` raises `RecordNotSaved` and `destroy!`
+  raises `RecordNotDestroyed`. An `around_*` callback that never yields
+  halts the same way, and `halted?` tells a halt from a validation
+  failure. `before_destroy` runs before `dependent:` cleanup, so a halt
+  keeps the children.
+- **`scope` macro.** `scope :published, -> { where(published: true) }`
+  defines `Post.published` and a chainable `Query#published`, so
+  `Post.where(...).published`, `author.posts.published` and scopes
+  calling other scopes work. Arguments need types
+  (`->(id : Int64) { ... }`); a body that returns nil leaves the query
+  unchanged; a name that would shadow a `Query` method is a compile
+  error.
+- **Fixed: `after_commit on: :update` callbacks also ran after
+  `destroy`.** They now run only after updates; use `on: :destroy` for
+  destroys.
+- Timestamps are now set after `before_create`/`before_update`, as in
+  Rails.
 - **Fixed: `saci generate authentication` wrote views that did not
   compile.** ECR has no `<%= helper do %>` tag. `form_with` now takes an
   ECR block written with `<% %>` and puts the form into the page:

@@ -31,9 +31,8 @@ These are known gaps in the current release:
 - **Deploy**: the generated Dockerfile has not been verified by a
   container build in CI. There is no bundled HTTP/2 proxy (Thruster is
   only documented).
-- **ORM**: there are no `before_create`/`before_update`/`before_destroy`
-  or `around_*` callbacks, no `scope` macro, no single-table
-  inheritance, and no attribute encryption (see
+- **ORM**: there is no `default_scope`, no single-table inheritance,
+  and no attribute encryption (see
   [COMING_FROM_RAILS.md](COMING_FROM_RAILS.md)).
 - **Testing**: there are no browser-driven system tests.
 

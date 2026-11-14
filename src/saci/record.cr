@@ -96,6 +96,16 @@ module Saci
     class RecordNotSaved < Exception
     end
 
+    # Raised by `Base#throw_abort` (Rails `throw :abort`) to halt a save or
+    # destroy from a `before_*` or `around_*` callback. `save`/`destroy`
+    # rescue it and return false; app code never sees it unless it is
+    # raised after the database write (from an `after_*` callback).
+    class CallbackAbort < Exception
+      def initialize
+        super("throw_abort was called outside a before_* or around_* callback (the record was already written)")
+      end
+    end
+
     # Raised by `destroy!` when `destroy` could not remove the record
     # (new record, already destroyed, or a `before_destroy` abort).
     class RecordNotDestroyed < Exception

@@ -6,6 +6,12 @@ module Saci
     class SoleRecordExceeded < Exception
     end
 
+    # Marks the `Query` methods that the `scope` macro generates, so a
+    # second model declaring a scope with the same name may redefine them
+    # while a scope that would shadow a real `Query` method is rejected.
+    annotation ScopeForwarder
+    end
+
     # Chainable, Rails-relation-like query builder.
     #
     # ```
@@ -19,6 +25,12 @@ module Saci
       # trailing parameters so existing positional `Query(T).new` calls keep
       # working. Every chain method goes through `spawn`.
       def initialize(@klass : T.class, @conditions : Array(String) = [] of String, @params : Array(Value) = [] of Value, @order : Array(String) = [] of String, @limit : Int32? = nil, @offset : Int32? = nil, @select_cols : Array(String)? = nil, @distinct_flag : Bool = false, @joins : Array(String) = [] of String, @group_cols : Array(String) = [] of String, @includes : Array(String) = [] of String, @nested_includes : Hash(String, Array(String)) = {} of String => Array(String), @records : Array(T)? = nil, @none_flag : Bool = false, @having : Array(String) = [] of String, @from_clause : String? = nil, @annotations : Array(String) = [] of String, @readonly_flag : Bool = false, @lock_clause : String? = nil, @references : Array(String) = [] of String, @having_params : Array(Value) = [] of Value)
+      end
+
+      # Evaluates a `scope` body with this query as the default receiver
+      # (`where(...)` inside the lambda means `self.where(...)`).
+      def __saci_within_scope(&)
+        with self yield
       end
 
       # Owner wiring for association scopes (`author.posts.build(...)`,

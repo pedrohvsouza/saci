@@ -164,6 +164,42 @@ module Saci
           super
         end
 
+        def __saci_before_create : Nil
+          super
+        end
+
+        def __saci_before_update : Nil
+          super
+        end
+
+        def __saci_after_update : Nil
+          super
+        end
+
+        def __saci_before_destroy : Nil
+          super
+        end
+
+        def __saci_after_destroy_commit : Nil
+          super
+        end
+
+        def __saci_around_save(&block : -> Nil) : Nil
+          super(&block)
+        end
+
+        def __saci_around_create(&block : -> Nil) : Nil
+          super(&block)
+        end
+
+        def __saci_around_update(&block : -> Nil) : Nil
+          super(&block)
+        end
+
+        def __saci_around_destroy(&block : -> Nil) : Nil
+          super(&block)
+        end
+
         def __saci_run_dependents : Nil
           super
         end
@@ -565,6 +601,55 @@ module Saci
       def __saci_after_destroy : Nil
       end
 
+      def __saci_before_create : Nil
+      end
+
+      def __saci_before_update : Nil
+      end
+
+      def __saci_after_update : Nil
+      end
+
+      def __saci_before_destroy : Nil
+      end
+
+      def __saci_after_destroy_commit : Nil
+      end
+
+      # `around_*` chains: each link wraps the next and must call the block
+      # it is given (the write itself sits innermost).
+      def __saci_around_save(&block : -> Nil) : Nil
+        block.call
+      end
+
+      def __saci_around_create(&block : -> Nil) : Nil
+        block.call
+      end
+
+      def __saci_around_update(&block : -> Nil) : Nil
+        block.call
+      end
+
+      def __saci_around_destroy(&block : -> Nil) : Nil
+        block.call
+      end
+
+      # Set when the last `save`/`destroy` was halted by a callback, so
+      # `save!` raises `RecordNotSaved` instead of `RecordInvalid`.
+      @__saci_halted : Bool = false
+
+      # Rails `throw :abort`: halts the current save or destroy from a
+      # `before_*`/`around_*` callback (or `before_validation`). `save` and
+      # `destroy` then return false, `save!` raises `RecordNotSaved` and
+      # `destroy!` raises `RecordNotDestroyed`. Nothing is written.
+      #
+      # ```
+      # before_destroy { |post| post.throw_abort if post.locked? }
+      # ```
+      def throw_abort : NoReturn
+        raise Saci::Record::CallbackAbort.new
+      end
+
       # `dependent:` association cleanup (overridden per association).
       def __saci_run_dependents : Nil
       end
@@ -742,8 +827,17 @@ module Saci
       end
 
       def save! : self
-        raise RecordInvalid.new(errors) unless save
+        unless save
+          raise RecordNotSaved.new("Failed to save the record: a callback halted the save") if @__saci_halted
+          raise RecordInvalid.new(errors)
+        end
         self
+      end
+
+      # True when the last `save` or `destroy` was halted by a callback
+      # (`throw_abort`, or an `around_*` callback that did not yield).
+      def halted? : Bool
+        @__saci_halted
       end
 
       # Persists the record without running validations (callbacks and
@@ -755,14 +849,60 @@ module Saci
       # share one transaction. `belongs_to` children are written before the
       # owner, `has_many`/`has_one` children after it (they need the owner's
       # generated primary key).
+      #
+      # Callback order (Rails): `before_save`, `around_save`,
+      # `before_create`/`before_update`, `around_create`/`around_update`,
+      # the write, `after_create`/`after_update`, the rest of `around_save`,
+      # `after_save`, then `after_commit`. `throw_abort` in a `before_*` or
+      # `around_*` callback (before it yields), or an `around_*` callback
+      # that never yields, halts the save: nothing is written and the
+      # method returns false.
       private def __saci_persist_record : Bool
-        __saci_before_save
+        @__saci_halted = false
+        was_new = new_record?
+        written = false
+        begin
+          __saci_before_save
+          __saci_around_save do
+            if was_new
+              __saci_before_create
+              __saci_around_create do
+                __saci_write_record(was_new)
+                written = true
+              end
+              __saci_after_create if written
+            else
+              __saci_before_update
+              __saci_around_update do
+                __saci_write_record(was_new)
+                written = true
+              end
+              __saci_after_update if written
+            end
+          end
+        rescue ex : CallbackAbort
+          raise ex if written
+          @__saci_halted = true
+          return false
+        end
+        unless written
+          @__saci_halted = true
+          return false
+        end
+        __saci_after_save
+        __saci_fire_after_commit(was_new ? :create : :update)
+        true
+      end
+
+      # The write itself: timestamps, the INSERT/UPDATE and autosaved
+      # associations, then the dirty-state commit (so `after_*` callbacks
+      # can read `saved_changes`).
+      private def __saci_write_record(was_new : Bool) : Nil
         touch_timestamps
         # Baseline for `previous_changes`: dirty changes captured after
-        # before_save/timestamps plus values just before the SQL write.
+        # before_* callbacks/timestamps plus values just before the SQL write.
         pre_values = __saci_snapshot_values
         pre_changes = __saci_changes_snapshot
-        was_new = new_record?
         write = -> do
           __saci_assoc_write_before
           was_new ? insert_record : update_record
@@ -785,10 +925,6 @@ module Saci
         # Commit dirty state before after_* callbacks so they can read
         # `previous_changes` / `saved_changes` (ActiveModel semantics).
         __saci_dirty_commit!(pre_values, pre_changes, was_new)
-        __saci_after_create if was_new
-        __saci_after_save
-        __saci_fire_after_commit(was_new)
-        true
       end
 
       def update(attrs : NamedTuple) : Bool
@@ -980,13 +1116,31 @@ module Saci
         pk = self.class.__saci_primary_key
         pk_val = __saci_get_attr(pk)
         return false if pk_val.nil?
-        __saci_run_dependents
-        conn = self.class.connection
-        ad = Record.adapter_of(conn)
-        Record.exec_compat(conn, "DELETE FROM #{Record.quote(self.class.table_name, ad)} WHERE #{Record.quote(pk, ad)} = ?", [Record.to_db(pk_val, ad)] of Value)
-        @destroyed = true
+        # `before_destroy` runs before `dependent:` cleanup, so a
+        # `throw_abort` there leaves the children in place.
+        @__saci_halted = false
+        deleted = false
+        begin
+          __saci_before_destroy
+          __saci_around_destroy do
+            __saci_run_dependents
+            conn = self.class.connection
+            ad = Record.adapter_of(conn)
+            Record.exec_compat(conn, "DELETE FROM #{Record.quote(self.class.table_name, ad)} WHERE #{Record.quote(pk, ad)} = ?", [Record.to_db(pk_val, ad)] of Value)
+            @destroyed = true
+            deleted = true
+          end
+        rescue ex : CallbackAbort
+          raise ex if deleted
+          @__saci_halted = true
+          return false
+        end
+        unless deleted
+          @__saci_halted = true
+          return false
+        end
         __saci_after_destroy
-        __saci_fire_after_commit(false)
+        __saci_fire_after_commit(:destroy)
         true
       end
 
@@ -1005,11 +1159,18 @@ module Saci
       def valid?(context : Symbol? = nil) : Bool
         errors.clear
         @__saci_validation_context = context || (new_record? ? :create : :update)
-        __saci_before_validation
-        if __saci_validation_context == :create
-          __saci_before_validation_on_create
-        else
-          __saci_before_validation_on_update
+        @__saci_halted = false
+        begin
+          __saci_before_validation
+          if __saci_validation_context == :create
+            __saci_before_validation_on_create
+          else
+            __saci_before_validation_on_update
+          end
+        rescue CallbackAbort
+          # `throw_abort` in before_validation: invalid, no validators run.
+          @__saci_halted = true
+          return false
         end
         run_validations(errors)
         __saci_assoc_validate(errors)
@@ -1019,26 +1180,26 @@ module Saci
       # Fires `after_commit` chains immediately, or defers them to the
       # outermost transaction's commit (discarded on rollback) — Rails
       # `after_commit` semantics.
-      private def __saci_fire_after_commit(was_new : Bool) : Nil
+      #
+      # *action* is `:create`, `:update` or `:destroy` and picks the
+      # `after_commit on:` chain that runs after the unconditional one.
+      private def __saci_fire_after_commit(action : Symbol) : Nil
         conn = self.class.connection
         if conn.is_a?(DB::Connection)
           if db = Record.tx_database_for(conn)
-            Record.defer_after_commit(db) do
-              __saci_after_commit
-              if was_new
-                __saci_after_create_commit
-              else
-                __saci_after_update_commit
-              end
-            end
+            Record.defer_after_commit(db) { __saci_run_after_commit(action) }
             return
           end
         end
+        __saci_run_after_commit(action)
+      end
+
+      private def __saci_run_after_commit(action : Symbol) : Nil
         __saci_after_commit
-        if was_new
-          __saci_after_create_commit
-        else
-          __saci_after_update_commit
+        case action
+        when :create then __saci_after_create_commit
+        when :update then __saci_after_update_commit
+        else              __saci_after_destroy_commit
         end
       end
 
@@ -1183,6 +1344,55 @@ module Saci
 
       def self.all : Query(self)
         Query(self).new(self)
+      end
+
+      # Rails `scope`: a named, chainable query.
+      #
+      # ```
+      # class Post < ApplicationRecord
+      #   scope :published, -> { where(published: true) }
+      #   scope :recent, -> { order(created_at: :desc).limit(10) }
+      #   scope :by_author, ->(id : Int64) { where(author_id: id) }
+      # end
+      #
+      # Post.published.recent
+      # Post.where(draft: false).by_author(user.id)
+      # author.posts.published
+      # ```
+      #
+      # The lambda runs with the current query as its default receiver, so
+      # scopes compose with each other and with any `Query` method.
+      # Arguments need type restrictions. A body that returns `nil`
+      # returns the query unchanged (Rails returns `all`). A scope cannot
+      # reuse the name of a `Query` method (`order`, `count`, ...).
+      macro scope(name, body)
+        {% unless body.is_a?(ProcLiteral) %}
+          {% raise "scope :#{name.id} expects a lambda: scope :#{name.id}, -> { where(...) }" %}
+        {% end %}
+        {% sname = name.id %}
+        {% for m in ::Saci::Record::Query.methods %}
+          {% if m.name == sname && !m.annotation(::Saci::Record::ScopeForwarder) %}
+            {% raise "scope :#{sname} would shadow Saci::Record::Query##{sname}; pick another name" %}
+          {% end %}
+        {% end %}
+
+        def self.{{sname}}({{body.args.splat}}) : ::Saci::Record::Query(self)
+          __saci_scope_{{sname}}(all{% for a in body.args %}, {{a.name.id}}{% end %})
+        end
+
+        def self.__saci_scope_{{sname}}(__saci_q : ::Saci::Record::Query(self){% for a in body.args %}, {{a}}{% end %}) : ::Saci::Record::Query(self)
+          __saci_r = __saci_q.__saci_within_scope do
+            {{body.body}}
+          end
+          __saci_r || __saci_q
+        end
+
+        class ::Saci::Record::Query(T)
+          @[::Saci::Record::ScopeForwarder]
+          def {{sname}}(*args, **opts) : ::Saci::Record::Query(T)
+            T.__saci_scope_{{sname}}(self, *args, **opts)
+          end
+        end
       end
 
       def self.where(**conds : Object) : Query(self)
@@ -1811,10 +2021,13 @@ module Saci
         end
       end
 
-      # Minimal Rails-compatible set: `before_validation` (with `on:`),
-      # `before_save`, `after_save`, `after_create`, `after_commit` (with
-      # `on:`) and `after_destroy`. Each accepts method names, inline
-      # lambdas (`after_create -> { ... }`) and/or a block
+      # Rails-compatible callbacks: `before_validation` (with `on:`),
+      # `before_save`/`after_save`, `before_create`/`after_create`,
+      # `before_update`/`after_update`, `before_destroy`/`after_destroy`,
+      # `after_commit` (with `on: :create | :update | :destroy`) and
+      # `around_save`/`around_create`/`around_update`/`around_destroy`.
+      # The non-around ones accept method names, inline lambdas
+      # (`after_create -> { ... }`) and/or a block
       # (`before_save { |record| ... }`, `|record|` optional):
       #
       # ```
@@ -1822,7 +2035,29 @@ module Saci
       # after_create :notify, :audit
       # after_commit :rebuild_cache, on: :create
       # before_save { |post| post.title = post.title.strip }
+      # before_destroy { |post| post.throw_abort if post.locked? }
       # ```
+      #
+      # `around_*` takes method names that `yield` (the write happens at
+      # the yield) or a `|record, proceed|` block that calls `proceed`:
+      #
+      # ```
+      # around_save :measure
+      # around_destroy { |post, proceed| Log.info { "bye" }; proceed.call }
+      #
+      # def measure(&)
+      #   started = Time.instant
+      #   yield
+      #   Log.info { "saved in #{Time.instant - started}" }
+      # end
+      # ```
+      #
+      # `throw_abort` (Rails `throw :abort`) in a `before_*` callback, or
+      # in an `around_*` one before it yields, halts the save or destroy:
+      # nothing is written and `save`/`destroy` return false (`save!`
+      # raises `RecordNotSaved`, `destroy!` `RecordNotDestroyed`). An
+      # `around_*` callback that never yields halts the same way.
+      # `before_destroy` runs before `dependent:` cleanup.
       #
       # Chains accumulate via `previous_def` (declaration order, parents
       # first). `after_commit` without `on:` fires after every save and
@@ -1933,8 +2168,10 @@ module Saci
             {% chain = "__saci_after_create_commit".id %}
           {% elsif on_s == "update" %}
             {% chain = "__saci_after_update_commit".id %}
+          {% elsif on_s == "destroy" %}
+            {% chain = "__saci_after_destroy_commit".id %}
           {% else %}
-            {% raise "after_commit: unsupported on: #{on} (expected :create or :update)" %}
+            {% raise "after_commit: unsupported on: #{on} (expected :create, :update or :destroy)" %}
           {% end %}
         {% else %}
           {% chain = "__saci_after_commit".id %}
@@ -1978,6 +2215,190 @@ module Saci
             {{block.body}}
           {% end %}
         end
+      end
+
+      macro before_create(*names, &block)
+        def __saci_before_create : Nil
+          previous_def
+          {% for n in names %}
+            {% if n.is_a?(ProcLiteral) %}
+              ({{n}}).call
+            {% else %}
+              self.{{n.id}}
+            {% end %}
+          {% end %}
+          {% if block %}
+            {% if block.args.size == 1 %}
+              {{block.args[0]}} = self
+            {% elsif block.args.size > 1 %}
+              {% raise "callback blocks take at most one argument" %}
+            {% end %}
+            {{block.body}}
+          {% end %}
+        end
+      end
+
+      macro before_update(*names, &block)
+        def __saci_before_update : Nil
+          previous_def
+          {% for n in names %}
+            {% if n.is_a?(ProcLiteral) %}
+              ({{n}}).call
+            {% else %}
+              self.{{n.id}}
+            {% end %}
+          {% end %}
+          {% if block %}
+            {% if block.args.size == 1 %}
+              {{block.args[0]}} = self
+            {% elsif block.args.size > 1 %}
+              {% raise "callback blocks take at most one argument" %}
+            {% end %}
+            {{block.body}}
+          {% end %}
+        end
+      end
+
+      macro after_update(*names, &block)
+        def __saci_after_update : Nil
+          previous_def
+          {% for n in names %}
+            {% if n.is_a?(ProcLiteral) %}
+              ({{n}}).call
+            {% else %}
+              self.{{n.id}}
+            {% end %}
+          {% end %}
+          {% if block %}
+            {% if block.args.size == 1 %}
+              {{block.args[0]}} = self
+            {% elsif block.args.size > 1 %}
+              {% raise "callback blocks take at most one argument" %}
+            {% end %}
+            {{block.body}}
+          {% end %}
+        end
+      end
+
+      macro before_destroy(*names, &block)
+        def __saci_before_destroy : Nil
+          previous_def
+          {% for n in names %}
+            {% if n.is_a?(ProcLiteral) %}
+              ({{n}}).call
+            {% else %}
+              self.{{n.id}}
+            {% end %}
+          {% end %}
+          {% if block %}
+            {% if block.args.size == 1 %}
+              {{block.args[0]}} = self
+            {% elsif block.args.size > 1 %}
+              {% raise "callback blocks take at most one argument" %}
+            {% end %}
+            {{block.body}}
+          {% end %}
+        end
+      end
+
+      macro around_save(*names, &block)
+        {% for n in names %}
+          {% if n.is_a?(ProcLiteral) %}
+            {% raise "around_save takes method names or a block (`around_save { |record, proceed| ...; proceed.call }`), not a lambda" %}
+          {% end %}
+          def __saci_around_save(&block : -> Nil) : Nil
+            previous_def do
+              self.{{n.id}} { block.call }
+            end
+          end
+        {% end %}
+        {% if block %}
+          {% if block.args.size != 2 %}
+            {% raise "around_save blocks take two arguments: |record, proceed|" %}
+          {% end %}
+          def __saci_around_save(&block : -> Nil) : Nil
+            previous_def do
+              {{block.args[0]}} = self
+              {{block.args[1]}} = block
+              {{block.body}}
+            end
+          end
+        {% end %}
+      end
+
+      macro around_create(*names, &block)
+        {% for n in names %}
+          {% if n.is_a?(ProcLiteral) %}
+            {% raise "around_create takes method names or a block (`around_create { |record, proceed| ...; proceed.call }`), not a lambda" %}
+          {% end %}
+          def __saci_around_create(&block : -> Nil) : Nil
+            previous_def do
+              self.{{n.id}} { block.call }
+            end
+          end
+        {% end %}
+        {% if block %}
+          {% if block.args.size != 2 %}
+            {% raise "around_create blocks take two arguments: |record, proceed|" %}
+          {% end %}
+          def __saci_around_create(&block : -> Nil) : Nil
+            previous_def do
+              {{block.args[0]}} = self
+              {{block.args[1]}} = block
+              {{block.body}}
+            end
+          end
+        {% end %}
+      end
+
+      macro around_update(*names, &block)
+        {% for n in names %}
+          {% if n.is_a?(ProcLiteral) %}
+            {% raise "around_update takes method names or a block (`around_update { |record, proceed| ...; proceed.call }`), not a lambda" %}
+          {% end %}
+          def __saci_around_update(&block : -> Nil) : Nil
+            previous_def do
+              self.{{n.id}} { block.call }
+            end
+          end
+        {% end %}
+        {% if block %}
+          {% if block.args.size != 2 %}
+            {% raise "around_update blocks take two arguments: |record, proceed|" %}
+          {% end %}
+          def __saci_around_update(&block : -> Nil) : Nil
+            previous_def do
+              {{block.args[0]}} = self
+              {{block.args[1]}} = block
+              {{block.body}}
+            end
+          end
+        {% end %}
+      end
+
+      macro around_destroy(*names, &block)
+        {% for n in names %}
+          {% if n.is_a?(ProcLiteral) %}
+            {% raise "around_destroy takes method names or a block (`around_destroy { |record, proceed| ...; proceed.call }`), not a lambda" %}
+          {% end %}
+          def __saci_around_destroy(&block : -> Nil) : Nil
+            previous_def do
+              self.{{n.id}} { block.call }
+            end
+          end
+        {% end %}
+        {% if block %}
+          {% if block.args.size != 2 %}
+            {% raise "around_destroy blocks take two arguments: |record, proceed|" %}
+          {% end %}
+          def __saci_around_destroy(&block : -> Nil) : Nil
+            previous_def do
+              {{block.args[0]}} = self
+              {{block.args[1]}} = block
+              {{block.body}}
+            end
+          end
+        {% end %}
       end
 
       # Rails `has_secure_password` (bcrypt). Requires a `password_digest`
