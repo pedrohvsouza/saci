@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.1 — 2026-11-14
+
+- **Fixed: `HEAD` requests returned 404.** A `HEAD` with no route of its
+  own now runs the `GET` route, as in Rails, and the new
+  `Middleware::Head` (first in the stack) sends that route's headers,
+  including `Content-Length`, without the body. Crystal's server writes
+  the body even for `HEAD`, which would also desync keep-alive
+  connections. Uptime monitors and crawlers that probe with `HEAD` now get
+  the page's real status.
+
 ## 0.6.0 — 2026-11-14
 
 Fixes from building and deploying a real app with Saci (phvsz.com), plus
