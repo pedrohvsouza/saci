@@ -148,6 +148,7 @@ module Saci
       # `db/migrate/*.cr`), so it passes `prompt: false` and always
       # overwrites like before — identical content still skips.
       def self.write_file(path : String, content : String, prompt : Bool = true) : Symbol
+        content = Util.unprefix(content) if Util.unprefix_target?(path)
         exists = File.exists?(path)
         same = exists && File.read(path) == content
 
@@ -626,6 +627,14 @@ module Saci
         CRYSTAL
       end
 
+      # Creates the app-wide parent (ApplicationJob, ...) for apps made before
+      # `saci new` generated it, and says how to load it ahead of the glob.
+      def self.ensure_base_class(path : String, content : String) : Nil
+        return if File.exists?(path)
+        write_file(path, content)
+        puts "  note: require #{path} before the #{File.dirname(path)}/* glob in your entrypoint and spec/spec_helper.cr"
+      end
+
       def self.channel(args : Array(String)) : Nil
         raw_name = args.shift? || raise Error.new("Usage: saci generate channel Name")
         base = Util.class_name(Util.file_name(raw_name.sub(/Channel$/i, "")))
@@ -633,6 +642,7 @@ module Saci
         ensure_app_layout!
 
         Dir.mkdir_p("src/channels")
+        ensure_base_class("src/channels/application_channel.cr", New.application_channel)
         path = "src/channels/#{Util.file_name(class_name)}.cr"
         write_file(path, channel_source(class_name))
 
@@ -648,7 +658,7 @@ module Saci
 
       def self.channel_source(class_name : String) : String
         <<-CRYSTAL
-        class #{class_name} < Saci::Cable::Channel
+        class #{class_name} < ApplicationChannel
           def subscribed
             stream_from "lobby"
           end
@@ -689,6 +699,7 @@ module Saci
         ensure_app_layout!
 
         Dir.mkdir_p("src/jobs")
+        ensure_base_class("src/jobs/application_job.cr", New.application_job)
         path = "src/jobs/#{Util.file_name(class_name)}.cr"
         write_file(path, job_source(class_name))
 
@@ -701,7 +712,7 @@ module Saci
 
       def self.job_source(class_name : String) : String
         <<-CRYSTAL
-        class #{class_name} < Saci::Job::Base
+        class #{class_name} < ApplicationJob
           queue_as :default
 
           def perform(payload : JSON::Any) : Nil
@@ -731,6 +742,7 @@ module Saci
         ensure_app_layout!
 
         Dir.mkdir_p("src/mailers")
+        ensure_base_class("src/mailers/application_mailer.cr", New.application_mailer)
         path = "src/mailers/#{Util.file_name(class_name)}.cr"
         write_file(path, mailer_source(class_name))
 
@@ -743,7 +755,7 @@ module Saci
 
       def self.mailer_source(class_name : String) : String
         <<-CRYSTAL
-        class #{class_name} < Saci::Mailer::Base
+        class #{class_name} < ApplicationMailer
           default_from "noreply@example.com"
 
           def self.welcome(email : String) : Saci::Mailer::Mail
@@ -1658,6 +1670,7 @@ module Saci
         write_file("src/controllers/sessions_controller.cr", auth_sessions_source(user_class))
         write_file("src/controllers/passwords_controller.cr", auth_passwords_source(user_class))
         unless skip?(:mailer)
+          ensure_base_class("src/mailers/application_mailer.cr", New.application_mailer)
           write_file("src/mailers/password_mailer.cr", auth_mailer_source)
         end
         unless skip?(:views)
@@ -1813,7 +1826,7 @@ module Saci
 
       def self.auth_mailer_source : String
         <<-CRYSTAL
-        class PasswordMailer < Saci::Mailer::Base
+        class PasswordMailer < ApplicationMailer
           default_from "noreply@example.com"
 
           def self.reset(email : String, token : String) : Saci::Mailer::Mail

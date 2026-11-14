@@ -1,8 +1,8 @@
 require "../src/saci"
 
-Saci::Record.connection = DB.open("sqlite3://./saci_example.db")
+Record.connection = DB.open("sqlite3://./saci_example.db")
 
-class CreateUsers < Saci::Record::Migration
+class CreateUsers < Record::Migration
   def change
     create_table :users do |t|
       t.string :name, null: false
@@ -15,7 +15,7 @@ class CreateUsers < Saci::Record::Migration
   end
 end
 
-class CreatePosts < Saci::Record::Migration
+class CreatePosts < Record::Migration
   def change
     create_table :posts do |t|
       t.string :title, null: false
@@ -27,7 +27,7 @@ class CreatePosts < Saci::Record::Migration
   end
 end
 
-class User < Saci::Record::Base
+class User < Record::Base
   column id : Int64, primary: true
   column name : String
   column email : String
@@ -41,7 +41,7 @@ class User < Saci::Record::Base
   has_many :posts
 end
 
-class Post < Saci::Record::Base
+class Post < Record::Base
   column id : Int64, primary: true
   column title : String
   column views : Int64
@@ -54,8 +54,8 @@ class Post < Saci::Record::Base
   belongs_to :user
 end
 
-db = Saci::Record.connection.as(DB::Database)
-Saci::Record::Migrator.migrate(db, [CreateUsers, CreatePosts] of Saci::Record::Migration.class)
+db = Record.connection.as(DB::Database)
+Record::Migrator.migrate(db, [CreateUsers, CreatePosts] of Record::Migration.class)
 
 user = User.create!(name: "Ada", email: "ada@example.com", age: 36)
 Post.create!(title: "Hello Saci", views: 500, published: true, user_id: user.id)

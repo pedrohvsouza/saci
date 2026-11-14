@@ -9,7 +9,7 @@
 # `spec/forem_lite_spec.cr` (full validation suite).
 require "../src/saci"
 
-class LiteCreatePrimary < Saci::Record::Migration
+class LiteCreatePrimary < Record::Migration
   def change
     create_table :lite_users do |t|
       t.string :username, null: false
@@ -43,7 +43,7 @@ class LiteCreatePrimary < Saci::Record::Migration
   end
 end
 
-class LiteCreateAnalytics < Saci::Record::Migration
+class LiteCreateAnalytics < Record::Migration
   def change
     create_table :lite_page_views do |t|
       t.integer :article_id
@@ -53,7 +53,7 @@ class LiteCreateAnalytics < Saci::Record::Migration
   end
 end
 
-class LiteUser < Saci::Record::Base
+class LiteUser < Record::Base
   column id : Int64, primary: true
   column username : String
   column email : String
@@ -68,7 +68,7 @@ class LiteUser < Saci::Record::Base
   has_many :articles, class_name: LiteArticle, foreign_key: user_id
 end
 
-class LiteArticle < Saci::Record::Base
+class LiteArticle < Record::Base
   column id : Int64, primary: true
   column user_id : Int64
   column title : String
@@ -85,7 +85,7 @@ class LiteArticle < Saci::Record::Base
   has_many :reactions, class_name: LiteReaction, foreign_key: article_id
 end
 
-class LiteComment < Saci::Record::Base
+class LiteComment < Record::Base
   column id : Int64, primary: true
   column article_id : Int64
   column user_id : Int64
@@ -98,7 +98,7 @@ class LiteComment < Saci::Record::Base
   belongs_to :user, class_name: LiteUser, foreign_key: user_id
 end
 
-class LiteReaction < Saci::Record::Base
+class LiteReaction < Record::Base
   column id : Int64, primary: true
   column article_id : Int64
   column user_id : Int64
@@ -108,7 +108,7 @@ class LiteReaction < Saci::Record::Base
   validates :category, presence: true
 end
 
-class LitePageView < Saci::Record::Base
+class LitePageView < Record::Base
   connects_to database: "analytics"
 
   column id : Int64, primary: true
@@ -117,9 +117,9 @@ class LitePageView < Saci::Record::Base
   timestamps
 end
 
-class LiteScoreJob < Saci::Job::Base
+class LiteScoreJob < Job::Base
   queue_as :scores
-  discard_on Saci::Record::RecordNotFound
+  discard_on Record::RecordNotFound
 
   def perform(payload : JSON::Any) : Nil
     article_id = payload["article_id"]?.try(&.as_i64?)
@@ -132,10 +132,10 @@ class LiteScoreJob < Saci::Job::Base
   end
 end
 
-class LiteUserMailer < Saci::Mailer::Base
+class LiteUserMailer < Mailer::Base
   default_from "hello@forem-lite.example"
 
-  def self.welcome(email : String, username : String) : Saci::Mailer::Mail
+  def self.welcome(email : String, username : String) : Mailer::Mail
     mail(to: email, subject: "Welcome to Forem Lite, #{username}!") do |format|
       format.text { "Hi #{username}, welcome to Forem Lite!" }
       format.html { "<h1>Hi #{username}</h1><p>Welcome to Forem Lite!</p>" }
@@ -143,28 +143,28 @@ class LiteUserMailer < Saci::Mailer::Base
   end
 end
 
-class LiteCommentsChannel < Saci::Cable::Channel
+class LiteCommentsChannel < Cable::Channel
   def subscribed
     stream_from "lite_article_#{params["article_id"]?.try(&.as_s?) || "lobby"}"
   end
 
   def receive(data)
-    Saci::Cable.broadcast(
+    Cable.broadcast(
       "lite_article_#{params["article_id"]?.try(&.as_s?) || "lobby"}",
       {echo: data["text"]? || data}
     )
   end
 end
 
-class LiteApplicationController < Saci::Controller
+class LiteApplicationController < Controller
   protect_from_forgery
   before_action :set_lite_locale
 
   private def set_lite_locale : Nil
     if raw = params["locale"]?
-      Saci::I18n.locale = Saci::I18n.parse_locale(raw)
+      I18n.locale = I18n.parse_locale(raw)
     else
-      Saci::I18n.locale = Saci::I18n.locale_from_header(request.headers["Accept-Language"]?)
+      I18n.locale = I18n.locale_from_header(request.headers["Accept-Language"]?)
     end
   end
 
@@ -321,7 +321,7 @@ class LiteCommentsController < LiteApplicationController
       body: params.require("body").as_s
     )
     if comment.save
-      Saci::Cable.broadcast("lite_article_#{article.id}",
+      Cable.broadcast("lite_article_#{article.id}",
         {event: "comment", id: comment.id, body: comment.body})
       render json: {id: comment.id, body: comment.body}, status: :created
     else
@@ -360,8 +360,8 @@ class LiteUploadsController < LiteApplicationController
     data = params.require("data").as_s
     filename = params["filename"]? || "upload.bin"
     content_type = params["content_type"]? || "application/octet-stream"
-    key = Saci::Storage.upload(data, filename: filename, content_type: content_type)
-    render json: {key: key, url: Saci::Storage.signed_url(key, base: "/lite_files")}, status: :created
+    key = Storage.upload(data, filename: filename, content_type: content_type)
+    render json: {key: key, url: Storage.signed_url(key, base: "/lite_files")}, status: :created
   end
 end
 
@@ -371,7 +371,7 @@ class LiteHealthController < LiteApplicationController
       app:      "forem-lite",
       version:  Saci::VERSION,
       greeting: t("lite.welcome", name: params["name"]? || "dev"),
-      locale:   Saci::I18n.locale,
+      locale:   I18n.locale,
       # JSON clients have no form to read the CSRF token from, so the
       # bootstrap endpoint hands it out (and sets the matching cookie).
       csrf_token: form_authenticity_token,
@@ -379,8 +379,8 @@ class LiteHealthController < LiteApplicationController
   end
 end
 
-def forem_lite_router : Saci::Router
-  Saci::Router.new.draw do |r|
+def forem_lite_router : Router
+  Router.new.draw do |r|
     r.root LiteArticlesController, :index
     r.get "/lite_health", LiteHealthController, :index
     r.resources "lite_articles", LiteArticlesController
@@ -391,43 +391,43 @@ def forem_lite_router : Saci::Router
     r.post "/lite_articles/:article_id/comments", LiteCommentsController, :create
     r.post "/lite_articles/:article_id/reactions", LiteReactionsController, :create
     r.post "/lite_uploads", LiteUploadsController, :create
-    r.get "/lite_files/*key", Saci::Storage::FilesController, :show
+    r.get "/lite_files/*key", Storage::FilesController, :show
     r.cable "/lite_cable", LiteCommentsChannel
   end
 end
 
 def forem_lite_clean! : Nil
-  Saci::Record.clean_database!
-  Saci::Record.connected_to("analytics") { Saci::Record.clean_database! }
+  Record.clean_database!
+  Record.connected_to("analytics") { Record.clean_database! }
 end
 
 module ForemLite
   LOCALES_GLOB = "examples/forem_lite/locales/*.yml"
 
   def self.setup(primary_path : String, analytics_path : String, storage_root : String) : Nil
-    Saci::Record.connection = DB.open("sqlite3://#{primary_path}")
-    Saci::Record.establish_connection("analytics", "sqlite3://#{analytics_path}")
-    Saci::Record::Migrator.migrate(
-      Saci::Record.database("primary"),
-      [LiteCreatePrimary] of Saci::Record::Migration.class)
-    Saci::Record::Migrator.migrate(
-      Saci::Record.database("analytics"),
-      [LiteCreateAnalytics] of Saci::Record::Migration.class)
-    Saci::Storage.service = Saci::Storage::DiskService.new(storage_root)
-    unless Saci::I18n.load_path.includes?(LOCALES_GLOB)
-      Saci::I18n.load_path << LOCALES_GLOB
+    Record.connection = DB.open("sqlite3://#{primary_path}")
+    Record.establish_connection("analytics", "sqlite3://#{analytics_path}")
+    Record::Migrator.migrate(
+      Record.database("primary"),
+      [LiteCreatePrimary] of Record::Migration.class)
+    Record::Migrator.migrate(
+      Record.database("analytics"),
+      [LiteCreateAnalytics] of Record::Migration.class)
+    Storage.service = Storage::DiskService.new(storage_root)
+    unless I18n.load_path.includes?(LOCALES_GLOB)
+      I18n.load_path << LOCALES_GLOB
     end
-    Saci::I18n.reload!
+    I18n.reload!
     configure_throttle!
-    Saci::Record.bcrypt_min_cost = true
+    Record.bcrypt_min_cost = true
     Saci.filter_parameters = ["password"]
     Saci.log_requests = true
   end
 
   def self.configure_throttle!(limit : Int32 = 5) : Nil
-    Saci::Throttle.reset!
-    Saci::Throttle.throttle("lite_login/ip", limit: limit, period: 1.minute) do |ctx|
-      ctx.request.path == "/lite_login" ? Saci::Throttle.client_ip(ctx) : nil
+    Throttle.reset!
+    Throttle.throttle("lite_login/ip", limit: limit, period: 1.minute) do |ctx|
+      ctx.request.path == "/lite_login" ? Throttle.client_ip(ctx) : nil
     end
   end
 
@@ -443,7 +443,7 @@ module ForemLite
       body: "Comparing Saci with Rails conventions.", user_id: bob.id)
     LiteComment.create!(article_id: a1.id, user_id: bob.id, body: "Great first post!")
     LiteReaction.create!(article_id: a1.id, user_id: bob.id, category: "like")
-    Saci::Job.with_adapter(:inline) { LiteScoreJob.perform_later({article_id: a1.id}) }
+    Job.with_adapter(:inline) { LiteScoreJob.perform_later({article_id: a1.id}) }
     LitePageView.create!(article_id: a1.id, ip: "127.0.0.1")
     LiteUserMailer.welcome("alice@example.com", "alice").deliver_now
     puts "seeded: #{LiteUser.count} users, #{LiteArticle.count} articles, " \

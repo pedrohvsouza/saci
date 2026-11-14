@@ -376,7 +376,7 @@ describe "deployment/config scaffold" do
         entry = deploy_file(dir, "src", "surface.cr")
         entry.should contain(%(require "../config/environments/*"))
         entry.should contain(%(require "../config/server"))
-        entry.should contain("Saci::ConfigFile.database_url")
+        entry.should contain("ConfigFile.database_url")
         entry.should contain("listen_gracefully")
         entry.should contain("sqlite3://./db/surface_")
 

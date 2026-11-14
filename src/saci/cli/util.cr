@@ -66,6 +66,29 @@ module Saci
         New.db_url_default(name, kind, env)
       end
 
+      # Generated app code drops the `Saci::` prefix when the app's Saci
+      # includes itself at the top level (src/saci.cr: `include Saci`).
+      # Without an installed shard (spec fixtures, before `shards install`)
+      # this CLI's own framework is assumed.
+      def self.unprefixed_app?(dir : String = Dir.current) : Bool
+        entry = File.join(dir, "lib", "saci", "src", "saci.cr")
+        !File.exists?(entry) || File.read(entry).includes?("\n  include Saci\n")
+      end
+
+      # App-wide base classes and the derived migration manifest keep the
+      # prefix, so they compile even when the app defines a model named
+      # like a framework type (`Session`, `Job`, ...).
+      def self.unprefix_target?(path : String, dir : String = Dir.current) : Bool
+        return false unless path.ends_with?(".cr") || path.ends_with?(".ecr")
+        return false if File.basename(path).starts_with?("application_")
+        return false if path.ends_with?("db/migrations.cr")
+        unprefixed_app?(dir)
+      end
+
+      def self.unprefix(source : String) : String
+        source.gsub(/\bSaci::(?=[A-Z])/, "")
+      end
+
       # `require` line for a file shipped inside `src/saci/` (tasks, ci,
       # db_tasks) that is called from a generated `tmp/` runner. Uses the
       # installed shard (`saci/...`) when present, else a file-relative

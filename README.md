@@ -14,22 +14,23 @@ pure-Crystal implementations instead of linking extra C libraries.
 ```crystal
 require "saci"
 
-class PostsController < Saci::Controller
+class PostsController < Controller
   def index
     render json: Post.where(published: true).order(created_at: :desc).limit(20).to_a
   end
 end
 
-router = Saci::Router.new.draw do |r|
+router = Router.new.draw do |r|
   r.resources "posts", PostsController, only: [:index]
 end
 
-Saci::Application.new(router).listen(3000)
+Application.new(router).listen(3000)
 ```
 
 - [What's included](#whats-included)
 - [Installation](#installation)
 - [Quick start](#quick-start)
+- [Framework names](#framework-names)
 - [CLI](#cli)
 - [Configuration and middleware](#configuration-and-middleware)
 - [Routing](#routing)
@@ -117,6 +118,7 @@ blog/
   src/blog.cr                 # entrypoint: requires, configuration, routes, listen
   src/controllers/            # ApplicationController + your controllers
   src/models/                 # ApplicationRecord + your models
+  src/jobs/ src/mailers/ src/channels/  # ApplicationJob, ApplicationMailer, ApplicationChannel
   src/views/                  # ECR templates and layouts
   config/                     # environments, initializers, database.yml, credentials
   db/migrate/ db/migrations.cr db/migrate.cr db/seed.cr
@@ -133,6 +135,38 @@ crystal run examples/record_example.cr     # ORM
 crystal run examples/cable_example.cr      # WebSocket chat
 crystal run examples/forem_lite_app.cr     # demo community app using most subsystems
 ```
+
+## Framework names
+
+Framework types live in the `Saci` module, and `require "saci"` includes
+that module at the top level, so app code uses them without the prefix.
+Module methods keep it, like `Rails.logger`:
+
+```crystal
+class Post < Record::Base                      # Saci::Record::Base
+end
+
+class PostsController < Controller             # Saci::Controller
+  rescue_from Record::RecordNotFound do |_ex|
+    Saci.logger.warn { "not found" }
+    head :not_found
+  end
+end
+```
+
+Names your app defines at the top level win over Saci's: an app `Session`
+model stays the app's, and `Time` and `DB` are always the stdlib and
+crystal-db ones. The full `Saci::` path always works. Compile with
+`-Dsaci_namespaced` to skip the include and keep every framework type
+behind `Saci::`.
+
+Generated apps follow Rails: the prefix appears once per kind, in the base
+classes (`ApplicationRecord < Saci::Record::Base`, `ApplicationController`,
+`ApplicationJob`, `ApplicationMailer`, `ApplicationChannel`), and in the
+files under `config/`, `spec/spec_helper.cr` and `db/migrate.cr`. Those
+files then still compile if the app adds a model named like a framework
+type, such as `Session` or `Job`. Generated models, controllers, jobs,
+mailers, channels, migrations, specs and routes use the short names.
 
 ## CLI
 
@@ -202,8 +236,8 @@ Generators: `model`, `controller`, `migration`, `scaffold`,
 - `serve --watch` polls the source tree, rebuilds with `crystal build` and
   restarts a single supervised binary. Build failures wait for the next
   save. Path dependencies (such as a local Saci checkout) are watched too.
-- `ci` runs the steps declared in `config/ci.cr` with `Saci::CI.step` and
-  `Saci::CI.run`. `app:update` re-applies the scaffold, prompting before
+- `ci` runs the steps declared in `config/ci.cr` with `CI.step` and
+  `CI.run`. `app:update` re-applies the scaffold, prompting before
   it changes any file you edited.
 
 ## Configuration and middleware
@@ -221,8 +255,8 @@ Saci.configure do |config|
 
   config.middleware.use MyAuthHandler.new(secret: ENV["SECRET"])
   config.middleware.use TimingHandler, header: "X-Timing"
-  config.middleware.insert_before Saci::Middleware::Static, RequestId.new
-  config.middleware.delete Saci::Middleware::HostAuthorization
+  config.middleware.insert_before Middleware::Static, RequestId.new
+  config.middleware.delete Middleware::HostAuthorization
 end
 ```
 
@@ -233,9 +267,9 @@ targets. `saci middleware` prints the resolved chain.
 Boot hooks:
 
 ```crystal
-Saci::Initializers.before_configuration { Saci.log_level = :debug }
-Saci::Initializers.to_prepare { }          # re-run on reload; keep it idempotent
-Saci::Initializers.after_initialize { }    # once, after configuration
+Initializers.before_configuration { Saci.log_level = :debug }
+Initializers.to_prepare { }          # re-run on reload; keep it idempotent
+Initializers.after_initialize { }    # once, after configuration
 ```
 
 Generated apps load `config/initializers/*.cr` and
@@ -248,7 +282,7 @@ interpolated before parsing. Read them with
 ## Routing
 
 ```crystal
-router = Saci::Router.new.draw do |r|
+router = Router.new.draw do |r|
   r.root HomeController, :index
   r.resources "posts", PostsController do |s|
     s.member { |m| m.post :upvote }          # POST /posts/:id/upvote
@@ -281,7 +315,7 @@ Named helpers come in two flavors. Compile-time helpers are generated from
 the same DSL, so a typo is a compile error:
 
 ```crystal
-Saci::Routes.define AppRoutes do |r|
+Routes.define AppRoutes do |r|
   r.resources "posts", PostsController do |s|
     s.member { |m| m.post :upvote }
   end
@@ -303,7 +337,7 @@ Runtime lookup works on any drawn router and from controllers and views:
 class PostsController < ApplicationController
   before_action :require_login, except: [:index, :show]
   around_action :with_timing
-  rescue_from Saci::Record::RecordNotFound do |_ex|
+  rescue_from Record::RecordNotFound do |_ex|
     render json: {error: "not found"}, status: :not_found
   end
 
@@ -358,7 +392,7 @@ end
 ## Models (`Saci::Record`)
 
 ```crystal
-class CreatePosts < Saci::Record::Migration
+class CreatePosts < Record::Migration
   def change
     create_table :posts do |t|
       t.string :title, null: false
@@ -440,7 +474,7 @@ Post.transaction(isolation: :serializable) { post.lock!; ... }
   `reversible` for those. Also available: `change_table`, `revert`,
   `execute`, `if_not_exists:`, `disable_ddl_transaction!` and
   `algorithm: :concurrently`.
-- **Full-text search**: `Saci::Record::FTS.setup(Post, [:title, :body])`
+- **Full-text search**: `Record::FTS.setup(Post, [:title, :body])`
   creates an FTS5 virtual table with triggers.
   `Post.search_fts("crystal")` returns a ranked, chainable query (SQLite
   only).
@@ -448,14 +482,14 @@ Post.transaction(isolation: :serializable) { post.lock!; ... }
 ## Databases
 
 ```crystal
-Saci::Record.connect("sqlite3://./db/app.db")      # adapter detected from the scheme
-Saci::Record.establish_connection("analytics", "postgres://localhost/analytics")
+Record.connect("sqlite3://./db/app.db")      # adapter detected from the scheme
+Record.establish_connection("analytics", "postgres://localhost/analytics")
 
 class Event < ApplicationRecord
   connects_to database: "analytics"
 end
 
-Saci::Record.connected_to("analytics") { Event.count }
+Record.connected_to("analytics") { Event.count }
 ```
 
 - Write `?` placeholders and double-quoted identifiers everywhere. Saci
@@ -489,7 +523,7 @@ storage class, so booleans reload as `:integer` and dates and JSON as
 `:text`. Saci's own `t.decimal` reloads as `:decimal`. Re-dumping a loaded
 database produces the same bytes.
 
-Every model registers itself, so `Saci::Record.check_schema!(db)` can
+Every model registers itself, so `Record.check_schema!(db)` can
 return one warning per mismatch: a table without a model, a model without
 a table, or a column missing on either side. Only names are compared.
 
@@ -548,7 +582,7 @@ end
   other static files get `no-cache` in development and test and
   `public, max-age=3600` elsewhere unless you set
   `config.public_file_server.cache_control`.
-- Pagination: `Saci::Pagination.paginate(query, page:, per_page:)` returns
+- Pagination: `Pagination.paginate(query, page:, per_page:)` returns
   a page object, and `paginate_nav` renders windowed links. Its labels come
   from I18n: `saci.pagination.prev`, `saci.pagination.next`,
   `saci.pagination.gap` and `saci.pagination.label` (the `aria-label`).
@@ -557,10 +591,10 @@ end
 
 ```crystal
 turbo_frame_tag("profile") { "<p>Ada</p>" }
-render turbo_stream: Saci::Turbo.append("msgs", "<p>#{h(text)}</p>")
-Saci::Turbo.broadcast_append("room:1", "msgs", "<p>hi</p>")    # over Cable
+render turbo_stream: Turbo.append("msgs", "<p>#{h(text)}</p>")
+Turbo.broadcast_append("room:1", "msgs", "<p>hi</p>")    # over Cable
 
-Saci::Importmap.draw do |map|
+Importmap.draw do |map|
   map.pin "application", to: "app/javascript/application.js", preload: true
   map.pin_all_from "app/javascript/controllers", under: "controllers"
 end
@@ -594,21 +628,21 @@ with `render_attachments`.
 ## WebSockets
 
 ```crystal
-class ChatChannel < Saci::Cable::Channel
+class ChatChannel < ApplicationChannel
   def subscribed
     stream_from "room:#{params["room"]?.try(&.as_s?) || "lobby"}"
   end
 
   def receive(data)
-    Saci::Cable.broadcast("room:1", {text: data["text"]?})
+    Cable.broadcast("room:1", {text: data["text"]?})
   end
 end
 
-Saci::Cable.identify do |connection|
+Cable.identify do |connection|
   connection.reject_unauthorized_connection unless connection.session.try(&.["user_id"])
 end
 
-router = Saci::Router.new.draw do |r|
+router = Router.new.draw do |r|
   r.cable "/cable", ChatChannel
 end
 ```
@@ -617,32 +651,32 @@ end
   support `stream_for record`, `periodically 5.seconds { }`, `transmit`,
   `reject`, and `identified_by`.
 - Fan-out uses a single process by default. For several processes, set
-  `Saci::Cable.server` to `Cable::RedisServer.new(ENV["REDIS_URL"])`
+  `Cable.server` to `Cable::RedisServer.new(ENV["REDIS_URL"])`
   (built-in RESP2 client, no extra dependency) or to `Cable::DbServer`
   (database polling, Solid Cable style). If Redis is down, broadcasts
   still reach local subscribers.
 - Writes go through a shared pool of writer fibers with bounded
   per-connection queues, so idle sockets stay cheap and slow readers get
   disconnected instead of piling up memory.
-- `Saci::Cable::TestClient` and `Cable::TestServer` support specs, and
+- `Cable::TestClient` and `Cable::TestServer` support specs, and
   `saci g channel` generates both.
 
 ## Background jobs
 
 ```crystal
-class WelcomeJob < Saci::Job::Base
+class WelcomeJob < ApplicationJob
   queue_as :mailers
   queue_with_priority 10
   unique :until_executed
   retry_on IO::Error, attempts: 3, wait: :exponential
-  discard_on Saci::Record::RecordNotFound
+  discard_on Record::RecordNotFound
 
   def perform(payload : JSON::Any) : Nil
     UserMailer.welcome(payload["email"].as_s).deliver_now
   end
 end
 
-Saci::Job.queue_adapter = :db
+Job.queue_adapter = :db
 WelcomeJob.perform_later({email: "a@b.c"})
 WelcomeJob.set(wait: 5.minutes, queue: :low).perform_later({email: "a@b.c"})
 ```
@@ -650,28 +684,28 @@ WelcomeJob.set(wait: 5.minutes, queue: :low).perform_later({email: "a@b.c"})
 - Adapters: `:async` (fiber, the development default), `:inline`,
   `:test` (records jobs instead of running them), and `:db` (durable,
   persisted in `saci_jobs` with a dead-letter table and claims via
-  `FOR UPDATE SKIP LOCKED`). Run `Saci::Job::Db.work_once` in a worker
+  `FOR UPDATE SKIP LOCKED`). Run `Job::Db.work_once` in a worker
   loop or `drain` from scripts.
 - Payloads cross a JSON boundary. Records are serialized as GlobalID
   references. Delivery is at-least-once, so jobs must be idempotent.
 - Also available: callbacks and middleware, `limits_concurrency`, batches
-  (`Saci::Job::Batch`), and resumable jobs (`continuable` + `step`).
+  (`Job::Batch`), and resumable jobs (`continuable` + `step`).
 - Recurring jobs:
-  `Saci::Recurring.cron("*/5 * * * *", "refresh") { RefreshJob.perform_later({}) }`
-  and `Saci::Recurring.every(1.hour, "cleanup") { ... }`, then
-  `Saci::Recurring.start`. Missed ticks collapse into a single run.
-- Dashboard: mount `Saci::Job::DashboardController` to see pending and
+  `Recurring.cron("*/5 * * * *", "refresh") { RefreshJob.perform_later({}) }`
+  and `Recurring.every(1.hour, "cleanup") { ... }`, then
+  `Recurring.start`. Missed ticks collapse into a single run.
+- Dashboard: mount `Job::DashboardController` to see pending and
   dead jobs, with retry and drop actions. It is disabled in production by
   default.
 
 ## Mailers
 
 ```crystal
-class UserMailer < Saci::Mailer::Base
+class UserMailer < ApplicationMailer
   default_from "noreply@example.com"
   layout "mailer"
 
-  def self.welcome(email : String) : Saci::Mailer::Mail
+  def self.welcome(email : String) : Mailer::Mail
     attachments["terms.pdf"] = {mime_type: "application/pdf", path: "public/terms.pdf"}
     mail(to: email, subject: "Welcome!") do |format|
       format.text { "Welcome, #{email}!" }
@@ -690,25 +724,25 @@ UserMailer.with(user: user).digest.deliver_now
   signing is optional.
 - `deliver_later` renders the mail immediately and sends the result
   through the job system.
-- Previews: register them with `Saci::Mailer::Preview.register` and mount
+- Previews: register them with `Mailer::Preview.register` and mount
   `PreviewController` (development only). Non-ASCII subjects are
   RFC 2047-encoded on the wire.
 
 ## Inbound email
 
 ```crystal
-class SupportMailbox < Saci::Mailbox::Base
+class SupportMailbox < Mailbox::Base
   def process
     Ticket.create!(subject: mail.subject, body: mail.text_body)
   end
 end
 
-Saci::Mailbox.router = Saci::Mailbox::Router.new.draw do |r|
+Mailbox.router = Mailbox::Router.new.draw do |r|
   r.route SupportMailbox, to: "support@example.com"
   r.route all: :backup
 end
 
-router = Saci::Router.new.draw { |r| Saci::Mailbox.mount(r) }
+router = Router.new.draw { |r| Mailbox.mount(r) }
 ```
 
 Includes a MIME parser (multipart, RFC 2047/2231, charsets), persisted
@@ -728,8 +762,8 @@ user.avatar.attach(io, filename: "me.png")
 user.avatar.url                                   # expiring signed URL
 user.photo.attach(io, filename: "a.png", public: true)  # unsigned public/ key
 
-r.get "/files/*key", Saci::Storage::FilesController, :show
-r.post "/direct_uploads", Saci::Storage::DirectUploadsController, :create
+r.get "/files/*key", Storage::FilesController, :show
+r.post "/direct_uploads", Storage::DirectUploadsController, :create
 ```
 
 - `DiskService` stores files under sharded keys. Private files are served
@@ -751,9 +785,9 @@ r.post "/direct_uploads", Saci::Storage::DirectUploadsController, :create
 ## Caching
 
 ```crystal
-Saci::Cache.fetch("stats", expires_in: 5.minutes) { compute_stats }
-Saci::Cache.store = Saci::Cache::RedisStore.new(ENV["REDIS_URL"])
-Saci::Cache.store = :db                         # database-backed store (Solid Cache style)
+Cache.fetch("stats", expires_in: 5.minutes) { compute_stats }
+Cache.store = Cache::RedisStore.new(ENV["REDIS_URL"])
+Cache.store = :db                         # database-backed store (Solid Cache style)
 
 def show
   @post = Post.find(params["id"])
@@ -769,16 +803,16 @@ end
 - Fragment caching: `cache(key) { ... }` in views, keyed by
   `cache_key(record)`, `cache_key(records)` or `version:`. If the store is
   down, the fragment is rendered but not stored.
-- `Saci::PageCache` writes whole pages to disk.
+- `PageCache` writes whole pages to disk.
 
 ## Rate limiting
 
 ```crystal
-Saci::Throttle.throttle("logins/ip", limit: 5, period: 1.minute) do |ctx|
-  ctx.request.path == "/login" ? Saci::Throttle.client_ip(ctx) : nil
+Throttle.throttle("logins/ip", limit: 5, period: 1.minute) do |ctx|
+  ctx.request.path == "/login" ? Throttle.client_ip(ctx) : nil
 end
-Saci::Throttle.safelist { |ctx| Saci::Throttle.client_ip(ctx) == "127.0.0.1" }
-Saci::Throttle.store = Saci::Throttle::RedisStore.new(ENV["REDIS_URL"])
+Throttle.safelist { |ctx| Throttle.client_ip(ctx) == "127.0.0.1" }
+Throttle.store = Throttle::RedisStore.new(ENV["REDIS_URL"])
 ```
 
 Fixed windows. Throttled requests get 429 with `Retry-After`; blocklisted
@@ -796,7 +830,7 @@ on the proxy's address.
 ## Security
 
 ```crystal
-class ApplicationController < Saci::Controller
+class ApplicationController < Controller
   protect_from_forgery
 end
 
@@ -827,7 +861,7 @@ user.signed_id(purpose: "login", expires_in: 15.minutes)
   its policy, and anything the browser would block (inline `<style>`,
   `style=""` attributes, `on*` handlers, stylesheets, scripts, images or
   fonts from other hosts, such as Google Fonts) is logged once per path.
-  Toggle with `Saci::SecureHeaders.csp_warnings = true|false`.
+  Toggle with `SecureHeaders.csp_warnings = true|false`.
 - **CSP nonces and HTTP caching**: a nonce changes on every response. A
   `304` from `stale?` carries the new nonce in its header, but the browser
   reuses the cached body with the old one, so nonced styles and scripts
@@ -850,7 +884,7 @@ user.signed_id(purpose: "login", expires_in: 15.minutes)
   `allow_unauthenticated_access`, and `after_authentication_url`.
   `saci g authentication` generates a complete flow with password
   resets.
-- **Tokens**: `Saci::JWT` (HS256/384/512), `Saci::TOTP` (codes,
+- **Tokens**: `JWT` (HS256/384/512), `TOTP` (codes,
   provisioning URIs, backup codes), and `has_two_factor` for models.
 - **Secrets**: `SECRET_KEY_BASE` or encrypted credentials. Production
   refuses to boot without a secret.
@@ -862,7 +896,7 @@ fail to link because they reference symbols that were removed.
 ## Authorization, serializers, search, audit
 
 ```crystal
-class PostPolicy < Saci::Policy
+class PostPolicy < Policy
   resource Post
   allow :read
   role :editor do
@@ -874,7 +908,7 @@ end
 authorize!(:update, post)                      # in a controller
 policy_scope(Post)
 
-class PostSerializer < Saci::Serializer(Post)
+class PostSerializer < Serializer(Post)
   attributes :id, :title
   has_many :comments, serializer: CommentSerializer
 end
@@ -882,7 +916,7 @@ render json: PostSerializer.new(post, root: "post", key_transform: :camel)
 
 class Post < ApplicationRecord
   searchable_attributes :title, :status, :created_at
-  include Saci::Auditable
+  include Auditable
   audited only: [:title, :status]
 end
 Post.search(params).page                       # Ransack-style q[title_cont]=...
@@ -892,24 +926,24 @@ post.audits
 ## GraphQL
 
 ```crystal
-class PostType < Saci::GraphQL::ObjectType
+class PostType < GraphQL::ObjectType
   source Post
-  field :id, Saci::GraphQL::ID, null: false
+  field :id, GraphQL::ID, null: false
   field :title, String
 end
 
-class QueryType < Saci::GraphQL::ObjectType
+class QueryType < GraphQL::ObjectType
   graphql_name "Query"
   field :posts, [PostType], null: false do |_source, _args, _ctx|
     Post.order(id: :asc).to_a
   end
 end
 
-class AppSchema < Saci::GraphQL::Schema
+class AppSchema < GraphQL::Schema
   query QueryType
 end
 
-Saci::GraphQL.mount(router, path: "/graphql", schema: AppSchema)
+GraphQL.mount(router, path: "/graphql", schema: AppSchema)
 ```
 
 Supports queries, mutations, input objects, enums, variables, fragments,
@@ -921,10 +955,10 @@ classes and resolvers are typed blocks.
 ```crystal
 require "saci/office"
 
-xlsx = Saci::Office::XLSX.from_records(User.all, columns: [:id, :email, :created_at])
+xlsx = Office::XLSX.from_records(User.all, columns: [:id, :email, :created_at])
 send_xlsx xlsx, filename: "users.xlsx"
 
-pdf = Saci::Office::PDF.table(title: "Users", headers: ["Name", "Email"], rows: rows)
+pdf = Office::PDF.table(title: "Users", headers: ["Name", "Email"], rows: rows)
 send_pdf pdf, filename: "users.pdf"
 
 send_csv rows, filename: "users.csv"
@@ -936,11 +970,11 @@ PDFs use the standard Helvetica fonts. CSV follows RFC 4180.
 ## Localization and time zones
 
 ```crystal
-Saci::I18n.load_path << "config/locales/*.yml"
-Saci::I18n.t("greeting", name: "Ada")
-Saci::I18n.t("items", count: 3)
-Saci::I18n.with_locale(:es) { Saci::I18n.t("hello") }
-Saci::I18n.l(Time.utc, format: :short)
+I18n.load_path << "config/locales/*.yml"
+I18n.t("greeting", name: "Ada")
+I18n.t("items", count: 3)
+I18n.with_locale(:es) { I18n.t("hello") }
+I18n.l(Time.utc, format: :short)
 
 Time.use_zone("America/Sao_Paulo") { Time.current }
 3.days.from_now
@@ -959,7 +993,7 @@ Saci.logger.info { "booted" }
 Saci.filter_parameters += ["token"]
 Saci.tagged("worker-1") { ... }
 
-r.get "/metrics", Saci::Metrics::Controller, :index    # JSON, or Prometheus with ?format=prom
+r.get "/metrics", Metrics::Controller, :index    # JSON, or Prometheus with ?format=prom
 ```
 
 Every request logs one line with the status, duration, method, path,
@@ -969,7 +1003,7 @@ with its duration (source `saci.sql`; turn it off with
 the local time as `2026/11/14 03:15:02.494236` and are colored on a
 terminal (`NO_COLOR` or `SACI_LOG_COLOR=0` disables, `SACI_LOG_COLOR=1`
 forces). Set `SACI_LOG_FORMAT=json` for structured output, or
-`SACI_LOG_SETUP=0` to keep Crystal's default log backend. `Saci::Notifications` publishes instrumentation events
+`SACI_LOG_SETUP=0` to keep Crystal's default log backend. `Notifications` publishes instrumentation events
 (`process_action.saci`, `sql.saci`, `perform.saci`, ...) and the
 slow-query logger subscribes to them. Metrics are kept in process
 (requests, routes, jobs, cache, database gauges) and have no built-in
@@ -994,7 +1028,7 @@ fiber, and shared registries are mutex-guarded.
   without a secret and never show detailed errors.
 - `config/credentials.yml.enc` plus `config/master.key` (or
   `RAILS_MASTER_KEY`). Read values with
-  `Saci::Credentials.dig("aws.access_key")` and edit them with
+  `Credentials.dig("aws.access_key")` and edit them with
   `saci credentials:edit`, or one key at a time with
   `saci credentials:set` (no editor needed).
 - `saci new` generates a multi-stage Dockerfile, `bin/docker-entrypoint`,
@@ -1008,8 +1042,8 @@ fiber, and shared registries are mutex-guarded.
   declares named volumes for `storage/` (and `db/` on SQLite) and notes
   `forward_headers: true` for proxies such as Cloudflare. See the
   generated README for `docker run`.
-- `app.listen_gracefully(port, host, shutdown: Saci::Deploy::GracefulShutdown.new(timeout: 10.seconds))`
-  waits for in-flight requests on SIGTERM. `Saci::Deploy.doctor` checks
+- `app.listen_gracefully(port, host, shutdown: Deploy::GracefulShutdown.new(timeout: 10.seconds))`
+  waits for in-flight requests on SIGTERM. `Deploy.doctor` checks
   the secret, the database URL and writable directories.
 
 ## Testing
@@ -1021,20 +1055,20 @@ load_fixtures :all
 fixture :users, User
 
 factory :post, Post do
-  title { "Post #{Saci::Testing::Factory.sequence(:post)}" }
+  title { "Post #{Testing::Factory.sequence(:post)}" }
 end
 
 describe "posts" do
   transactional_tests
 
   it "publishes" do
-    post = Saci::Testing::Factory.create_post
+    post = Testing::Factory.create_post
     assert_enqueued_jobs(1) { PublishJob.perform_later({id: post.id}) }
     travel_to(Time.utc(2026, 1, 1)) { Time.utc.year.should eq(2026) }
   end
 
   it "renders the index" do
-    Saci::TestSession.serve(router) do |app|
+    TestSession.serve(router) do |app|
       response = app.get("/posts")
       assert_select response, "h1", text: "Posts"
     end
@@ -1042,7 +1076,7 @@ describe "posts" do
 end
 ```
 
-- `Saci::TestSession.serve(router)` starts the full middleware and
+- `TestSession.serve(router)` starts the full middleware and
   router stack over real HTTP on an ephemeral port.
 - Includes YAML fixtures (label references, ERB), factories with traits
   and associations, transactional tests with savepoints, assertions for

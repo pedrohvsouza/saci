@@ -14,8 +14,8 @@ ENV["SECRET_KEY_BASE"] ||= "forem-lite-dev-secret"
 end
 
 ForemLite.setup("./tmp/forem_lite.db", "./tmp/forem_lite_analytics.db", "./tmp/forem_lite_storage")
-Saci::Mailer.delivery_adapter = :file
-Saci::Mailer.file_path = "tmp/forem_lite_mails"
+Mailer.delivery_adapter = :file
+Mailer.file_path = "tmp/forem_lite_mails"
 ForemLite.seed_demo!
 
 router = forem_lite_router
@@ -23,4 +23,4 @@ puts "routes:"
 router.routes_table.each { |line| puts "  #{line}" }
 router.ws_routes_table.each { |line| puts "  #{line}" }
 
-Saci::Application.new(router).listen(3000)
+Application.new(router).listen(3000)

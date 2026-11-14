@@ -9,33 +9,33 @@ require "../src/saci"
 #   {"command":"subscribe","identifier":"{\"channel\":\"DemoChatChannel\",\"room\":\"general\"}"}
 #   {"command":"message","identifier":"{\"channel\":\"DemoChatChannel\",\"room\":\"general\"}","data":"{\"text\":\"hello\"}"}
 
-class DemoChatChannel < Saci::Cable::Channel
+class DemoChatChannel < Cable::Channel
   def subscribed
     stream_from "room:#{params["room"]?.try(&.as_s?) || "general"}"
   end
 
   def receive(data)
-    Saci::Cable.broadcast("room:#{params["room"]?.try(&.as_s?) || "general"}", {
+    Cable.broadcast("room:#{params["room"]?.try(&.as_s?) || "general"}", {
       from: params["user"]?.try(&.as_s?) || "anon",
       text: data["text"]? || data,
     })
   end
 end
 
-router = Saci::Router.new.draw do |r|
+router = Router.new.draw do |r|
   r.cable "/cable", DemoChatChannel
   r.websocket("/ping") { |ws, _ctx, _params| ws.send("pong") }
 end
 
-Saci::TestSession.serve(router, port: 4111) do |app|
-  alice = Saci::Cable::TestClient.new(app.host, app.port, "/cable")
-  bob = Saci::Cable::TestClient.new(app.host, app.port, "/cable")
+TestSession.serve(router, port: 4111) do |app|
+  alice = Cable::TestClient.new(app.host, app.port, "/cable")
+  bob = Cable::TestClient.new(app.host, app.port, "/cable")
 
   alice.subscribe("DemoChatChannel", {"room" => "general", "user" => "alice"})
   bob.subscribe("DemoChatChannel", {"room" => "general", "user" => "bob"})
 
   alice.send_message(
-    Saci::Cable.identifier_for("DemoChatChannel", {"room" => "general", "user" => "alice"}),
+    Cable.identifier_for("DemoChatChannel", {"room" => "general", "user" => "alice"}),
     {text: "hello room!"}
   )
 

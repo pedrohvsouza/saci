@@ -300,6 +300,9 @@ module Saci
           return
         end
 
+        # Generators drop the `Saci::` prefix at write time; compare against
+        # what they actually wrote.
+        expected = Util.unprefix(expected) if expected && Util.unprefix_target?(path)
         if expected.nil? || Generate.force? || File.read(path) == expected
           delete_file(path)
           return

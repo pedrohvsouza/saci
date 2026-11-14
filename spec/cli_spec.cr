@@ -58,7 +58,9 @@ describe "saci new" do
       File.read(File.join(dir, "shard.yml")).should contain("name: cli_test_app")
       File.exists?(File.join(dir, "src", "cli_test_app.cr")).should be_true
       File.exists?(File.join(dir, "src", "controllers", "home_controller.cr")).should be_true
-      File.exists?(File.join(dir, "src", "channels", ".gitkeep")).should be_true
+      File.exists?(File.join(dir, "src", "channels", "application_channel.cr")).should be_true
+      File.exists?(File.join(dir, "src", "jobs", "application_job.cr")).should be_true
+      File.exists?(File.join(dir, "src", "mailers", "application_mailer.cr")).should be_true
       File.exists?(File.join(dir, "src", "models", "application_record.cr")).should be_true
       File.exists?(File.join(dir, "db", "migrate.cr")).should be_true
       File.exists?(File.join(dir, "db", "migrations.cr")).should be_true
@@ -109,7 +111,7 @@ describe "saci generate" do
         migrations = Dir.glob("db/migrate/*_create_posts.cr")
         migrations.size.should eq(1)
         mig = File.read(migrations.first)
-        mig.should contain("class CreatePosts < Saci::Record::Migration")
+        mig.should contain("class CreatePosts < Record::Migration")
         mig.should contain("create_table :posts")
         mig.should contain("t.string :title")
         mig.should contain("t.timestamps")
@@ -354,7 +356,7 @@ describe "saci generate" do
       Dir.cd(dir) do
         Saci::CLI::Generate.run(["channel", "Chat"])
         src = File.read("src/channels/chat_channel.cr")
-        src.should contain("class ChatChannel < Saci::Cable::Channel")
+        src.should contain("class ChatChannel < ApplicationChannel")
         src.should contain("stream_from")
         req = File.read("spec/channels/chat_channel_spec.cr")
         req.should contain("TestClient")
@@ -367,11 +369,11 @@ describe "saci generate" do
     with_tmp_app do |dir|
       Dir.cd(dir) do
         Saci::CLI::Generate.run(["job", "Welcome"])
-        File.read("src/jobs/welcome_job.cr").should contain("class WelcomeJob < Saci::Job::Base")
+        File.read("src/jobs/welcome_job.cr").should contain("class WelcomeJob < ApplicationJob")
         File.read("spec/jobs/welcome_job_spec.cr").should contain("perform_later")
 
         Saci::CLI::Generate.run(["mailer", "User"])
-        File.read("src/mailers/user_mailer.cr").should contain("class UserMailer < Saci::Mailer::Base")
+        File.read("src/mailers/user_mailer.cr").should contain("class UserMailer < ApplicationMailer")
         File.read("spec/mailers/user_mailer_spec.cr").should contain("deliver_now")
       end
     end
@@ -401,7 +403,8 @@ describe "saci generate" do
         src.should contain("before_action :require_admin")
         src.should contain("params[\"q\"]?")
         src.should contain("params[\"sort\"]?")
-        src.should contain("Saci::Pagination.paginate(query, page: page, per_page: 25)")
+        src.should contain("Pagination.paginate(query, page: page, per_page: 25)")
+        src.should_not contain("Saci::")
         src.should contain("params.int(\"page\", 1)")
         src.should contain("render_template(:\"admin/posts/edit\", status: 422)")
         src.should contain("redirect_to \"/admin/posts")
@@ -412,7 +415,7 @@ describe "saci generate" do
         index = File.read("src/views/admin/posts/index.ecr")
         index.should contain("name=\"q\"")
         index.should contain("sort=")
-        index.should contain("Saci::Pagination.paginate_nav(@page,")
+        index.should contain("Pagination.paginate_nav(@page,")
         index.should contain("@page.records")
         index.should contain("@page.total_count")
         File.read("src/views/admin/posts/show.ecr").should contain("h(@record.title.to_s)")
@@ -454,6 +457,33 @@ describe "saci generate" do
       end
     ensure
       FileUtils.rm_rf(dir)
+    end
+  end
+end
+
+describe "saci generate prefix handling" do
+  it "drops Saci:: from generated code but keeps it in base classes" do
+    with_tmp_app(name: "cli_prefix_app") do |dir|
+      Dir.cd(dir) do
+        Saci::CLI::Generate.run(["job", "Welcome"])
+        File.read("src/jobs/application_job.cr").should contain("abstract class ApplicationJob < Saci::Job::Base")
+        File.read("spec/jobs/welcome_job_spec.cr").should contain("Job.with_adapter(:inline)")
+        File.read("spec/jobs/welcome_job_spec.cr").should_not contain("Saci::")
+      end
+    end
+  end
+
+  it "keeps the prefix for apps whose installed Saci has no top-level include" do
+    with_tmp_app(name: "cli_old_saci_app") do |dir|
+      Dir.cd(dir) do
+        Dir.mkdir_p("lib/saci/src")
+        File.write("lib/saci/src/saci.cr", "module Saci\nend\n")
+        File.delete("src/jobs/application_job.cr")
+        Saci::CLI::Generate.run(["job", "Welcome"])
+        File.read("spec/jobs/welcome_job_spec.cr").should contain("Saci::Job.with_adapter(:inline)")
+        File.read("src/jobs/welcome_job.cr").should contain("class WelcomeJob < ApplicationJob")
+        File.read("src/jobs/application_job.cr").should contain("< Saci::Job::Base")
+      end
     end
   end
 end
@@ -860,7 +890,7 @@ describe "saci generate conflicts" do
         with_generate_input("y\n") do
           Saci::CLI::Generate.run(["job", "Welcome"]).should eq(0)
         end
-        File.read("src/jobs/welcome_job.cr").should contain("class WelcomeJob < Saci::Job::Base")
+        File.read("src/jobs/welcome_job.cr").should contain("class WelcomeJob < ApplicationJob")
 
         File.write("src/jobs/welcome_job.cr", "stale")
         out, _ = capture_cli_output do

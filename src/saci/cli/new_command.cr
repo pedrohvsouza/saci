@@ -84,9 +84,9 @@ module Saci
         write(File.join(dir, "src", "controllers", "application_controller.cr"), application_controller)
         write(File.join(dir, "src", "controllers", "home_controller.cr"), home_controller)
         write(File.join(dir, "src", "controllers", "health_controller.cr"), health_controller)
-        write(File.join(dir, "src", "channels", ".gitkeep"), "")
-        write(File.join(dir, "src", "jobs", ".gitkeep"), "")
-        write(File.join(dir, "src", "mailers", ".gitkeep"), "")
+        write(File.join(dir, "src", "channels", "application_channel.cr"), application_channel)
+        write(File.join(dir, "src", "jobs", "application_job.cr"), application_job)
+        write(File.join(dir, "src", "mailers", "application_mailer.cr"), application_mailer)
         write(File.join(dir, "src", "views", "layouts", "application.ecr"), layout_view)
         write(File.join(dir, "src", "views", "home", "index.ecr"), home_view)
         write(File.join(dir, "src", "models", "application_record.cr"), application_record)
@@ -539,6 +539,13 @@ module Saci
         # Server settings live in config/server.cr (not an initializer):
         # config/server.yml supplies defaults; HOST/PORT/SACI_* override them.
         require "../config/server"
+        # Base classes first: globs load files alphabetically, and a subclass
+        # such as admin_controller.cr must not load before its parent.
+        require "./models/application_record"
+        require "./controllers/application_controller"
+        require "./channels/application_channel"
+        require "./jobs/application_job"
+        require "./mailers/application_mailer"
         require "./models/*"
         require "./controllers/*"
         require "./channels/*"
@@ -549,24 +556,24 @@ module Saci
         FileUtils.mkdir_p("db")
         # config/database.yml (when present) assembles the URL per APP_ENV;
         # DATABASE_URL still wins, and the historic default is the fallback.
-        db_url = Saci::ConfigFile.database_url(env_name) || ENV.fetch("DATABASE_URL", "#{url_default}")
-        Saci::Record.connect(db_url)
-        Saci::I18n.reload!
+        db_url = ConfigFile.database_url(env_name) || ENV.fetch("DATABASE_URL", "#{url_default}")
+        Record.connect(db_url)
+        I18n.reload!
 
-        server_config = Saci::Deploy::ServerConfig.current
+        server_config = Deploy::ServerConfig.current
         if server_config.threads > 1
           Saci.enable_multithreading!(server_config.threads)
         elsif ENV["SACI_MT"]? == "1"
           Saci.enable_multithreading!
         end
 
-        router = Saci::Router.new.draw do |r|
+        router = Router.new.draw do |r|
           r.get "/up", HealthController, :show
           r.root HomeController, :index
         end
 
-        Saci::Deploy.boot_summary(app: "#{name}", db_url: db_url, server: server_config)
-        Saci::Application.new(router).listen_gracefully(server_config.port, server_config.host)
+        Deploy.boot_summary(app: "#{name}", db_url: db_url, server: server_config)
+        Application.new(router).listen_gracefully(server_config.port, server_config.host)
         CRYSTAL
       end
 
@@ -599,6 +606,30 @@ module Saci
           def show
             render plain: "OK", status: 200
           end
+        end
+        CRYSTAL
+      end
+
+      # App-wide parents for jobs, mailers and channels (Rails' ApplicationJob
+      # / ApplicationMailer / ApplicationCable::Channel). Generators subclass
+      # these, so `Saci::` appears once per kind, as in ApplicationRecord.
+      def self.application_job : String
+        <<-CRYSTAL
+        abstract class ApplicationJob < Saci::Job::Base
+        end
+        CRYSTAL
+      end
+
+      def self.application_mailer : String
+        <<-CRYSTAL
+        abstract class ApplicationMailer < Saci::Mailer::Base
+        end
+        CRYSTAL
+      end
+
+      def self.application_channel : String
+        <<-CRYSTAL
+        abstract class ApplicationChannel < Saci::Cable::Channel
         end
         CRYSTAL
       end
@@ -732,6 +763,7 @@ module Saci
         # (Do not edit by hand — `saci generate migration` keeps db/migrations.cr in sync.)
         #{driver}require "saci"
         require "file_utils"
+        require "../src/models/application_record"
         require "../src/models/*"
         require "./migrations"
 
@@ -819,6 +851,11 @@ module Saci
         # without editing this (each env file guards on `Saci.env` itself).
         require "../config/environments/*"
         require "../config/initializers/*"
+        require "../src/models/application_record"
+        require "../src/controllers/application_controller"
+        require "../src/channels/application_channel"
+        require "../src/jobs/application_job"
+        require "../src/mailers/application_mailer"
         require "../src/models/*"
         require "../src/controllers/*"
         require "../src/channels/*"
@@ -846,14 +883,14 @@ module Saci
 
         describe "#{Util.class_name(name)} requests" do
           before_each do
-            Saci::Record.clean_database!
+            Record.clean_database!
           end
 
           it "serves the home page as HTML" do
-            router = Saci::Router.new.draw do |r|
+            router = Router.new.draw do |r|
               r.root HomeController, :index
             end
-            Saci::TestSession.serve(router) do |app|
+            TestSession.serve(router) do |app|
               resp = app.get("/")
               resp.status_code.should eq(200)
               resp.body.should contain("Welcome")
@@ -861,10 +898,10 @@ module Saci
           end
 
           it "answers the health check at /up" do
-            router = Saci::Router.new.draw do |r|
+            router = Router.new.draw do |r|
               r.get "/up", HealthController, :show
             end
-            Saci::TestSession.serve(router) do |app|
+            TestSession.serve(router) do |app|
               resp = app.get("/up")
               resp.status_code.should eq(200)
               resp.body.should eq("OK")

@@ -267,7 +267,7 @@ describe "saci generate extras" do
         File.read("src/models/post.cr").should contain("class Post < ApplicationRecord")
         File.read("src/controllers/posts_controller.cr").should contain("class PostsController")
         File.read("src/controllers/posts_controller.cr").should contain("render json:")
-        File.read("src/routes/posts_routes.cr").should contain("def self.draw_posts(r : Saci::Router)")
+        File.read("src/routes/posts_routes.cr").should contain("def self.draw_posts(r : Router)")
         File.read("src/routes/posts_routes.cr").should contain(%(r.resources "posts", PostsController))
         Dir.glob("db/migrate/*_create_posts.cr").size.should eq(1)
       end

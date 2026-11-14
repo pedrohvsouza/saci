@@ -10,11 +10,11 @@ not supported.
 | Rails | Saci |
 |---|---|
 | Ruby, interpreted, autoloaded | Crystal, compiled into one binary; files are `require`d (generated apps use globs) |
-| `rails server` (Puma, Rack) | `saci serve` runs your entrypoint; `Saci::Application#listen` on stdlib `HTTP::Server` |
+| `rails server` (Puma, Rack) | `saci serve` runs your entrypoint; `Application#listen` on stdlib `HTTP::Server` |
 | Edit, then refresh | `saci serve --watch` rebuilds and restarts in a few seconds |
 | `rails console` | `saci console` compiles each line; `saci runner` runs scripts in app context |
 | `config/application.rb` | `src/<app>.cr`, `config/environments/*.cr`, `config/initializers/*.cr`, `Saci.configure` |
-| `config/routes.rb` | `Saci::Router.new.draw { \|r\| ... }`, optionally `Saci::Routes.define` for compile-time helpers |
+| `config/routes.rb` | `Router.new.draw { \|r\| ... }`, optionally `Routes.define` for compile-time helpers |
 | `app/models`, `app/controllers`, `app/views` | `src/models`, `src/controllers`, `src/views` (ECR) |
 | `db/schema.rb` | `db/schema.cr` (`saci db:schema:dump`) |
 | Gems | Shards, compiled from source; many common gems have built-in equivalents |
@@ -49,23 +49,42 @@ not supported.
 
 ## Component map
 
+Rails namespaces its framework classes (`ActionController::Base`,
+`ActiveRecord::Base`). Saci's live in the `Saci` module, which
+`require "saci"` includes at the top level, so app code writes the short
+names used below:
+
+```crystal
+class PostsController < Controller   # Saci::Controller
+end
+
+class Post < Record::Base            # Saci::Record::Base
+end
+```
+
+Module methods keep the prefix, like `Rails.logger`: `Saci.config`,
+`Saci.logger`, `Saci.env`. Top-level names your app defines win, so an app
+`Session` model stays yours, and `Time` and `DB` are always the stdlib and
+crystal-db ones. Compile with `-Dsaci_namespaced` to keep every framework
+type behind `Saci::`.
+
 | Rails component | Saci |
 |---|---|
-| Action Dispatch routing | `Saci::Router`: `resources`, `resource`, `namespace`, `scope`, `member`/`collection`, `shallow`, `concern`, `direct`, `resolve`, `mount`, constraints, optional segments, redirects |
+| Action Dispatch routing | `Router`: `resources`, `resource`, `namespace`, `scope`, `member`/`collection`, `shallow`, `concern`, `direct`, `resolve`, `mount`, constraints, optional segments, redirects |
 | Rack middleware | `config.middleware` with plain `HTTP::Handler`s. Built in: CORS, HostAuthorization, RemoteIp, Static, gzip, SSL, request body limit, `/up`, exceptions app |
-| Action Controller | `Saci::Controller`: filters (including `around_action` and `prepend_*`), `rescue_from`, `respond_to`, `render`, `redirect_back`, strong params / `params.expect`, `rate_limit`, `allow_browser`, HTTP auth, conditional GET |
+| Action Controller | `Controller`: filters (including `around_action` and `prepend_*`), `rescue_from`, `respond_to`, `render`, `redirect_back`, strong params / `params.expect`, `rate_limit`, `allow_browser`, HTTP auth, conditional GET |
 | Action View | ECR templates, layouts, partials, `content_for`, form builders, tag/text/number/date helpers, fragment caching |
-| Asset pipeline (Propshaft) | `Saci::Assets` manifest with fingerprinted names and tag helpers |
-| importmap-rails, Turbo, Stimulus | `Saci::Importmap`, `Saci::Turbo` (frames and streams), vendored Turbo Drive and Stimulus subsets |
-| Active Record | `Saci::Record::Base`: associations, validations, callbacks, dirty tracking, enums, nested attributes, locking, bulk writes, batching, `explain`, multiple databases |
-| Active Record migrations | `Saci::Record::Migration` (reversible `change`, `change_table`, `reversible`, `revert`, introspection, PostgreSQL native types) plus `db/schema.cr` |
-| Active Job / Solid Queue | `Saci::Job` with the `:db` adapter (`SKIP LOCKED` claims, dead letters, priorities, uniqueness, batches, continuations) and `Saci::Recurring` |
-| Action Mailer | `Saci::Mailer::Base` (SMTP, sendmail, SendGrid/Mailgun/Postmark/SES, DKIM, attachments, callbacks, previews) |
-| Action Mailbox | `Saci::Mailbox` |
-| Active Storage | `Saci::Storage` (disk, S3, mirror services, blobs, `has_one_attached`/`has_many_attached`, direct uploads) |
-| Action Text | `Saci::RichText` (sanitized storage, attachments) |
-| Action Cable / Solid Cable | `Saci::Cable` (in-process, Redis or database fan-out) |
-| Rails.cache / Solid Cache | `Saci::Cache` (memory, Redis, database), `Saci::PageCache` |
+| Asset pipeline (Propshaft) | `Assets` manifest with fingerprinted names and tag helpers |
+| importmap-rails, Turbo, Stimulus | `Importmap`, `Turbo` (frames and streams), vendored Turbo Drive and Stimulus subsets |
+| Active Record | `Record::Base`: associations, validations, callbacks, dirty tracking, enums, nested attributes, locking, bulk writes, batching, `explain`, multiple databases |
+| Active Record migrations | `Record::Migration` (reversible `change`, `change_table`, `reversible`, `revert`, introspection, PostgreSQL native types) plus `db/schema.cr` |
+| Active Job / Solid Queue | `Job` with the `:db` adapter (`SKIP LOCKED` claims, dead letters, priorities, uniqueness, batches, continuations) and `Recurring` |
+| Action Mailer | `Mailer::Base` (SMTP, sendmail, SendGrid/Mailgun/Postmark/SES, DKIM, attachments, callbacks, previews) |
+| Action Mailbox | `Mailbox` |
+| Active Storage | `Storage` (disk, S3, mirror services, blobs, `has_one_attached`/`has_many_attached`, direct uploads) |
+| Action Text | `RichText` (sanitized storage, attachments) |
+| Action Cable / Solid Cable | `Cable` (in-process, Redis or database fan-out) |
+| Rails.cache / Solid Cache | `Cache` (memory, Redis, database), `PageCache` |
 | Active Support | durations, time zones, `Date`, inflections, core extensions, `CurrentAttributes`, notifications, I18n |
 | Credentials | `config/credentials.yml.enc`, `saci credentials:*` |
 | `rails new` / generators | `saci new`, `saci generate`, `saci destroy`, `saci app:update` |
@@ -77,20 +96,20 @@ not supported.
 | Gem | Saci |
 |---|---|
 | Devise, Sorcery, `has_secure_password` | Auth helpers (`login`, `current_user`, `require_login`), `has_secure_password`, `authenticate_by`, `generates_token_for`, `saci g authentication` |
-| Pundit, CanCanCan, ActionPolicy | `Saci::Policy` (roles, `can`, scopes), `authorize!`, `policy_scope` |
-| ActiveModel::Serializers, Jbuilder | `Saci::Serializer(T)` |
-| Ransack | `Saci::Search` with `searchable_attributes` |
-| PaperTrail, Audited | `Saci::Auditable` |
-| Kaminari, Pagy | `Saci::Pagination` |
+| Pundit, CanCanCan, ActionPolicy | `Policy` (roles, `can`, scopes), `authorize!`, `policy_scope` |
+| ActiveModel::Serializers, Jbuilder | `Serializer(T)` |
+| Ransack | `Search` with `searchable_attributes` |
+| PaperTrail, Audited | `Auditable` |
+| Kaminari, Pagy | `Pagination` |
 | Sidekiq, GoodJob | `:db` job adapter (there is no Redis queue adapter) |
-| sidekiq-cron, whenever | `Saci::Recurring` |
-| Rack::Attack | `Saci::Throttle` |
-| rack-cors | `Saci::Middleware::CORS` |
-| graphql-ruby | `Saci::GraphQL` |
-| caxlsx, Prawn, csv | `Saci::Office` (XLSX, PDF, CSV) |
-| jwt, rotp | `Saci::JWT`, `Saci::TOTP`, `has_two_factor` |
-| FactoryBot, fixtures | `Saci::Testing::Factory`, `Saci::Testing::Fixtures` |
-| Searchkick (basic search) | SQLite FTS5 through `Saci::Record::FTS` |
+| sidekiq-cron, whenever | `Recurring` |
+| Rack::Attack | `Throttle` |
+| rack-cors | `Middleware::CORS` |
+| graphql-ruby | `GraphQL` |
+| caxlsx, Prawn, csv | `Office` (XLSX, PDF, CSV) |
+| jwt, rotp | `JWT`, `TOTP`, `has_two_factor` |
+| FactoryBot, fixtures | `Testing::Factory`, `Testing::Fixtures` |
+| Searchkick (basic search) | SQLite FTS5 through `Record::FTS` |
 | ActiveAdmin, Administrate | `saci g admin` scaffold |
 | Sentry hooks | `Saci.error_reporter = ->(ex : Exception) { ... }` |
 
@@ -128,8 +147,8 @@ not supported.
     `saci assets:precompile` replaces `rails assets:precompile`.
 - **Routes**
   - Routes are values, not a global file. Draw them on a router and pass
-    the router to `Saci::Application`.
-  - Compile-time helpers need `Saci::Routes.define`. Otherwise use
+    the router to `Application`.
+  - Compile-time helpers need `Routes.define`. Otherwise use
     `path_for(:post, id)`.
 - **Mailers**
   - Actions are class methods (`def self.welcome`). Use `with(...)` for

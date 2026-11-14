@@ -1,12 +1,12 @@
 require "../src/saci"
 
-class HomeController < Saci::Controller
+class HomeController < Controller
   def index
     render json: {message: "Welcome to Saci", version: Saci::VERSION}
   end
 end
 
-class PostsController < Saci::Controller
+class PostsController < Controller
   before_action :log, except: [:index]
 
   def index
@@ -35,7 +35,7 @@ class PostsController < Saci::Controller
   end
 end
 
-router = Saci::Router.new.draw do |r|
+router = Router.new.draw do |r|
   r.root HomeController, :index
   r.get "/hello", HomeController, :index
   r.resources "posts", PostsController
@@ -44,5 +44,5 @@ router = Saci::Router.new.draw do |r|
   end
 end
 
-app = Saci::Application.new(router)
+app = Application.new(router)
 app.listen(3000)

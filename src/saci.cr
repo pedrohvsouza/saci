@@ -64,3 +64,13 @@ require "./saci/office"
 
 module Saci
 end
+
+# Framework types resolve without the `Saci::` prefix in app code
+# (`class PostsController < Controller`, `rescue Record::RecordNotFound`,
+# `TestSession.serve(router)`). Names the app or the stdlib define at the
+# top level win over Saci's, so an app `Session` model stays the app's and
+# `Time`/`DB` stay the stdlib/crystal-db ones. Compile with
+# `-Dsaci_namespaced` to keep every framework type behind `Saci::`.
+{% unless flag?(:saci_namespaced) %}
+  include Saci
+{% end %}

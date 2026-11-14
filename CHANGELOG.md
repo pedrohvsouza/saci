@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+- **Framework types without the `Saci::` prefix.** `require "saci"` now
+  includes `Saci` at the top level, so app code can write
+  `class PostsController < Controller`, `rescue Record::RecordNotFound` or
+  `TestSession.serve(router)`. Top-level names from the app or the stdlib
+  still win (an app `Session` model stays the app's, `Time` and `DB` are
+  the stdlib/crystal-db ones), and the full `Saci::` path keeps working.
+  Compile with `-Dsaci_namespaced` to turn the include off.
+- `saci new` generates `ApplicationJob`, `ApplicationMailer` and
+  `ApplicationChannel`, and `saci generate job/mailer/channel` (and the
+  authentication mailer) subclass them, creating the base file in older
+  apps. Base classes, `config/`, `spec/spec_helper.cr` and `db/migrate.cr`
+  keep the prefix; generated models, controllers, jobs, mailers,
+  channels, migrations, specs and routes use the short names. Apps whose
+  installed Saci predates the include still get prefixed code.
+- **Fixed: generated apps failed to compile when a model, controller, job,
+  mailer or channel sorted before its base class** (`account.cr`,
+  `admin_controller.cr`). The entrypoint, `spec/spec_helper.cr` and
+  `db/migrate.cr` now require the `application_*` files before the globs.
+  Existing apps can add the same requires.
+
 ## 0.6.1 — 2026-11-14
 
 - **Fixed: `HEAD` requests returned 404.** A `HEAD` with no route of its
