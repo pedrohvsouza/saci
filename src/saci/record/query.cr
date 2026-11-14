@@ -108,7 +108,7 @@ module Saci
             end
           else
             new_conds << "#{col} = ?"
-            new_params << Record.to_db(value, ad)
+            new_params << Record.to_db(@klass.__saci_query_value(key.to_s, value), ad)
           end
         end
         spawn(new_conds, new_params)
@@ -695,6 +695,7 @@ module Saci
           end
           i += 1
         end
+        obj.__saci_decrypt_loaded!
         obj.__saci_mark_persisted!
         obj
       end
@@ -736,6 +737,7 @@ module Saci
           obj.__saci_push_extra(n, v) unless obj.__saci_set_attr(n, v)
         end
         extras.each { |(n, v)| obj.__saci_push_extra(n, v) }
+        obj.__saci_decrypt_loaded!
         obj.__saci_mark_persisted!
         obj
       end
@@ -1122,6 +1124,9 @@ module Saci
           rs.each do
             values << Record.read_typed(rs, col_type, ad)
           end
+        end
+        if @klass.__saci_encrypts? && @klass.__saci_encrypted_columns.any? { |(n, _, _)| n == col.to_s }
+          values = values.map { |v| Encryption.decode(v) }
         end
         values
       end

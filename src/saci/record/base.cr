@@ -108,6 +108,10 @@ module Saci
           super(q)
         end
 
+        def self.__saci_encrypted_columns : Array({String, Bool, Bool})
+          super
+        end
+
         def self.__saci_column_names : Array(Tuple(String, String))
           super
         end
@@ -739,6 +743,45 @@ module Saci
         raise Saci::Record::CallbackAbort.new
       end
 
+      # Encrypted columns (`encrypts`): {name, deterministic?, downcase?}.
+      def self.__saci_encrypted_columns : Array({String, Bool, Bool})
+        [] of {String, Bool, Bool}
+      end
+
+      # Fast path: false until a model (or a parent) calls `encrypts`.
+      def self.__saci_encrypts? : Bool
+        false
+      end
+
+      # The value written to the database for column *name*.
+      def self.__saci_encode_column(name : String, value : Saci::Record::Value) : Saci::Record::Value
+        return value unless __saci_encrypts?
+        __saci_encrypted_columns.each do |(col, deterministic, downcase)|
+          return Saci::Record::Encryption.encode(value, deterministic, downcase) if col == name
+        end
+        value
+      end
+
+      # The bind value for `where(name: value)`: deterministic columns
+      # compare ciphertexts, so the value is encrypted the same way.
+      def self.__saci_query_value(name : String, value)
+        return value unless value.is_a?(String) && __saci_encrypts?
+        __saci_encrypted_columns.each do |(col, deterministic, downcase)|
+          if col == name && deterministic
+            return Saci::Record::Encryption.encode(value, true, downcase)
+          end
+        end
+        value
+      end
+
+      # Decrypts encrypted columns of a freshly loaded row in place.
+      def __saci_decrypt_loaded! : Nil
+        return unless self.class.__saci_encrypts?
+        self.class.__saci_encrypted_columns.each do |(col, _, _)|
+          __saci_set_attr(col, Saci::Record::Encryption.decode(__saci_get_attr(col)))
+        end
+      end
+
       # `dependent:` association cleanup (overridden per association).
       def __saci_run_dependents : Nil
       end
@@ -1198,7 +1241,7 @@ module Saci
         conn = self.class.connection
         ad = Record.adapter_of(conn)
         sets = pairs.map { |(n, _)| "#{Record.quote(n, ad)} = ?" }.join(", ")
-        vals = pairs.map { |(_, v)| Record.to_db(v, ad) } + [Record.to_db(pk_val, ad)] of Value
+        vals = pairs.map { |(n, v)| Record.to_db(self.class.__saci_encode_column(n, v), ad) } + [Record.to_db(pk_val, ad)] of Value
         Record.exec_compat(conn,
           "UPDATE #{Record.quote(self.class.table_name, ad)} SET #{sets} WHERE #{Record.quote(pk, ad)} = ?",
           vals)
@@ -1357,7 +1400,7 @@ module Saci
         else
           names = use_cols.map { |(n, _)| Record.quote(n, ad) }
           placeholders = use_cols.map { "?" }.join(", ")
-          values = use_cols.map { |(n, _)| Record.to_db(__saci_get_attr(n), ad) }
+          values = use_cols.map { |(n, _)| Record.to_db(self.class.__saci_encode_column(n, __saci_get_attr(n)), ad) }
           if ad == :postgres
             # crystal-pg has no `last_insert_id` — RETURNING instead.
             new_id = nil
@@ -1392,7 +1435,7 @@ module Saci
         end
         cols = self.class.__saci_column_names.reject { |(n, _)| n == pk || n == lock_col }
         sets = cols.map { |(n, _)| "#{Record.quote(n, ad)} = ?" }.join(", ")
-        values = cols.map { |(n, _)| Record.to_db(__saci_get_attr(n), ad) }
+        values = cols.map { |(n, _)| Record.to_db(self.class.__saci_encode_column(n, __saci_get_attr(n)), ad) }
         if lock_col
           new_lock = (Record.to_i64(lock_val) || 0_i64) + 1
           sets = sets.empty? ? "#{Record.quote(lock_col, ad)} = ?" : "#{sets}, #{Record.quote(lock_col, ad)} = ?"
@@ -1431,6 +1474,7 @@ module Saci
         __saci_column_names.each do |(col_name, col_type)|
           obj.__saci_set_attr(col_name, Record.read_typed(rs, col_type, adapter))
         end
+        obj.__saci_decrypt_loaded!
         obj.__saci_mark_persisted!
         obj
       end
@@ -2042,7 +2086,7 @@ module Saci
                   self.class.__saci_table_query.where("LOWER(" + %uq_col{{col.id}} + ") = LOWER(?)", Saci::Record.to_db(%uniq{{col.id}}, %uad{{col.id}}))
                 end
               {% else %}
-                %uscope{{col.id}} = self.class.__saci_table_query.where(Saci::Record.quote({{col.id.stringify}}, %uad{{col.id}}) + " = ?", Saci::Record.to_db(%uniq{{col.id}}, %uad{{col.id}}))
+                %uscope{{col.id}} = self.class.__saci_table_query.where(Saci::Record.quote({{col.id.stringify}}, %uad{{col.id}}) + " = ?", Saci::Record.to_db(self.class.__saci_query_value({{col.id.stringify}}, %uniq{{col.id}}), %uad{{col.id}}))
               {% end %}
               {% for s in u_scopes %}
                 %scv{{col.id}}{{s.id}} = __saci_get_attr({{s.id.stringify}})
@@ -2577,6 +2621,45 @@ module Saci
             end
           end
         {% end %}
+      end
+
+      # Rails `encrypts`: stores the columns encrypted (AES-256-GCM) and
+      # decrypts them on load; in memory they hold plaintext.
+      #
+      # ```
+      # class User < ApplicationRecord
+      #   column email : String
+      #   column ssn : String
+      #   encrypts :ssn
+      #   encrypts :email, deterministic: true, downcase: true
+      # end
+      #
+      # User.find_by(email: "Ana@Example.com") # deterministic: queryable
+      # ```
+      #
+      # Each write of a non-deterministic column uses a fresh IV, so equal
+      # values give different ciphertexts and cannot be queried.
+      # `deterministic: true` derives the IV from the value, so equal
+      # values encrypt the same way and `where`/`find_by`/uniqueness
+      # validations work (with exact matches only, and at the cost of
+      # revealing which rows share a value). `downcase: true` lowercases
+      # the stored value. Only `String` columns can be encrypted; the
+      # database column needs room for the envelope (about 4/3 of the
+      # value plus 48 bytes). Keys and rotation: see
+      # `Saci::Record::Encryption`. `update_all`, `insert_all` and raw SQL
+      # bypass encryption.
+      macro encrypts(*names, deterministic = false, downcase = false)
+        def self.__saci_encrypts? : Bool
+          true
+        end
+
+        def self.__saci_encrypted_columns : Array({String, Bool, Bool})
+          previous_def + [
+            {% for n in names %}
+              { {{n.id.stringify}}, {{deterministic}}, {{downcase}} },
+            {% end %}
+          ] of {String, Bool, Bool}
+        end
       end
 
       # Rails `has_secure_password` (bcrypt). Requires a `password_digest`

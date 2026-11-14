@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+- **Attribute encryption.** `encrypts :ssn` stores a `String` column as
+  an AES-256-GCM envelope and decrypts it on load, so in memory it holds
+  plaintext. Every write uses a fresh IV. `encrypts :email,
+  deterministic: true` derives the IV from the value instead, so
+  `where`, `find_by` and uniqueness validations match; `downcase: true`
+  lowercases the stored value. Keys come from
+  `Saci::Record::Encryption.primary_key=`/`deterministic_key=`, then the
+  credentials `record_encryption.primary_key`/`deterministic_key`, then
+  `secret_key_base`. `previous_keys` keeps old keys readable during
+  rotation, and saving a record re-encrypts it with the current ones. A
+  value that does not decrypt raises `Encryption::DecryptionError`;
+  `support_unencrypted_data = true` passes plaintext through while
+  existing rows are migrated. `update_all`, `insert_all` and raw SQL
+  bypass encryption.
+- `MessageEncryptor.encrypt_and_sign` takes an optional `iv:` (12 bytes).
+
 ## 0.8.0 — 2026-11-14
 
 Models gain single-table inheritance and `default_scope`/`unscoped`.

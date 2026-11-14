@@ -25,10 +25,18 @@ module Saci
     IV_LEN  = 12
     TAG_LEN = 16
 
-    def self.encrypt_and_sign(key : Bytes, plaintext : Bytes) : String
+    # *iv* defaults to 12 random bytes. Pass one only for deterministic
+    # encryption (the same plaintext must map to the same envelope), and
+    # derive it from the plaintext so distinct messages never share an IV.
+    def self.encrypt_and_sign(key : Bytes, plaintext : Bytes, iv : Bytes? = nil) : String
       raise Error.new("AES-256-GCM needs a 32-byte key") unless key.size == 32
-      iv = Bytes.new(IV_LEN)
-      Random::Secure.random_bytes(iv)
+      if given = iv
+        raise Error.new("AES-256-GCM needs a 12-byte iv") unless given.size == IV_LEN
+      else
+        given = Bytes.new(IV_LEN)
+        Random::Secure.random_bytes(given)
+      end
+      iv = given
       ctx = LibCrypto.evp_cipher_ctx_new
       begin
         raise Error.new("encrypt init failed") unless LibSaciGcm.encrypt_init(ctx, LibSaciGcm.aes_256_gcm, nil, key.to_unsafe, iv.to_unsafe) == 1

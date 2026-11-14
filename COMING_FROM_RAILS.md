@@ -130,6 +130,13 @@ type behind `Saci::`.
   - `default_scope { where(deleted_at: nil) }` and `unscoped` (also the
     block form) work. `new` does not copy the default scope's `where`
     values into the record.
+  - `encrypts :ssn` and `encrypts :email, deterministic: true,
+    downcase: true` work on `String` columns. Keys come from
+    `Saci::Record::Encryption.primary_key=`/`deterministic_key=`, the
+    credentials `record_encryption.primary_key`/`deterministic_key`, or
+    `secret_key_base`; `previous_keys` handles rotation. There is no
+    `ignore_case:`, compression or `encrypted_attribute?`, and
+    `update_all`/`insert_all` write values unencrypted.
   - Single-table inheritance works as in Rails: subclass a model whose
     table has a `type` column (`class Car < Vehicle`). Subclasses share
     the table, store their full class name in `type`, only see their own
@@ -186,7 +193,7 @@ type behind `Saci::`.
   not have.
 - Engines and Rack middleware gems.
 - `delegated_type`, composite primary keys,
-  Active Record encryption, async queries, `strict_loading`,
+  async queries, `strict_loading`,
   `store_accessor` and `normalizes`.
 - Browser-driven system tests. `saci g system_test` generates an HTTP
   integration test.
