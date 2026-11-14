@@ -471,6 +471,9 @@ Post.transaction(isolation: :serializable) { post.lock!; ... }
   `touch:`, `autosave:`), `has_many` / `has_one` (with `through:`, `as:`,
   and `dependent:` set to `:destroy`, `:delete_all`, `:nullify` or
   `:restrict_with_exception`), and `has_and_belongs_to_many`.
+- **Single-table inheritance**: subclasses of a model whose table has a
+  `type` column share its table and only see their own rows
+  (`inheritance_column :kind` picks another column).
 - **Persistence**: `update_columns`, `update_column` and `touch` skip
   validations and callbacks. `upsert` runs no validations. `increment!`,
   `toggle!` and `destroy!` are available, and optimistic locking turns on

@@ -27,11 +27,9 @@ These are known gaps in the current release:
   bucket.
 - **Cable**: the database adapter polls on SQLite and MySQL; only
   PostgreSQL has push delivery (`LISTEN/NOTIFY`).
-- **Deploy**: the generated Dockerfile has not been verified by a
-  container build in CI. There is no bundled HTTP/2 proxy (Thruster is
-  only documented).
-- **ORM**: there is no single-table inheritance and no attribute
-  encryption (see
+- **Deploy**: there is no bundled HTTP/2 proxy (Thruster is only
+  documented).
+- **ORM**: there is no attribute encryption (see
   [COMING_FROM_RAILS.md](COMING_FROM_RAILS.md)).
 - **Testing**: there are no browser-driven system tests.
 

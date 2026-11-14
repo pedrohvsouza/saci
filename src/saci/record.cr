@@ -119,6 +119,11 @@ module Saci
     class UnknownAttributeError < Exception
     end
 
+    # Raised when a single-table inheritance row names a `type` that is not
+    # a loaded subclass of the queried model (Rails `SubclassNotFound`).
+    class SubclassNotFound < Exception
+    end
+
     class IrreversibleMigration < Exception
     end
 
@@ -759,6 +764,43 @@ module Saci
       sets = columns.map { |c| "#{quote(c, ad)} = ?" }.join(", ")
       vals = columns.map { now } + [to_db(id, ad)] of Value
       exec_compat(db, "UPDATE #{quote(table, ad)} SET #{sets} WHERE #{quote(pk, ad)} = ?", vals)
+    end
+
+    # -- single-table inheritance registry ---------------------------------
+    # Every concrete model registers its class name, the names of its
+    # ancestors, a factory and its columns from `Base.inherited`. Queries
+    # use it to list a model's subclasses (`WHERE type IN (...)`) and to
+    # instantiate each row as the class its `type` column names.
+    struct StiClass
+      getter name : String
+      getter ancestors : Array(String)
+      getter factory : Proc(Base)
+      getter columns : Proc(Array(Tuple(String, String)))
+
+      def initialize(@name : String, @ancestors : Array(String), @factory : Proc(Base),
+                     @columns : Proc(Array(Tuple(String, String))))
+      end
+    end
+
+    @@sti_classes = {} of String => StiClass
+    @@sti_mutex = Mutex.new
+
+    def self.register_sti_class(name : String, ancestors : Array(String), factory : Proc(Base),
+                                columns : Proc(Array(Tuple(String, String)))) : Nil
+      @@sti_mutex.synchronize { @@sti_classes[name] = StiClass.new(name, ancestors, factory, columns) }
+    end
+
+    def self.sti_class(name : String) : StiClass?
+      @@sti_mutex.synchronize { @@sti_classes[name]? }
+    end
+
+    # `name` followed by every registered subclass of it, in load order.
+    def self.sti_names(name : String) : Array(String)
+      @@sti_mutex.synchronize do
+        names = [name]
+        @@sti_classes.each_value { |c| names << c.name if c.ancestors.includes?(name) }
+        names
+      end
     end
 
     # -- polymorphic registry ---------------------------------------------

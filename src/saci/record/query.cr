@@ -63,8 +63,19 @@ module Saci
       # Clone with overrides — every chain method funnels through here so
       # `select`/`distinct`/`joins`/`group`/`includes` survive chaining.
       # Any scope change drops preloaded `@records` (fresh SQL scope).
+      # False on `__saci_table_query` relations (uniqueness checks), which
+      # span every STI class in the table and load all rows as `T`.
+      @__saci_sti_dispatch = true
+
+      def __saci_without_sti_dispatch : self
+        @__saci_sti_dispatch = false
+        self
+      end
+
       private def spawn(conditions : Array(String) = @conditions.dup, params : Array(Value) = @params.dup, order : Array(String) = @order.dup, limit : Int32? = @limit, offset : Int32? = @offset, select_cols : Array(String)? = @select_cols.try(&.dup), distinct_flag : Bool = @distinct_flag, joins : Array(String) = @joins.dup, group_cols : Array(String) = @group_cols.dup, includes : Array(String) = @includes.dup, nested_includes : Hash(String, Array(String)) = @nested_includes.dup, records : Array(T)? = nil, none_flag : Bool = @none_flag, having : Array(String) = @having.dup, from_clause : String? = @from_clause, annotations : Array(String) = @annotations.dup, readonly_flag : Bool = @readonly_flag, lock_clause : String? = @lock_clause, references : Array(String) = @references.dup, having_params : Array(Value) = @having_params.dup) : Query(T)
-        Query(T).new(@klass, conditions, params, order, limit, offset, select_cols, distinct_flag, joins, group_cols, includes, nested_includes, records, none_flag, having, from_clause, annotations, readonly_flag, lock_clause, references, having_params)
+        query = Query(T).new(@klass, conditions, params, order, limit, offset, select_cols, distinct_flag, joins, group_cols, includes, nested_includes, records, none_flag, having, from_clause, annotations, readonly_flag, lock_clause, references, having_params)
+        query.__saci_without_sti_dispatch unless @__saci_sti_dispatch
+        query
       end
 
       # `where(title: "x", published: true)` — nil becomes `IS NULL`, a
@@ -609,10 +620,18 @@ module Saci
         conn = @klass.connection
         col_types = {} of String => String
         @klass.__saci_column_names.each { |(n, t)| col_types[n] = t }
+        sti_column = @__saci_sti_dispatch ? sti_dispatch_column : nil
+        if sti_column
+          # Subclasses may declare columns of their own: read those too.
+          @klass.sti_names.each do |sti_name|
+            next unless entry = Record.sti_class(sti_name)
+            entry.columns.call.each { |(n, t)| col_types[n] ||= t }
+          end
+        end
         results = [] of T
-        Record.query_compat(conn, select_sql(ad), @params + @having_params) do |rs|
+        Record.query_compat(conn, select_sql(ad, sti_column ? col_types.keys : nil), @params + @having_params) do |rs|
           rs.each do
-            results << load_indexed_row(rs, ad, col_types)
+            results << (sti_column ? load_sti_row(rs, ad, col_types, sti_column) : load_indexed_row(rs, ad, col_types))
           end
         end
         unless (@includes.empty? && @nested_includes.empty?) || results.empty?
@@ -678,6 +697,55 @@ module Saci
         end
         obj.__saci_mark_persisted!
         obj
+      end
+
+      # The inheritance column when rows may belong to STI subclasses of
+      # `T` (it is an STI model and has loaded subclasses), else nil.
+      private def sti_dispatch_column : String?
+        return nil unless @klass.__saci_sti?
+        return nil unless col = @klass.__saci_inheritance_column
+        @klass.sti_names.size > 1 ? col : nil
+      end
+
+      # Like `load_indexed_row`, but instantiates the class named by the
+      # row's inheritance column, so the row has to be read first.
+      private def load_sti_row(rs : DB::ResultSet, ad : Adapter, col_types : Hash(String, String), sti_column : String) : T
+        values = [] of Tuple(String, Value)
+        extras = [] of Tuple(String, Value)
+        seen = {} of String => Bool
+        i = 0
+        total = rs.column_count
+        while i < total
+          name = rs.column_name(i)
+          if t = col_types[name]?
+            if seen[name]?
+              Record.read_generic(rs)
+            else
+              seen[name] = true
+              values << {name, Record.read_typed(rs, t, ad)}
+            end
+          else
+            extras << {name, Record.read_generic(rs)}
+          end
+          i += 1
+        end
+        type_value = nil
+        values.each { |(n, v)| type_value = v if n == sti_column }
+        obj = sti_instance(type_value.try(&.to_s))
+        values.each do |(n, v)|
+          obj.__saci_push_extra(n, v) unless obj.__saci_set_attr(n, v)
+        end
+        extras.each { |(n, v)| obj.__saci_push_extra(n, v) }
+        obj.__saci_mark_persisted!
+        obj
+      end
+
+      private def sti_instance(type_name : String?) : T
+        return @klass.new if type_name.nil? || type_name.empty? || type_name == @klass.sti_name
+        entry = Record.sti_class(type_name) ||
+                raise SubclassNotFound.new("The single-table inheritance type '#{type_name}' in #{@klass.table_name} is not a loaded subclass of #{@klass.name}")
+        entry.factory.call.as?(T) ||
+          raise SubclassNotFound.new("Invalid single-table inheritance type: #{type_name} is not a subclass of #{@klass.name}")
       end
 
       def each(& : T ->) : Nil
@@ -1369,13 +1437,16 @@ module Saci
         end
       end
 
-      private def select_sql(ad : Adapter) : String
+      # `columns` overrides the model's columns in the default select list
+      # (STI loads add the columns subclasses declare).
+      private def select_sql(ad : Adapter, columns : Array(String)? = nil) : String
         cols = begin
           if s = @select_cols
             s.join(", ")
           else
             table = Record.quote(@klass.table_name, ad)
-            @klass.__saci_column_names.map { |(n, _)| "#{table}.#{Record.quote(n, ad)}" }.join(", ")
+            names = columns || @klass.__saci_column_names.map(&.[0])
+            names.map { |n| "#{table}.#{Record.quote(n, ad)}" }.join(", ")
           end
         end
         d = @distinct_flag ? "DISTINCT " : ""

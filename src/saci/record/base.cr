@@ -271,6 +271,29 @@ module Saci
             {{@type}}.where(Saci::Record.quote({{@type}}.primary_key_name, ad) + " IN (" + ph + ")", ids).to_a.map { |r| r.as(Saci::Record::Base) }
           end
         end
+
+        # Single-table inheritance: a subclass of a model whose table has the
+        # inheritance column (`type`) shares that table and is filtered by it.
+        # Memoized: `table_name` asks on every query.
+        @@__saci_sti_child_memo : Bool? = nil
+
+        def self.__saci_sti_child? : Bool
+          memo = @@__saci_sti_child_memo
+          return memo unless memo.nil?
+          @@__saci_sti_child_memo = {{@type.superclass}}.__saci_sti?
+        end
+
+        def self.__saci_table_name : String
+          __saci_sti_child? ? {{@type.superclass}}.table_name : super
+        end
+
+        {% unless @type.abstract? %}
+          Saci::Record.register_sti_class(
+            {{@type.name.stringify}},
+            ({{@type.ancestors.select { |a| a < ::Saci::Record::Base }.map(&.name.stringify)}} of String),
+            -> { {{@type}}.new.as(Saci::Record::Base) },
+            -> { {{@type}}.__saci_column_names })
+        {% end %}
       end
 
       # Explicit table name (`table "posts"`). Default: inflected class name
@@ -283,6 +306,68 @@ module Saci
 
       def self.__saci_table_name : String
         Inflector.tableize(self.name.split("::").last)
+      end
+
+      # Single-table inheritance (Rails STI). A model whose table has a
+      # `type` column is an STI base; its subclasses share the table,
+      # store their class name in `type` and only see their own rows:
+      #
+      # ```
+      # class Vehicle < ApplicationRecord
+      #   column id : Int64, primary: true
+      #   column type : String
+      #   column name : String
+      # end
+      #
+      # class Car < Vehicle
+      # end
+      #
+      # class SportsCar < Car
+      # end
+      #
+      # Car.create(name: "Fusca") # type = "Car"
+      # Vehicle.all.to_a          # each row as Vehicle, Car or SportsCar
+      # Car.count                 # WHERE type IN ('Car', 'SportsCar')
+      # ```
+      #
+      # The base class sees every row and leaves `type` nil on its own
+      # records. A row whose `type` names no loaded subclass raises
+      # `SubclassNotFound`. `inheritance_column :kind` uses another
+      # column; `inheritance_column nil` turns STI off for that table.
+      macro inheritance_column(name)
+        def self.__saci_inheritance_column : String?
+          {% if name.is_a?(NilLiteral) %}
+            nil
+          {% else %}
+            {{name.id.stringify}}
+          {% end %}
+        end
+      end
+
+      def self.__saci_inheritance_column : String?
+        "type"
+      end
+
+      def self.__saci_sti_child? : Bool
+        false
+      end
+
+      # True for an STI base class and every subclass of one.
+      def self.__saci_sti? : Bool
+        return true if __saci_sti_child?
+        return false unless col = __saci_inheritance_column
+        __saci_column_names.any? { |(n, _)| n == col }
+      end
+
+      # The value stored in the inheritance column (the full class name).
+      def self.sti_name : String
+        name
+      end
+
+      # This class followed by its loaded STI subclasses (names as stored
+      # in the inheritance column).
+      def self.sti_names : Array(String)
+        Record.sti_names(sti_name)
       end
 
       def self.table_name : String
@@ -749,18 +834,29 @@ module Saci
       def initialize
         __saci_apply_defaults
         __saci_dirty_reset!
+        __saci_sti_assign_type
       end
 
       def initialize(attrs : NamedTuple)
         __saci_apply_defaults
         __saci_dirty_reset!
+        __saci_sti_assign_type
         assign(attrs)
       end
 
       def initialize(**attrs : Object)
         __saci_apply_defaults
         __saci_dirty_reset!
+        __saci_sti_assign_type
         assign(attrs)
+      end
+
+      # STI subclasses stamp their class name into the inheritance column
+      # (a change, so the INSERT writes it). The base class leaves it nil.
+      private def __saci_sti_assign_type : Nil
+        return unless self.class.__saci_sti_child?
+        return unless col = self.class.__saci_inheritance_column
+        __saci_set_attr(col, self.class.sti_name) if __saci_get_attr(col).nil?
       end
 
       def assign(attrs : NamedTuple) : Nil
@@ -1356,10 +1452,20 @@ module Saci
       end
 
       # The starting relation for every query on the model, before any
-      # `default_scope`. Conditions that `unscoped` must keep (such as a
-      # single-table-inheritance type filter) belong here.
+      # `default_scope`. Conditions that `unscoped` must keep belong here:
+      # STI subclasses add `type IN (<class and its subclasses>)`.
       def self.__saci_base_query : Query(self)
-        Query(self).new(self)
+        query = Query(self).new(self)
+        return query unless __saci_sti_child?
+        return query unless col = __saci_inheritance_column
+        names = sti_names
+        ad = Record.adapter_of(connection)
+        column = "#{Record.quote(table_name, ad)}.#{Record.quote(col, ad)}"
+        if names.size == 1
+          query.where("#{column} = ?", names.first)
+        else
+          query.where("#{column} IN (#{Array(String).new(names.size, "?").join(", ")})", names.map(&.as(Value)))
+        end
       end
 
       # `Post.unscoped { Post.find(id) }` — inside the block (and on the
@@ -1367,6 +1473,14 @@ module Saci
       # Other models keep theirs. Returns the block's value.
       def self.unscoped(&block : -> T) : T forall T
         Saci::Record.without_default_scope(self.name) { block.call }
+      end
+
+      # The whole table, without the STI type filter (uniqueness checks
+      # cover every row, like Rails' `base_class`). Rows load as `self`
+      # whatever their `type`, so use it for `exists?`/`count`, not to
+      # hand records to app code.
+      def self.__saci_table_query : Query(self)
+        Query(self).new(self).__saci_without_sti_dispatch
       end
 
       # Default-scope chain: the identity here, extended by `default_scope`
@@ -1923,12 +2037,12 @@ module Saci
               {% if u_case_insensitive %}
                 %uq_col{{col.id}} = Saci::Record.quote({{col.id.stringify}}, %uad{{col.id}})
                 %uscope{{col.id}} = if %uad{{col.id}} == :sqlite
-                  self.class.unscoped.where(%uq_col{{col.id}} + " = ? COLLATE NOCASE", Saci::Record.to_db(%uniq{{col.id}}, %uad{{col.id}}))
+                  self.class.__saci_table_query.where(%uq_col{{col.id}} + " = ? COLLATE NOCASE", Saci::Record.to_db(%uniq{{col.id}}, %uad{{col.id}}))
                 else
-                  self.class.unscoped.where("LOWER(" + %uq_col{{col.id}} + ") = LOWER(?)", Saci::Record.to_db(%uniq{{col.id}}, %uad{{col.id}}))
+                  self.class.__saci_table_query.where("LOWER(" + %uq_col{{col.id}} + ") = LOWER(?)", Saci::Record.to_db(%uniq{{col.id}}, %uad{{col.id}}))
                 end
               {% else %}
-                %uscope{{col.id}} = self.class.unscoped.where(Saci::Record.quote({{col.id.stringify}}, %uad{{col.id}}) + " = ?", Saci::Record.to_db(%uniq{{col.id}}, %uad{{col.id}}))
+                %uscope{{col.id}} = self.class.__saci_table_query.where(Saci::Record.quote({{col.id.stringify}}, %uad{{col.id}}) + " = ?", Saci::Record.to_db(%uniq{{col.id}}, %uad{{col.id}}))
               {% end %}
               {% for s in u_scopes %}
                 %scv{{col.id}}{{s.id}} = __saci_get_attr({{s.id.stringify}})

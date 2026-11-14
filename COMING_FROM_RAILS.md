@@ -130,6 +130,15 @@ type behind `Saci::`.
   - `default_scope { where(deleted_at: nil) }` and `unscoped` (also the
     block form) work. `new` does not copy the default scope's `where`
     values into the record.
+  - Single-table inheritance works as in Rails: subclass a model whose
+    table has a `type` column (`class Car < Vehicle`). Subclasses share
+    the table, store their full class name in `type`, only see their own
+    rows and their subclasses' rows, and the base class loads each row as
+    the class it names. `inheritance_column :kind` picks another column,
+    `inheritance_column nil` turns it off. A subclass is only known once
+    it is compiled in, so `require` every subclass (there is no
+    autoloading). Uniqueness validations check the whole table. There is
+    no `becomes` or `sti_class_for`.
   - Use `model_enum` instead of `enum` (`enum` is a reserved word in
     Crystal).
   - `t.references` does not add a foreign key unless you pass
@@ -176,7 +185,7 @@ type behind `Saci::`.
   step debugging. These depend on runtime evaluation, which Crystal does
   not have.
 - Engines and Rack middleware gems.
-- Single-table inheritance, `delegated_type`, composite primary keys,
+- `delegated_type`, composite primary keys,
   Active Record encryption, async queries, `strict_loading`,
   `store_accessor` and `normalizes`.
 - Browser-driven system tests. `saci g system_test` generates an HTTP

@@ -50,6 +50,18 @@
   block, on the current fiber. `unscope(:where)` drops their conditions.
   Uniqueness validations and `reload` ignore the default scope, as in
   Rails.
+- **Single-table inheritance.** Subclassing a model whose table has a
+  `type` column (`class Car < Vehicle`) makes the subclass share the
+  table. It stores its class name in `type`, and its queries only return
+  its own rows and its subclasses' rows (`WHERE type IN (...)`). The base
+  class sees every row and loads each one as the class `type` names,
+  with the columns subclasses declare. A `type` that names no loaded
+  subclass raises `Saci::Record::SubclassNotFound`. `inheritance_column
+  :kind` uses another column, and `inheritance_column nil` keeps a
+  `type` column as plain data. Uniqueness validations check the whole
+  table. Models whose table has no `type` column behave as before. If an
+  app subclasses a model that has a `type` column and gives the subclass
+  its own table, add `inheritance_column nil` to the parent.
 
 ## 0.7.0 — 2026-11-14
 
