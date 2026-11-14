@@ -182,9 +182,9 @@ module Saci
       # around_action :timed, only: :welcome
       #
       # def self.timed(&block : -> Saci::Mailer::Mail) : Saci::Mailer::Mail
-      #   start = Time.monotonic
+      #   start = Time.instant
       #   mail = yield
-      #   headers["X-Duration"] = (Time.monotonic - start).total_milliseconds.to_s
+      #   headers["X-Duration"] = (Time.instant - start).total_milliseconds.to_s
       #   mail
       # end
       # ```

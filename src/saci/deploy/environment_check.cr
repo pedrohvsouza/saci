@@ -134,10 +134,10 @@ module Saci
         path = url.sub(/\Asqlite3?:\/\//, "")
         path = File.join(root, path) unless path.starts_with?("/")
         if File.exists?(path)
-          Check.new("database", File.writable?(path), "SQLite #{path} (#{File.writable?(path) ? "writable" : "read-only"})")
+          Check.new("database", File::Info.writable?(path), "SQLite #{path} (#{File::Info.writable?(path) ? "writable" : "read-only"})")
         else
           parent = File.dirname(path)
-          ok = Dir.exists?(parent) && File.writable?(parent)
+          ok = Dir.exists?(parent) && File::Info.writable?(parent)
           Check.new("database", ok, "SQLite #{path} (#{ok ? "parent writable" : "parent missing or read-only"})")
         end
       else
@@ -155,7 +155,7 @@ module Saci
       if !Dir.exists?(path)
         Check.new(name, false, "#{path} is missing")
       else
-        writable = File.writable?(path)
+        writable = File::Info.writable?(path)
         Check.new(name, writable, "#{path} (#{writable ? "writable" : "read-only"})")
       end
     end

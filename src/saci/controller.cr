@@ -311,10 +311,10 @@ module Saci
     # around_action :with_timing, only: [:index]
     #
     # private def with_timing(&)
-    #   started = Time.monotonic
+    #   started = Time.instant
     #   yield
     # ensure
-    #   response.headers["X-Runtime"] = (Time.monotonic - started).total_milliseconds.to_s
+    #   response.headers["X-Runtime"] = (Time.instant - started).total_milliseconds.to_s
     # end
     # ```
     #

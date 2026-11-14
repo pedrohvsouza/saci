@@ -36,12 +36,18 @@ def capture_extras_output(& : ->) : Tuple(String, String)
   {out_mem.to_s, err_mem.to_s}
 end
 
+# Prompts read `Generate.input`, which is STDIN outside specs. A prompt
+# no spec expected must not block on the real STDIN (a socket or an open
+# pipe under some runners never reaches EOF), so every example starts
+# with empty input, where a prompt reads EOF and answers "no".
+Spec.before_each { Saci::CLI::Generate.input = IO::Memory.new }
+
 def with_extras_input(answer : String, & : ->) : Nil
   Saci::CLI::Generate.input = IO::Memory.new(answer)
   begin
     yield
   ensure
-    Saci::CLI::Generate.reset_input!
+    Saci::CLI::Generate.input = IO::Memory.new
   end
 end
 

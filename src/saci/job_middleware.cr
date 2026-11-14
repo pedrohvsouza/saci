@@ -8,11 +8,11 @@ module Saci
     # ```
     # class TimingMiddleware < Saci::Job::Middleware
     #   def call(job : Saci::Job::Base, &block : -> Nil) : Nil
-    #     started = Time.monotonic
+    #     started = Time.instant
     #     begin
     #       yield
     #     ensure
-    #       puts "#{job.class.name}: #{Time.monotonic - started}"
+    #       puts "#{job.class.name}: #{Time.instant - started}"
     #     end
     #   end
     # end

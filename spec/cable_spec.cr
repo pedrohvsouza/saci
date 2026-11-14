@@ -322,9 +322,9 @@ class CableRedisRawOverrideChannel < Saci::Cable::Channel
 end
 
 def cable_wait_until(desc : String, timeout : Time::Span = 10.seconds, &) : Nil
-  deadline = Time.monotonic + timeout
+  deadline = Time.instant + timeout
   until yield
-    raise "timed out waiting for #{desc}" if Time.monotonic > deadline
+    raise "timed out waiting for #{desc}" if Time.instant > deadline
     sleep 50.milliseconds
   end
 end
