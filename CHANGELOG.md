@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.6.2 — 2026-11-14
+
+App code can drop the `Saci::` prefix, the generators lean on
+`Application*` base classes, and the CLI shows progress while it
+compiles. The repository now passes `crystal tool format --check`, and
+CI enforces it.
 
 - **Framework types without the `Saci::` prefix.** `require "saci"` now
   includes `Saci` at the top level, so app code can write

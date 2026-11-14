@@ -1,6 +1,6 @@
 # Roadmap
 
-Saci is at **0.6.1**. The 0.x line keeps the freedom to change APIs. The
+Saci is at **0.6.2**. The 0.x line keeps the freedom to change APIs. The
 interfaces documented in the [README](README.md) are stable in practice,
 and breaking changes are listed in the [changelog](CHANGELOG.md).
 

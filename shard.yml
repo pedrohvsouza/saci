@@ -1,5 +1,5 @@
 name: saci
-version: 0.6.1
+version: 0.6.2
 
 description: >
   Saci — a Rails-compatible (Rails-like API) web framework in Crystal.
