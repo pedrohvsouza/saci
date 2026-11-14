@@ -26,6 +26,13 @@ module Saci
     #
     # Responses carry `ETag`, `Last-Modified`, `Cache-Control` (when configured)
     # and answer `If-None-Match` / `If-Modified-Since` with `304 Not Modified`.
+    #
+    # Unless `cache_control` is set explicitly, development and test send
+    # `no-cache` (the browser revalidates every time, which the validators
+    # above make cheap, so edits show up on reload) and other environments
+    # `public, max-age=3600`. Fingerprinted files (`app-<sha256>.css`, as
+    # written by `saci assets:precompile`) never change, so they get
+    # `digest_cache_control` (`public, max-age=31536000, immutable`).
     class Static
       include HTTP::Handler
       include Conditional
@@ -34,7 +41,9 @@ module Saci
         property enabled : Bool = true
         property root : String = "public"
         property headers : Hash(String, String) = {} of String => String
-        property cache_control : String? = "public, max-age=3600"
+        # For files whose name carries a SHA-256 digest; nil falls back to
+        # `cache_control`.
+        property digest_cache_control : String? = "public, max-age=31536000, immutable"
         property index_files : Array(String) = ["index.html"]
         # How long the root's existence and its top-level entries are
         # remembered. Requests whose first path segment is not one of those
@@ -42,8 +51,30 @@ module Saci
         # paying several stat calls each. Zero re-reads on every request.
         property entry_cache_ttl : Time::Span = 1.second
 
+        @cache_control : String? = nil
+        @cache_control_set = false
+
         def initialize
         end
+
+        # Explicit value, or the per-environment default (see class docs).
+        # nil sends no `Cache-Control` header.
+        def cache_control : String?
+          return @cache_control if @cache_control_set
+          Saci.development? || Saci.test? ? "no-cache" : "public, max-age=3600"
+        end
+
+        def cache_control=(value : String?) : String?
+          @cache_control_set = true
+          @cache_control = value
+        end
+      end
+
+      DIGEST_FILENAME = /-[0-9a-f]{64}(\.[^\/]+)?\z/
+
+      # True for `name-<64 hex>.ext` (a `Saci::Assets` fingerprint).
+      def self.digested?(path : String | Path) : Bool
+        File.basename(path.to_s).matches?(DIGEST_FILENAME)
       end
 
       @entries : Set(String)? = nil
@@ -93,33 +124,42 @@ module Saci
         request = context.request
         return call_next(context) unless request.method.in?("GET", "HEAD")
         return call_next(context) unless entries = top_level_entries
+        call_next(context) unless try_serve(context, request.path || "/", entries)
+      end
 
-        response = context.response
-        raw_path = request.path || "/"
+      # Serves *raw_path* (URL path, still percent-encoded) relative to the
+      # root. Returns false when no file matches (the caller falls through);
+      # true when it responded, including the `404` for unsafe paths.
+      # `entries` (the root's top-level names) short-circuits misses; nil
+      # skips that check.
+      def try_serve(context : HTTP::Server::Context, raw_path : String, entries : Set(String)? = nil) : Bool
         decoded = decode_path(raw_path)
         if decoded.nil? || unsafe_path?(decoded)
-          Middleware.respond_text(response, 404, "Not Found")
-          return
+          Middleware.respond_text(context.response, 404, "Not Found")
+          return true
         end
 
         segments = decoded.split('/').reject { |segment| segment.empty? || segment == "." }
-        if first = segments.first?
-          return call_next(context) unless entries.includes?(first)
-        else
-          return call_next(context) unless settings.index_files.any? { |name| entries.includes?(name) }
+        if known = entries
+          if first = segments.first?
+            return false unless known.includes?(first)
+          else
+            return false unless settings.index_files.any? { |name| known.includes?(name) }
+          end
         end
         root = Path.new(settings.root).expand
         file = root
         segments.each { |segment| file = file.join(segment) }
 
         file = directory_index(file)
-        return call_next(context) unless file
+        return false unless file
 
         info = File.info?(file)
-        return call_next(context) unless info && info.file?
-        return call_next(context) unless within_root?(root, file)
+        return false unless info && info.file?
+        return false unless within_root?(root, file)
 
         serve(context, file, info)
+        true
       end
 
       private def serve(context : HTTP::Server::Context, file : Path, info : File::Info) : Nil
@@ -129,7 +169,8 @@ module Saci
 
         response.headers["ETag"] = etag
         response.headers["Last-Modified"] = HTTP.format_time(last_modified)
-        if cache_control = settings.cache_control
+        cache_control = Static.digested?(file) ? (settings.digest_cache_control || settings.cache_control) : settings.cache_control
+        if cache_control
           response.headers["Cache-Control"] = cache_control
         end
 
@@ -198,8 +239,16 @@ module Saci
         false
       end
 
-      # Decode until stable (bounded) so `%252e%252e` cannot slip through.
       private def decode_path(path : String) : String?
+        Static.decode_path(path)
+      end
+
+      private def unsafe_path?(path : String) : Bool
+        Static.unsafe_path?(path)
+      end
+
+      # Decode until stable (bounded) so `%252e%252e` cannot slip through.
+      def self.decode_path(path : String) : String?
         decoded = path
         3.times do
           next_value = URI.decode(decoded)
@@ -211,7 +260,8 @@ module Saci
         nil
       end
 
-      private def unsafe_path?(path : String) : Bool
+      # Traversal (`..`), dotfiles, backslashes and NUL bytes.
+      def self.unsafe_path?(path : String) : Bool
         return true if path.includes?('\0') || path.includes?('\\')
         path.split('/').any? do |segment|
           segment == ".." || segment.starts_with?(".")
