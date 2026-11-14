@@ -106,3 +106,5 @@ jobs:
           MYSQL_URL="mysql://saci:saci@127.0.0.1:3306/saci_test" \
           crystal spec live/pg_live_spec.cr live/mysql_live_spec.cr \
             --link-flags="$PWD/live/ossl_shim.o"
+      - name: Live S3 spec (RustFS)
+        run: live/s3.sh

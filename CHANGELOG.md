@@ -28,6 +28,15 @@
   `enqueue_after_transaction_commit` work as with `:db`.
   `Mailer#deliver_later(queue:)` uses the adapter directly too, and the
   job dashboard shows its pending and dead jobs.
+- **Fixed: S3 keys with spaces, `+`, `=`, accents or other characters
+  that need encoding failed.** `S3Service` sent the key unencoded and
+  signed a path encoded differently from SigV4's rules, so the request
+  was refused or the URL was invalid. Keys and query values are now
+  percent-encoded the way SigV4 canonicalizes them, and requests go out
+  with that exact path. `S3Service.encode_key` is public.
+- `live/s3.sh` runs `live/s3_live_spec.cr` against RustFS in Docker, or
+  against any S3 endpoint given in `S3_*` variables. CI runs it in the
+  `live` job.
 
 ## 0.8.0 — 2026-11-14
 

@@ -37,6 +37,20 @@ ones; `live/run.sh` compiles it (`cc -c live/ossl_shim.c`) and passes
 the object via `--link-flags`. `crystal-mysql` links without it, but the
 flag is harmless when both drivers are in one binary.
 
+## S3 (`live/s3_live_spec.cr`)
+
+`live/s3.sh` starts RustFS (`rustfs/rustfs:1.0.5`, an S3-compatible
+server that checks SigV4 signatures) on `127.0.0.1:59000`, creates the
+`saci-test` bucket with a signed `curl` PUT and runs the spec. Point
+`S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`
+and `S3_REGION` at another server or a real AWS/R2 bucket to run the
+same checks there. The spec covers upload/download/exists/delete with
+binary, empty and 6 MB bodies, keys that need percent-encoding,
+pre-signed URLs (content type, tampered signature and expiry rejected),
+a wrong secret (403), a missing bucket (404) and an attachment served
+and purged through S3. MinIO no longer publishes Docker images, so it
+is not the default.
+
 ## MySQL auth note
 
 `crystal-mysql` only speaks `mysql_native_password`, which MySQL 8.4

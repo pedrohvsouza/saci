@@ -22,8 +22,9 @@ maturity.
 
 These are known gaps in the current release:
 
-- **Storage**: the S3 service has not been verified against a live
-  bucket.
+- **Storage**: CI checks the S3 service against RustFS, an
+  S3-compatible server. It has not been run against AWS S3 or R2
+  themselves (`live/s3.sh` can, given a bucket).
 - **Cable**: the database adapter polls on SQLite and MySQL; only
   PostgreSQL has push delivery (`LISTEN/NOTIFY`).
 - **Deploy**: there is no bundled HTTP/2 proxy (Thruster is only
