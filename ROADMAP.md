@@ -22,7 +22,6 @@ maturity.
 
 These are known gaps in the current release:
 
-- **Jobs**: there is no Redis queue adapter; `:db` is the durable option.
 - **Storage**: the S3 service has not been verified against a live
   bucket.
 - **Cable**: the database adapter polls on SQLite and MySQL; only

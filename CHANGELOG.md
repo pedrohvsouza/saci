@@ -17,6 +17,16 @@
   existing rows are migrated. `update_all`, `insert_all` and raw SQL
   bypass encryption.
 - `MessageEncryptor.encrypt_and_sign` takes an optional `iv:` (12 bytes).
+- **Redis queue adapter for jobs.** `Job.queue_adapter = :redis` stores
+  jobs in Redis through the built-in RESP2 client (no new shard or link
+  requirement). `Job::Redis.configure(url:, prefix:, concurrency:,
+  lock_timeout:, queues:)` sets it up; `work_once`, `drain`,
+  `pending_count`, `dead_jobs`, `retry_dead`, `drop_dead` and
+  `prune_dead` match `Job::Db`. Every state change is a single Lua
+  script, claims follow priority, then run time, then enqueue order, and
+  `unique`, `retry_on`, batches, continuation checkpoints and
+  `enqueue_after_transaction_commit` work as with `:db`.
+  `Mailer#deliver_later(queue:)` uses the adapter directly too.
 
 ## 0.8.0 — 2026-11-14
 

@@ -714,6 +714,14 @@ WelcomeJob.set(wait: 5.minutes, queue: :low).perform_later({email: "a@b.c"})
   persisted in `saci_jobs` with a dead-letter table and claims via
   `FOR UPDATE SKIP LOCKED`). Run `Job::Db.work_once` in a worker
   loop or `drain` from scripts.
+- `:redis` is the durable alternative when the app already runs Redis:
+  `Job::Redis.configure(url: ENV["REDIS_URL"])`, then
+  `Job::Redis.work_once`/`drain` the same way. It uses the built-in RESP2
+  client, moves jobs with atomic Lua scripts, and keeps the same
+  priorities, retries, dead set, `unique` modes and continuation
+  checkpoints. Jobs claimed by a worker that dies run again after
+  `lock_timeout` (10 minutes by default). The dashboard still reads only
+  the `:db` tables.
 - Payloads cross a JSON boundary. Records are serialized as GlobalID
   references. Delivery is at-least-once, so jobs must be idempotent.
 - Also available: callbacks and middleware, `limits_concurrency`, batches

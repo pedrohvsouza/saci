@@ -353,7 +353,7 @@ module Saci
 
       # Render now, deliver later. `wait:`/`wait_until:` are forwarded to
       # `Job.set`; `queue:` is persisted in the payload and used directly by
-      # the durable (`:db`) adapter, whose `Job.enqueue` has no queue argument.
+      # the durable (`:db` and `:redis`) adapters.
       def deliver_later(wait : Time::Span? = nil, wait_until : Time? = nil, queue : String? = nil) : Nil
         delay = wait
         if target = wait_until
@@ -365,6 +365,9 @@ module Saci
         if queue && Job.queue_adapter == :db
           run_at = Time.utc + (delay || Time::Span.zero)
           Job::Db.enqueue("Saci::Mailer::DeliveryJob", queue, payload.to_json, run_at)
+        elsif queue && Job.queue_adapter == :redis
+          run_at = Time.utc + (delay || Time::Span.zero)
+          Job::Redis.enqueue("Saci::Mailer::DeliveryJob", queue, payload.to_json, run_at)
         else
           DeliveryJob.set(wait: delay).perform_later(payload)
         end

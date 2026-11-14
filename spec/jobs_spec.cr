@@ -98,7 +98,7 @@ describe Saci::Job do
   end
 
   it "rejects unknown adapters" do
-    expect_raises(ArgumentError) { Saci::Job.queue_adapter = :redis }
+    expect_raises(ArgumentError) { Saci::Job.queue_adapter = :sidekiq }
   end
 
   it "runs perform_now directly" do

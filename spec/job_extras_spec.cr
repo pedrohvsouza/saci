@@ -622,7 +622,7 @@ describe "job extras" do
     end
 
     it "rejects unknown adapters" do
-      expect_raises(ArgumentError, /Unknown queue adapter/) { Saci::Job.queue_adapter = :redis }
+      expect_raises(ArgumentError, /Unknown queue adapter/) { Saci::Job.queue_adapter = :sidekiq }
     end
   end
 

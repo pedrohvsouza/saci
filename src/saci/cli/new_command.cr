@@ -1207,10 +1207,11 @@ module Saci
         <<-YAML
         # config/queue.yml — job queue adapter per environment (G148).
         #
-        # Values map to `Saci::Job.queue_adapter`: inline, async, test, db.
-        # `db` stores jobs in the database (see Saci::JobDB) and needs its
-        # schema migrated; `async` is the in-process default and is lost on
-        # restart. Read it with `Saci.config_for(:queue)["adapter"].as_s`.
+        # Values map to `Saci::Job.queue_adapter`: inline, async, test, db, redis.
+        # `db` stores jobs in the database (see Saci::Job::Db) and needs its
+        # schema migrated; `redis` stores them in Redis (see Saci::Job::Redis,
+        # which reads REDIS_URL); `async` is the in-process default and is lost
+        # on restart. Read it with `Saci.config_for(:queue)["adapter"].as_s`.
         development:
           adapter: async
           concurrency: 2

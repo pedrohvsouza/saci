@@ -35,7 +35,8 @@ module Saci
   # `:async` (spawned fiber, dev default), `:inline` (runs immediately —
   # use in specs), `:test` (records without running; assert on
   # `Saci::Job.enqueued_jobs`), `:db` (durable: persists to the database,
-  # survives restarts — run `Saci::Job::Db.drain` / `work_once` to execute).
+  # survives restarts — run `Saci::Job::Db.drain` / `work_once` to execute),
+  # `:redis` (durable in Redis — `Saci::Job::Redis.drain` / `work_once`).
   # `:immediate` is an alias for `:inline`. Custom adapters register through
   # `Saci::Job.register_adapter`. `Saci::Job.with_adapter(:inline) { }`
   # scopes the switch.
@@ -50,7 +51,7 @@ module Saci
     end
 
     UNIQUE_MODES     = [:until_executed, :until_executing, :while_executing]
-    BUILTIN_ADAPTERS = [:inline, :async, :test, :db]
+    BUILTIN_ADAPTERS = [:inline, :async, :test, :db, :redis]
 
     alias AdapterHandler = Proc(Base.class, String, Time::Span?, String, Int32, Time?, String?, Nil)
 
@@ -71,7 +72,7 @@ module Saci
       custom = @@adapter_mutex.synchronize { @@custom_adapters.has_key?(normalized) }
       unless BUILTIN_ADAPTERS.includes?(normalized) || custom
         raise ArgumentError.new(
-          "Unknown queue adapter #{name.inspect} (expected :inline, :async, :test, :db, " \
+          "Unknown queue adapter #{name.inspect} (expected :inline, :async, :test, :db, :redis, " \
           ":immediate or an adapter registered with Saci::Job.register_adapter)")
       end
       @@adapter_mutex.synchronize { @@adapter = normalized }
@@ -150,7 +151,7 @@ module Saci
       name.starts_with?(prefix) ? name : prefix + name
     end
 
-    # Rails 8.1-style opt-in for the DB adapter. See
+    # Rails 8.1-style opt-in for the DB and Redis adapters. See
     # `Saci::Job::Db.configure(enqueue_after_transaction_commit:)`.
     def self.enqueue_after_transaction_commit? : Bool
       Db.enqueue_after_transaction_commit?
@@ -290,6 +291,11 @@ module Saci
         # the held lock). A return of 0 means "duplicate dropped"; -1 means
         # "deferred until the surrounding transaction commits".
         id = Db.enqueue(job_class.name, queue_name, payload_json, run_at,
+          priority: priority, unique_mode: unique_mode, unique_key: unique_key,
+          batch_id: batch_id)
+        id != 0
+      when :redis
+        id = Redis.enqueue(job_class.name, queue_name, payload_json, run_at,
           priority: priority, unique_mode: unique_mode, unique_key: unique_key,
           batch_id: batch_id)
         id != 0
