@@ -37,6 +37,28 @@ describe Saci::Throttle do
     end
   end
 
+  it "cannot be bypassed with a spoofed X-Forwarded-For" do
+    Saci::TestSession.serve(throttle_router, config: Saci::Configuration.new) do |app|
+      statuses = (1..3).map do |i|
+        app.get("/limited", HTTP::Headers{"X-Forwarded-For" => "198.51.100.#{i}"}).status_code
+      end
+      statuses.should eq([200, 200, 429])
+    end
+  end
+
+  it "keys on the client resolved by RemoteIp behind a trusted proxy" do
+    config = Saci::Configuration.new
+    config.trusted_proxies = ["127.0.0.0/8"]
+    Saci::TestSession.serve(throttle_router, config: config) do |app|
+      first = HTTP::Headers{"X-Forwarded-For" => "203.0.113.1"}
+      second = HTTP::Headers{"X-Forwarded-For" => "203.0.113.2"}
+      app.get("/limited", first).status_code.should eq(200)
+      app.get("/limited", first).status_code.should eq(200)
+      app.get("/limited", first).status_code.should eq(429)
+      app.get("/limited", second).status_code.should eq(200)
+    end
+  end
+
   it "skips routes the discriminator ignores" do
     Saci::TestSession.serve(throttle_router) do |app|
       4.times { app.get("/open").status_code.should eq(200) }

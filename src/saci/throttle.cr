@@ -229,11 +229,14 @@ module Saci
       store.clear
     end
 
+    # The client address as resolved by `Middleware::RemoteIp`. It never
+    # reads `X-Forwarded-For` itself: that header is client-controlled, and
+    # `RemoteIp` already replaced `context.remote_address` with the
+    # forwarded client when (and only when) the peer is one of
+    # `config.trusted_proxies`. Behind a proxy that is not listed there,
+    # every request reports the proxy's address — configure
+    # `trusted_proxies` rather than trusting the header.
     def self.client_ip(context : HTTP::Server::Context) : String
-      if forwarded = context.request.headers["X-Forwarded-For"]?
-        first = forwarded.split(",").first.strip
-        return first unless first.empty?
-      end
       case addr = context.remote_address
       when Socket::IPAddress then addr.address
       when Nil               then "unknown"
