@@ -224,6 +224,17 @@ module Saci
       response.print(body)
     end
 
+    # True only when the client explicitly accepts HTML (`text/html` or
+    # `application/xhtml+xml`), as browser navigations do. Unlike
+    # `wants_html?`, `*/*` and a missing `Accept` (curl, API clients) do not
+    # count. The router uses it to pick an HTML 404 over its JSON body.
+    def self.accepts_html?(request : HTTP::Request) : Bool
+      accept = request.headers["Accept"]?
+      return false unless accept
+      accept = accept.downcase
+      accept.includes?("text/html") || accept.includes?("application/xhtml+xml")
+    end
+
     # True when the request's `Accept` header prefers HTML (or does not
     # express a preference). Used by the default error pages.
     def self.wants_html?(request : HTTP::Request) : Bool
@@ -241,9 +252,9 @@ require "./middleware/cors"
 require "./middleware/host_authorization"
 require "./middleware/remote_ip"
 require "./middleware/static"
+require "./middleware/dev_assets"
 require "./middleware/compression"
 require "./middleware/health_check"
 require "./middleware/request_body_limit"
 require "./middleware/ssl"
 require "./middleware/show_exceptions"
-require "./middleware/dev_assets"

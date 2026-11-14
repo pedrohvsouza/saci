@@ -1307,9 +1307,7 @@ module Saci
             handle_handler_error(context, request, path, ex)
           end
         else
-          context.response.status_code = 404
-          context.response.content_type = "application/json"
-          context.response.print({error: "Not Found: #{method} #{path}"}.to_json)
+          render_not_found(context, method, path)
         end
       elsif fb = @fallback
         params = Params.build(request, {} of String => String)
@@ -1320,11 +1318,24 @@ module Saci
           handle_handler_error(context, request, path, ex)
         end
       else
-        context.response.status_code = 404
-        context.response.content_type = "application/json"
-        context.response.print({error: "Not Found: #{request.method} #{path}"}.to_json)
+        render_not_found(context, request.method, path)
       end
       log_request(context, request, path, started, logged_params, request_id)
+    end
+
+    # Unmatched route (no `fallback`). Browsers (`Accept: text/html`) get
+    # the app's `public/404.html` (or a built-in page); everyone else keeps
+    # the JSON body. `r.fallback Controller, :action` takes over entirely.
+    private def render_not_found(context : HTTP::Server::Context, method : String, path : String) : Nil
+      response = context.response
+      response.status_code = 404
+      if Middleware.accepts_html?(context.request)
+        response.content_type = "text/html; charset=utf-8"
+        response.print(Exceptions.html_for(404, context.request))
+      else
+        response.content_type = "application/json"
+        response.print({error: "Not Found: #{method} #{path}"}.to_json)
+      end
     end
 
     private def handle_handler_error(context : HTTP::Server::Context, request : HTTP::Request, path : String, ex : Exception) : Nil

@@ -22,7 +22,8 @@ module Saci
   # #                                                   status   exception
   # ```
   #
-  # The default app renders plain HTML or text for 400/404/422/500. It is used
+  # The default app renders HTML (`public/<status>.html` when the app has
+  # one, else a built-in page) or text for 400/404/422/500. It is used
   # in production for responses that would otherwise be the framework's JSON
   # error body; in development the router's detailed page wins for local
   # requests. Assign a custom callable with:
@@ -62,15 +63,35 @@ module Saci
       response.headers.delete("Content-Length")
       response.headers.delete("ETag")
       response.headers.delete("Last-Modified")
+      # The page replaces whatever the action rendered; the action's CSP
+      # would block the error page's own inline styles.
+      response.headers.delete("Content-Security-Policy")
 
       title = TITLES[status]
       if Middleware.wants_html?(context.request)
         response.content_type = "text/html; charset=utf-8"
-        response.print(html_page(status, title, context.request))
+        response.print(html_for(status, context.request))
       else
         response.content_type = "text/plain; charset=utf-8"
         response.print("#{status} #{title}\n")
       end
+    end
+
+    # The app's `public/<status>.html` (the generated error pages, under
+    # `config.public_file_server.root`) when it exists, else the built-in
+    # page.
+    def self.html_for(status : Int32, request : HTTP::Request) : String
+      if page = public_page(status)
+        return page
+      end
+      html_page(status, TITLES[status]? || TITLES[500], request)
+    end
+
+    def self.public_page(status : Int32) : String?
+      path = File.join(Saci.config.public_file_server.root, "#{status}.html")
+      File.file?(path) ? File.read(path) : nil
+    rescue File::Error
+      nil
     end
 
     private def self.html_page(status : Int32, title : String, request : HTTP::Request) : String

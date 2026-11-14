@@ -1,6 +1,7 @@
 require "spec"
 require "http/client"
 require "compress/gzip"
+require "file_utils"
 require "../src/saci"
 
 class MiddlewareDemoController < Saci::Controller
@@ -735,6 +736,47 @@ describe "exceptions app and error reporting" do
         missing.status_code.should eq(404)
         missing.headers["Content-Type"].should contain("application/json")
       end
+    end
+  end
+
+  it "answers unknown routes with an HTML 404 for browsers and JSON otherwise" do
+    with_env("APP_ENV", "development") do
+      Saci::TestSession.serve(middleware_router, config: Saci::Configuration.new) do |app|
+        html = app.get("/nowhere", HTTP::Headers{"Accept" => "text/html,application/xhtml+xml,*/*;q=0.8"})
+        html.status_code.should eq(404)
+        html.headers["Content-Type"].should contain("text/html")
+        html.body.should contain("404 Not Found")
+
+        api = app.get("/nowhere", HTTP::Headers{"Accept" => "*/*"})
+        api.status_code.should eq(404)
+        api.headers["Content-Type"].should contain("application/json")
+        JSON.parse(api.body)["error"].as_s.should eq("Not Found: GET /nowhere")
+      end
+    end
+  end
+
+  it "uses the app's public/404.html for unknown routes and production pages" do
+    root = File.join(Dir.tempdir, "saci-404-#{Random::Secure.hex(4)}")
+    Dir.mkdir_p(root)
+    File.write(File.join(root, "404.html"), "<h1>custom missing page</h1>")
+    previous_root = Saci.config.public_file_server.root
+    Saci.config.public_file_server.root = root
+    begin
+      with_env("APP_ENV", "development") do
+        Saci::TestSession.serve(middleware_router, config: Saci::Configuration.new) do |app|
+          app.get("/nowhere", HTTP::Headers{"Accept" => "text/html"}).body.should eq("<h1>custom missing page</h1>")
+        end
+      end
+      with_env("APP_ENV", "production") do
+        Saci::TestSession.serve(middleware_router, config: Saci::Configuration.new) do |app|
+          page = app.get("/missing", HTTP::Headers{"Accept" => "text/html"})
+          page.status_code.should eq(404)
+          page.body.should eq("<h1>custom missing page</h1>")
+        end
+      end
+    ensure
+      Saci.config.public_file_server.root = previous_root
+      FileUtils.rm_rf(root)
     end
   end
 
