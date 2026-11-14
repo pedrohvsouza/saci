@@ -11,7 +11,10 @@ module Saci
   end
 
   # Double-submit-cookie CSRF protection (stateless — no session store
-  # needed). A random global token lives in the `saci_csrf` cookie;
+  # needed). A random global token lives in the `saci_csrf` cookie
+  # (HttpOnly, Secure over HTTPS, issued only when a page asks for the
+  # token through `form_authenticity_token`, so form-less GETs never set
+  # it);
   # state-changing requests must echo it back via the `authenticity_token`
   # param or the `X-CSRF-Token` header. See `Controller#verify_authenticity_token`
   # and the `protect_from_forgery` macro.
@@ -186,15 +189,27 @@ module Saci
       per_form_matches?(cookie, unmasked)
     end
 
-    def self.set_cookie(response : HTTP::Server::Response, token : String) : Nil
+    # Issues the token cookie. It is always `HttpOnly` (the token reaches
+    # pages through forms and `csrf_meta_tags`, never through JavaScript
+    # reading the cookie) and `Secure` when *secure* is true — see
+    # `secure_request?`.
+    def self.set_cookie(response : HTTP::Server::Response, token : String, secure : Bool = false) : Nil
       fiber_key = Fiber.current.object_id
       @@mutex.synchronize do
         if request = @@pending.delete(fiber_key)
           @@issued[fiber_key] = {request, token}
         end
       end
-      cookie = HTTP::Cookie.new(COOKIE_NAME, token, path: "/", samesite: HTTP::Cookie::SameSite::Lax)
+      cookie = HTTP::Cookie.new(COOKIE_NAME, token, path: "/", secure: secure, http_only: true,
+        samesite: HTTP::Cookie::SameSite::Lax)
       response.cookies << cookie
+    end
+
+    # HTTPS requests (including TLS terminated by a proxy that sends
+    # `X-Forwarded-Proto: https`) and apps that force or assume SSL get a
+    # `Secure` cookie.
+    def self.secure_request?(request : HTTP::Request) : Bool
+      request.ssl? || Saci.force_ssl || Saci.config.assume_ssl
     end
 
     private def self.per_form_matches?(cookie : String, unmasked : String) : Bool

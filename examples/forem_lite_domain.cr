@@ -372,6 +372,9 @@ class LiteHealthController < LiteApplicationController
       version:  Saci::VERSION,
       greeting: t("lite.welcome", name: params["name"]? || "dev"),
       locale:   Saci::I18n.locale,
+      # JSON clients have no form to read the CSRF token from, so the
+      # bootstrap endpoint hands it out (and sets the matching cookie).
+      csrf_token: form_authenticity_token,
     }
   end
 end

@@ -866,12 +866,16 @@ module Saci
 
     # The CSRF token for this client (sets the cookie when absent). Embed
     # it in forms as `authenticity_token` or send it as `X-CSRF-Token`.
+    # The CSRF token for forms and `csrf_meta_tags`. The `saci_csrf`
+    # cookie is only issued here, i.e. when a page actually embeds the
+    # token, so pages without forms stay free of `Set-Cookie` and remain
+    # cacheable by shared caches and CDNs.
     def form_authenticity_token : String
       if existing = CSRF.cookie_token(request)
         existing
       else
         token = CSRF.generate_token
-        CSRF.set_cookie(response, token)
+        CSRF.set_cookie(response, token, secure: CSRF.secure_request?(request))
         token
       end
     end
@@ -882,10 +886,7 @@ module Saci
     end
 
     private def verify_authenticity_token : Nil
-      if CSRF.safe_method?(request.method)
-        form_authenticity_token
-        return
-      end
+      return if CSRF.safe_method?(request.method)
       unless CSRF.verified?(request, params)
         raise InvalidAuthenticityToken.new
       end

@@ -23,6 +23,10 @@ class SecItemsController < Saci::Controller
   def create
     render json: {created: true}, status: :created
   end
+
+  def new
+    render html: %(<form method="post"><input type="hidden" name="authenticity_token" value="#{form_authenticity_token}"></form>)
+  end
 end
 
 class SecPagesController < Saci::Controller
@@ -38,6 +42,7 @@ end
 
 def security_router : Saci::Router
   Saci::Router.new.draw do |r|
+    r.get "/items/new", SecItemsController, :new
     r.get "/items/:id", SecItemsController, :show
     r.post "/items", SecItemsController, :create
     r.get "/pages", SecPagesController, :index
@@ -52,13 +57,32 @@ def extract_csrf_token(resp : HTTP::Client::Response) : String
 end
 
 describe "CSRF protection" do
-  it "sets the csrf cookie on safe requests" do
+  it "does not set the csrf cookie on pages that never ask for the token" do
     Saci::TestSession.serve(security_router) do |app|
       resp = app.get("/items/1")
       resp.status_code.should eq(200)
+      resp.headers.has_key?("Set-Cookie").should be_false
+    end
+  end
+
+  it "sets an HttpOnly, SameSite=Lax csrf cookie when a form asks for the token" do
+    Saci::TestSession.serve(security_router) do |app|
+      resp = app.get("/items/new")
+      resp.status_code.should eq(200)
       token = extract_csrf_token(resp)
       token.size.should be > 20
-      resp.headers.get("Set-Cookie").join(";").should contain("SameSite=Lax")
+      resp.body.should contain(token)
+      cookie = resp.headers.get("Set-Cookie").join(";")
+      cookie.should contain("SameSite=Lax")
+      cookie.should contain("HttpOnly")
+      cookie.should_not contain("Secure")
+    end
+  end
+
+  it "marks the csrf cookie Secure over HTTPS" do
+    Saci::TestSession.serve(security_router) do |app|
+      resp = app.get("/items/new", HTTP::Headers{"X-Forwarded-Proto" => "https"})
+      resp.headers.get("Set-Cookie").join(";").should contain("Secure")
     end
   end
 
@@ -72,7 +96,7 @@ describe "CSRF protection" do
 
   it "rejects mismatched tokens" do
     Saci::TestSession.serve(security_router) do |app|
-      token = extract_csrf_token(app.get("/items/1"))
+      token = extract_csrf_token(app.get("/items/new"))
       headers = HTTP::Headers{
         "Cookie"       => "saci_csrf=#{token}",
         "Content-Type" => "application/x-www-form-urlencoded",
@@ -84,7 +108,7 @@ describe "CSRF protection" do
 
   it "accepts matching cookie + param tokens" do
     Saci::TestSession.serve(security_router) do |app|
-      token = extract_csrf_token(app.get("/items/1"))
+      token = extract_csrf_token(app.get("/items/new"))
       headers = HTTP::Headers{
         "Cookie"       => "saci_csrf=#{token}",
         "Content-Type" => "application/x-www-form-urlencoded",
@@ -96,7 +120,7 @@ describe "CSRF protection" do
 
   it "accepts the X-CSRF-Token header instead of a param" do
     Saci::TestSession.serve(security_router) do |app|
-      token = extract_csrf_token(app.get("/items/1"))
+      token = extract_csrf_token(app.get("/items/new"))
       headers = HTTP::Headers{
         "Cookie"       => "saci_csrf=#{token}",
         "X-CSRF-Token" => token,
