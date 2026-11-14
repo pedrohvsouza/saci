@@ -166,10 +166,7 @@ module Saci
           end
         end
         puts "Running #{selected.size} initializer#{selected.size == 1 ? "" : "s"} in app context..."
-        Inspect::Runner.with_wrapper do |path|
-          File.write(path, source)
-          Inspect::Runner.exec_wrapper(path, [] of String, [] of String)
-        end
+        Inspect::Runner.exec_source("initializers", source, [] of String, [] of String)
       end
 
       def self.initializer_files : Array(String)

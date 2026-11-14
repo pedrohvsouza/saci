@@ -162,6 +162,48 @@ module Saci
         status && status.success? ? 0 : 1
       end
 
+      # Builds a generated program and runs it, like `run`. The source is
+      # written to the same path every time (`tmp/.saci-<key>.cr`): Crystal
+      # keys its object cache by the entry file's path, so a fixed path
+      # lets each build reuse the objects of the previous one instead of
+      # recompiling the whole app. A lock next to the file keeps concurrent
+      # commands from overwriting each other's source mid-build; it is
+      # released before the program runs.
+      def self.run_source(key : String, source : String, flags : Array(String) = [] of String,
+                          args : Array(String) = [] of String, name : String = key,
+                          env : Hash(String, String)? = nil,
+                          output : Process::Stdio = Process::Redirect::Inherit) : Int32
+        bin = binary_path(key)
+        built = with_source(key, source) { |path| build(flags + ["-o", bin, path], name) }
+        return 1 unless built
+        begin
+          status = Process.run(bin, args: args, env: env, input: Process::Redirect::Inherit, output: output, error: Process::Redirect::Inherit)
+          status.success? ? 0 : 1
+        ensure
+          remove_binary(bin)
+        end
+      end
+
+      def self.source_path(key : String) : String
+        File.join("tmp", ".saci-#{key.gsub(/[^A-Za-z0-9_-]/, "-")}.cr")
+      end
+
+      # Writes `source` to `source_path(key)` under an exclusive lock,
+      # yields the path and deletes the file afterwards.
+      def self.with_source(key : String, source : String, & : String -> Bool) : Bool
+        Dir.mkdir_p("tmp")
+        path = source_path(key)
+        File.open("#{path}.lock", "w") do |lock|
+          lock.flock_exclusive
+          begin
+            File.write(path, source)
+            yield path
+          ensure
+            File.delete?(path)
+          end
+        end
+      end
+
       def self.binary_path(entry : String) : String
         Dir.mkdir_p(BIN_DIR)
         File.join(BIN_DIR, "#{File.basename(entry, ".cr").lchop('.')}-#{Process.pid}")

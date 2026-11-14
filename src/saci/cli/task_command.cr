@@ -108,10 +108,7 @@ module Saci
         end
 
         puts "Running task #{name}..."
-        Inspect::Runner.with_wrapper do |path|
-          File.write(path, runner_source(name))
-          Inspect::Runner.exec_wrapper(path, script_args, crystal_flags)
-        end
+        Inspect::Runner.exec_source("task", runner_source(name), script_args, crystal_flags)
       end
 
       # Temporary runner: task definitions are required (compile-time)

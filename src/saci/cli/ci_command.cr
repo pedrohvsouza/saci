@@ -50,11 +50,7 @@ module Saci
         end
 
         puts "Running CI (#{path})..."
-        code = Inspect::Runner.with_wrapper do |wrapper|
-          File.write(wrapper, source)
-          Inspect::Runner.exec_wrapper(wrapper, [] of String, flags)
-        end
-        code
+        Inspect::Runner.exec_source("ci", source, [] of String, flags)
       ensure
         if temp_copy && File.exists?(temp_copy)
           File.delete(temp_copy)

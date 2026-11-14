@@ -524,25 +524,11 @@ module Saci
       end
 
       private def self.run_external_source(label : String, source : String, args : Array(String) = [] of String, output : IO = STDOUT, flags : Array(String) = [] of String) : Int32
-        path = File.join("tmp", ".saci-db-#{label.gsub(":", "-")}-#{Process.pid}.cr")
-        Dir.mkdir_p("tmp")
-        File.write(path, source)
-        begin
-          Compile.run(path, flags, args, name: label, output: output)
-        ensure
-          File.delete(path) if File.exists?(path)
-        end
+        Compile.run_source("db-#{label}", source, flags, args, name: label, output: output)
       end
 
       private def self.run_generated(label : String, source : String, args : Array(String), flags : Array(String), env : Hash(String, String)? = nil) : Int32
-        path = File.join("tmp", ".saci-db-#{label.gsub(":", "-")}-#{Process.pid}.cr")
-        Dir.mkdir_p("tmp")
-        File.write(path, source)
-        begin
-          Compile.run(path, flags, args, name: label, env: env)
-        ensure
-          File.delete(path) if File.exists?(path)
-        end
+        Compile.run_source("db-#{label}", source, flags, args, name: label, env: env)
       end
 
       private def self.test_env(test : Bool) : Hash(String, String)?

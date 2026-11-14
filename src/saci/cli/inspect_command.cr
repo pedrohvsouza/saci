@@ -290,28 +290,19 @@ module Saci
         end
 
         def self.run_code(code : String, script_args : Array(String) = [] of String, crystal_flags : Array(String) = [] of String) : Int32
-          with_wrapper do |path|
-            File.write(path, wrapper_source(code_body: code))
-            exec_wrapper(path, script_args, crystal_flags)
-          end
+          exec_source("runner", wrapper_source(code_body: code), script_args, crystal_flags)
         end
 
         def self.run_file(file : String, script_args : Array(String) = [] of String, crystal_flags : Array(String) = [] of String) : Int32
           raise Error.new("File #{file} not found.") unless File.exists?(file)
-          with_wrapper do |path|
-            File.write(path, wrapper_source(require_file: file))
-            exec_wrapper(path, script_args, crystal_flags)
-          end
+          exec_source("runner", wrapper_source(require_file: file), script_args, crystal_flags)
         end
 
-        def self.with_wrapper(& : String -> Int32) : Int32
-          Dir.mkdir_p("tmp")
-          path = File.join("tmp", ".saci-runner-#{Process.pid}-#{Random.rand(1_000_000)}.cr")
-          begin
-            yield path
-          ensure
-            File.delete(path) if File.exists?(path)
-          end
+        # Compiles a wrapper from `tmp/.saci-<key>.cr` (a fixed path, so
+        # the compiler's object cache carries over between runs; see
+        # `Compile.run_source`) and runs it in app context.
+        def self.exec_source(key : String, source : String, script_args : Array(String), crystal_flags : Array(String)) : Int32
+          Compile.run_source(key, source, crystal_flags, script_args, name: "app")
         end
 
         # Builds the wrapper source. The payload is appended verbatim
@@ -397,10 +388,6 @@ module Saci
           end
           ups = (from.size - common).times.map { ".." }.to_a
           ((ups + to[common..]).join("/"))
-        end
-
-        def self.exec_wrapper(path : String, script_args : Array(String), crystal_flags : Array(String)) : Int32
-          Compile.run(path, crystal_flags, script_args, name: "app")
         end
       end
 

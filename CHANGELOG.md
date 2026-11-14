@@ -37,6 +37,17 @@
 - `live/s3.sh` runs `live/s3_live_spec.cr` against RustFS in Docker, or
   against any S3 endpoint given in `S3_*` variables. CI runs it in the
   `live` job.
+- **Faster `runner`, `console`, `task`, `ci` and `db:*` rebuilds.** These
+  commands used to write their generated wrapper to a new file name on
+  every run (`tmp/.saci-runner-<pid>-<random>.cr`). Crystal keys its
+  object cache by the entry file's path, so every run recompiled the
+  whole app and left another directory in `~/.cache/crystal`. Each
+  command now builds from one fixed path (`tmp/.saci-runner.cr`,
+  `tmp/.saci-task.cr`, `tmp/.saci-db-<task>.cr`, ...) and reuses the
+  previous build's objects. On a freshly generated app, a repeated
+  `saci runner -e` (and so each `console` line) drops from about 9s to
+  about 4s. A lock file next to the source keeps concurrent commands from
+  overwriting each other's wrapper while it compiles.
 
 ## 0.8.0 — 2026-11-14
 

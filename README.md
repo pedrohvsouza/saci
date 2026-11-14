@@ -232,7 +232,10 @@ Generators: `model`, `controller`, `migration`, `scaffold`,
 - `runner` and `console` compile a temporary wrapper under `tmp/` with
   models, initializers and the database connection loaded. Crystal has
   no runtime eval, so `console` recompiles on every line. Put multi-line
-  code in a file.
+  code in a file. The wrapper is always written to the same path
+  (`tmp/.saci-runner.cr`), so each compile reuses the compiler's object
+  cache from the previous one; the same goes for `task`, `ci` and the
+  `db:*` commands.
 - `serve --watch` polls the source tree, rebuilds with `crystal build` and
   restarts a single supervised binary. Build failures wait for the next
   save. Path dependencies (such as a local Saci checkout) are watched too.
