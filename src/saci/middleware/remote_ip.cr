@@ -19,6 +19,16 @@ module Saci
       include HTTP::Handler
       include Conditional
 
+      # Loopback and private ranges (where kamal-proxy, Docker networks and
+      # most reverse proxies reach the app from). Rails trusts these by
+      # default; Saci leaves `trusted_proxies` empty, and generated apps opt
+      # in through `config/initializers/trusted_proxies.cr`.
+      PRIVATE_NETWORKS = [
+        "127.0.0.0/8", "::1/128",
+        "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+        "fc00::/7",
+      ]
+
       def initialize(@config : Configuration)
         @trusted_proxies = nil
       end

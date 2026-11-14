@@ -276,8 +276,7 @@ describe "deployment/config scaffold" do
         deploy["image"].as_s.should eq("your-registry-user/kamalpg")
         deploy["proxy"]["app_port"].as_i.should eq(3000)
         deploy["proxy"]["healthcheck"]["path"].as_s.should eq("/up")
-        deploy["env"]["secret"].as_a.map(&.as_s).should contain("SECRET_KEY_BASE")
-        deploy["env"]["secret"].as_a.map(&.as_s).should contain("DATABASE_URL")
+        deploy["env"]["secret"].as_a.map(&.as_s).should eq(["RAILS_MASTER_KEY", "DATABASE_URL"])
         deploy["env"]["clear"]["APP_ENV"].as_s.should eq("production")
         deploy["accessories"]["db"]["image"].as_s.should contain("postgres")
 
@@ -288,8 +287,12 @@ describe "deployment/config scaffold" do
         dockerfile.should contain("saci-doctor")
 
         secrets = deploy_file(dir, ".kamal", "secrets")
-        secrets.should contain("SECRET_KEY_BASE=$SECRET_KEY_BASE")
+        secrets.should contain("RAILS_MASTER_KEY=$(cat config/master.key)")
+        secrets.should_not contain("SECRET_KEY_BASE=")
         secrets.should contain("DATABASE_URL=$DATABASE_URL")
+        # Uploads persist in a named volume; volumes live at the top level.
+        deploy["volumes"].as_a.map(&.as_s).should eq(["kamalpg_storage:/app/storage"])
+        deploy["servers"]["web"].as_a?.should_not be_nil
         secrets.should contain("POSTGRES_PASSWORD=$POSTGRES_PASSWORD")
         secrets.should_not contain("POSTGRES_PASSWORD=changeme")
       end
@@ -299,6 +302,15 @@ describe "deployment/config scaffold" do
       with_deploy_app("kamalsqlite", db: "sqlite") do |dir|
         deploy = YAML.parse(deploy_file(dir, "config", "deploy.yml"))
         deploy["accessories"]?.try(&.as_h?).try(&.has_key?(YAML::Any.new("db"))).should_not be_true
+        # SQLite needs no DATABASE_URL; its file lives in a named volume
+        # (writable by the container user, unlike a root-owned bind mount).
+        deploy["env"]["secret"].as_a.map(&.as_s).should eq(["RAILS_MASTER_KEY"])
+        deploy["volumes"].as_a.map(&.as_s).should eq(["kamalsqlite_storage:/app/storage", "kamalsqlite_db:/app/db"])
+        raw = deploy_file(dir, "config", "deploy.yml")
+        raw.should contain("# forward_headers: true")
+        raw.should_not contain("/var/lib/kamalsqlite/db:/app/db\n  -")
+        secrets = deploy_file(dir, ".kamal", "secrets")
+        secrets.should_not contain("DATABASE_URL")
         deploy_file(dir, "docs", "thruster.md").should contain("does **not** bundle Thruster")
         deploy_file(dir, "bin", "thrust").should contain("not a proxy")
         deploy_file(dir, "bin", "thrust").should contain("reverse proxy")

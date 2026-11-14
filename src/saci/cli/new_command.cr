@@ -3,8 +3,24 @@ module Saci
     # `saci new blog` — generates a runnable app skeleton.
     module New
       # Absolute path of the framework source tree, baked in at compile time.
-      # Used as the default `path:` dependency so generated apps work immediately.
+      # Used by the scaffold specs (and `--saci-path` users) to point an app
+      # at a local checkout.
       SACI_ROOT = File.expand_path("../../../", __DIR__)
+
+      # Where generated apps fetch Saci from (unless `--saci-path` is given).
+      SACI_GITHUB = "pedrohvsouza/saci"
+
+      # Build and runtime images for the generated Dockerfile. The runtime
+      # must be the build image's distro (crystallang/crystal:1.22.0 is
+      # Ubuntu 26.04): release binaries need the glibc they were linked
+      # against, so an older base fails at start ("GLIBC_2.38 not found").
+      CRYSTAL_IMAGE = "crystallang/crystal:1.22.0"
+      RUNTIME_IMAGE = "ubuntu:26.04"
+
+      # `~> X.Y.Z` for this framework version (pre-release suffix dropped).
+      def self.saci_version_requirement : String
+        "~> #{Saci::VERSION.split(/[-+]/).first}"
+      end
 
       def self.run(args : Array(String)) : Int32
         name = args.find { |a| !a.starts_with?("-") } || raise Error.new("Usage: saci new APP_NAME [--db=sqlite|postgres|mysql] [--saci-path PATH] [--skip-shards] [--skip-git] [--devcontainer]")
@@ -59,11 +75,11 @@ module Saci
         raise Error.new("Directory #{dir} already exists and is not empty.") if Dir.exists?(dir) && !Dir.empty?(dir)
         Dir.mkdir_p(dir)
 
-        dep = saci_path || SACI_ROOT
-        write(File.join(dir, "shard.yml"), shard_yml(name, dep, db))
+        local_saci = !saci_path.nil?
+        write(File.join(dir, "shard.yml"), shard_yml(name, saci_path, db))
         write(File.join(dir, ".gitignore"), gitignore)
         write(File.join(dir, ".tool-versions"), "crystal #{Crystal::VERSION}\n")
-        write(File.join(dir, "README.md"), readme(name, devcontainer))
+        write(File.join(dir, "README.md"), readme(name, devcontainer, local_saci))
         write(File.join(dir, "src", "#{name}.cr"), entrypoint(name, db))
         write(File.join(dir, "src", "controllers", "application_controller.cr"), application_controller)
         write(File.join(dir, "src", "controllers", "home_controller.cr"), home_controller)
@@ -74,6 +90,7 @@ module Saci
         write(File.join(dir, "src", "views", "layouts", "application.ecr"), layout_view)
         write(File.join(dir, "src", "views", "home", "index.ecr"), home_view)
         write(File.join(dir, "src", "models", "application_record.cr"), application_record)
+        write(File.join(dir, "src", "assets", "application.css"), application_css)
         write(File.join(dir, "db", "migrations.cr"), Generate.manifest_source([] of String, [] of String))
         write(File.join(dir, "db", "migrate.cr"), migrate_runner(name, db))
         write(File.join(dir, "db", "seed.cr"), seed_file)
@@ -94,6 +111,8 @@ module Saci
         write(File.join(dir, "config", "initializers", "filter_parameter_logging.cr"), initializer_filter_parameter_logging)
         write(File.join(dir, "config", "initializers", "cors.cr"), initializer_cors)
         write(File.join(dir, "config", "initializers", "assets.cr"), initializer_assets)
+        write(File.join(dir, "config", "initializers", "content_security_policy.cr"), initializer_content_security_policy)
+        write(File.join(dir, "config", "initializers", "trusted_proxies.cr"), initializer_trusted_proxies)
 
         # Declarative per-environment YAML (G147/G148). Saci's env-var defaults
         # still work when these are deleted; the files document the supported
@@ -142,9 +161,9 @@ module Saci
         write_executable(File.join(dir, "bin", "systemd"), bin_systemd(name))
         write(File.join(dir, "deploy", "#{name}.service"), systemd_unit(name))
         write(File.join(dir, "docs", "thruster.md"), thruster_doc(name))
-        write(File.join(dir, "Dockerfile"), dockerfile(name))
+        write(File.join(dir, "Dockerfile"), dockerfile(name, local_saci))
         write(File.join(dir, ".dockerignore"), dockerignore)
-        write(File.join(dir, ".github", "workflows", "ci.yml"), ci_workflow)
+        write(File.join(dir, ".github", "workflows", "ci.yml"), ci_workflow(local_saci))
 
         if devcontainer
           write(File.join(dir, ".devcontainer", "devcontainer.json"), devcontainer_json(name))
@@ -200,7 +219,17 @@ module Saci
       # `pg:` *under* `saci.path`, which made every Postgres/MySQL app fail
       # `shards install`. A flat list keeps every dependency key at the same
       # two-space level.
-      def self.shard_yml(name : String, saci_path : String, db : String = "sqlite") : String
+      #
+      # Saci comes from GitHub at this framework's version, so the app builds
+      # on any machine, in CI and in Docker. `--saci-path` (a local
+      # checkout, for framework development) writes a `path:` dependency
+      # instead.
+      def self.shard_yml(name : String, saci_path : String? = nil, db : String = "sqlite") : String
+        saci_dep = if path = saci_path
+                     ["    path: #{path}"]
+                   else
+                     ["    github: #{SACI_GITHUB}", "    version: \"#{saci_version_requirement}\""]
+                   end
         lines = [
           "name: #{name}",
           "version: 0.1.0",
@@ -214,8 +243,7 @@ module Saci
           "",
           "dependencies:",
           "  saci:",
-          "    path: #{saci_path}",
-        ]
+        ] + saci_dep
         case normalize_db(db)
         when "postgres"
           lines << "  pg:"
@@ -276,6 +304,8 @@ module Saci
         *.dwarf
         /db/*.db
         /db/*.db-*
+        # Build output of `saci assets:precompile` (sources live in src/assets).
+        /public/assets/
         /config/master.key
         # Keep Kamal secrets as env-var references, never literal values.
         .kamal/secrets.local
@@ -283,7 +313,7 @@ module Saci
         IGNORE
       end
 
-      def self.readme(name : String, devcontainer : Bool = false) : String
+      def self.readme(name : String, devcontainer : Bool = false, local_saci : Bool = false) : String
         app = Util.class_name(name)
         container_note = if devcontainer
                            <<-MD
@@ -301,7 +331,7 @@ module Saci
         <<-MD
         # #{app}
 
-        Built with [Saci](https://github.com/rails-crystal/saci) — a
+        Built with [Saci](https://github.com/#{SACI_GITHUB}) — a
         Rails-compatible web framework for Crystal.
 
         ## Quick start
@@ -404,15 +434,25 @@ module Saci
         - `config/server.cr` — server settings loaded explicitly by the boot
           file (it is not an initializer).
         - `config/initializers/*.cr` — app initializers, also loaded by glob
-          (`require "../config/initializers/*"`). The generated files are
-          comment-only examples so a fresh app always compiles.
+          (`require "../config/initializers/*"`).
+          `content_security_policy.cr` spells out the Content-Security-Policy
+          (the default blocks inline `<style>`/`<script>`, `style="..."` and
+          external origins such as Google Fonts; development logs a warning
+          for markup the policy blocks) and `trusted_proxies.cr` lists the
+          proxies whose `X-Forwarded-For` is believed.
         - `config/locales/*.yml` — I18n dictionaries.
         - `config/*.yml` — declarative per-environment settings (see above).
         - `config/ci.cr` — local CI steps (`Saci::CI.step` / `Saci::CI.run`).
-        - `public/` — static error pages and `robots.txt`. Serve this directory
-          with Saci's static middleware when the framework build provides it;
-          otherwise mount it behind your reverse proxy. The `/up` route is
-          dynamic and lives in `src/controllers/health_controller.cr`.
+        - `src/assets/` — stylesheets, scripts and images. Reference them with
+          `stylesheet_link_tag("application.css")`, `asset_path(...)` and
+          friends. In development `/assets/*` is served straight from here
+          (no caching, edits show on reload); `saci assets:precompile` (run by
+          the Dockerfile) writes fingerprinted copies to `public/assets/`,
+          which is build output and gitignored.
+        - `public/` — static error pages (`404.html` also answers unknown
+          routes for browsers) and `robots.txt`, served by Saci's static
+          middleware. The `/up` route is dynamic and lives in
+          `src/controllers/health_controller.cr`.
         - `spec/{controllers,models,mailers,integration,fixtures}/` — the
           Crystal equivalent of Rails' `test/` tree (`crystal spec` runs it).
         - `db/migrate/` + `db/migrations.cr` — migrations and their manifest.
@@ -429,25 +469,32 @@ module Saci
         ```sh
         docker build -t #{name} .
         docker run --rm -p 3000:3000 --restart unless-stopped \\
-          -e SECRET_KEY_BASE="$(saci secret)" \\
-          -e DATABASE_URL="postgres://..." \\
+          -e RAILS_MASTER_KEY="$(cat config/master.key)" \\
+          -v #{name}_db:/app/db -v #{name}_storage:/app/storage \\
           #{name}
         ```
 
-        The image is multi-stage (Crystal build stage + slim Debian runtime),
-        runs as the non-root `saci` user, prepares the database in the
-        entrypoint, and exposes port 3000. `STOPSIGNAL SIGTERM` lets the app
-        drain requests. `SKIP_DB_PREPARE=1` skips the migrate step. The
-        generated `shard.yml` points at your local Saci checkout; update that
-        path (or vendor/publish Saci) before building in CI or on another
-        machine.
+        The image is multi-stage (Crystal build stage + an Ubuntu runtime of
+        the same release, so the binaries find the glibc they were linked
+        against), runs as the non-root `saci` user, fingerprints
+        `src/assets`, prepares the database in the entrypoint, and exposes
+        port 3000. `RAILS_MASTER_KEY` decrypts `config/credentials.yml.enc`,
+        which holds `secret_key_base`; a managed database also needs
+        `DATABASE_URL`. Named volumes keep SQLite and uploads across
+        restarts and are writable by the container user. `STOPSIGNAL SIGTERM`
+        lets the app drain requests. `SKIP_DB_PREPARE=1` skips the migrate
+        step. Commit `shard.lock`: the build installs exactly those versions.
+        #{local_saci ? "This app's `shard.yml` points at a local Saci checkout (`--saci-path`), which the build context cannot reach; switch it to `github: #{SACI_GITHUB}` before building the image or running CI." : ""}
 
         ## Notes
 
         - There is no `Rakefile`: use the documented `saci` tasks
           (`saci db:migrate`, `saci db:seed`, `saci routes`, `saci test`, ...).
-        - Set `SECRET_KEY_BASE` in production. `config/credentials.yml.enc`
-          plus the gitignored `config/master.key` is the local alternative.
+        - Production reads `secret_key_base` from `config/credentials.yml.enc`
+          (decrypted with `config/master.key` or `RAILS_MASTER_KEY`), or from
+          `SECRET_KEY_BASE`. Set other secrets with
+          `saci credentials:set KEY VALUE` (`--stdin` keeps them out of shell
+          history).
         - Run `bin/doctor` before the first deploy and after changing secrets,
           database URLs or volume mounts.
         MD
@@ -599,6 +646,10 @@ module Saci
           # Redis is down — see README). Zero new dependencies (vendored RESP2).
           # Saci::Cable.server = Saci::Cable::RedisServer.new(ENV.fetch("REDIS_URL", "redis://127.0.0.1:6379"))
           # Saci::Throttle.store = Saci::Throttle::RedisStore.new(ENV.fetch("REDIS_URL", "redis://127.0.0.1:6379"))
+          # public/assets is fingerprinted at image build, so the static file
+          # server sends fingerprinted files with `immutable` caching and the
+          # rest with `public, max-age=3600`. Tune with:
+          # Saci.configure { |config| config.public_file_server.cache_control = "public, max-age=300" }
         end
         CRYSTAL
       end
@@ -1350,19 +1401,24 @@ module Saci
           "  web:",
           "    - 192.168.0.1",
           "",
-          "# SQLite/persistent uploads need a host volume. Use the role form:",
-          "# servers:",
-          "#   web:",
-          "#     hosts:",
-          "#       - 192.168.0.1",
-          "#     volumes:",
-          "#       - /var/lib/#{name}/storage:/app/storage",
-          "#       - /var/lib/#{name}/db:/app/db",
+          "# Named volumes keep data across deploys. Docker seeds them from the",
+          "# image, so they belong to the container's non-root user (uid 1000);",
+          "# a host bind mount (/var/lib/...:/app/db) is created root-owned and",
+          "# the app cannot write to it. `volumes` sits at the top level (Kamal",
+          "# rejects it under servers/web).",
+          "volumes:",
+          "  - #{name}_storage:/app/storage",
+        ] + (ndb == "sqlite" ? ["  - #{name}_db:/app/db"] : [] of String) + [
           "",
           "proxy:",
           "  ssl: true",
           "  host: example.com",
           "  app_port: 3000",
+          "  # Behind another proxy or CDN (e.g. Cloudflare), kamal-proxy with",
+          "  # ssl: true replaces X-Forwarded-For with that proxy's address and the",
+          "  # app loses the visitor's IP. Forward the header and list the CDN's",
+          "  # ranges in config/initializers/trusted_proxies.cr:",
+          "  # forward_headers: true",
           "  healthcheck:",
           "    path: /up",
           "    interval: 10",
@@ -1386,8 +1442,9 @@ module Saci
           "    SACI_KEEP_ALIVE_TIMEOUT: \"5\"",
           "    SACI_SHUTDOWN_TIMEOUT: \"15\"",
           "  secret:",
-          "    - SECRET_KEY_BASE",
-          "    - DATABASE_URL",
+          "    # Decrypts config/credentials.yml.enc (secret_key_base + app secrets).",
+          "    - RAILS_MASTER_KEY",
+        ] + (ndb == "sqlite" ? [] of String : ["    - DATABASE_URL"]) + [
           "",
           "ssh:",
           "  user: deploy",
@@ -1447,7 +1504,7 @@ module Saci
         else
           lines.concat([
             "",
-            "# No database accessory: SQLite lives on the host volume above.",
+            "# No database accessory: SQLite lives in the #{name}_db volume above.",
             "# For a managed database, set DATABASE_URL in .kamal/secrets.",
             "# Optional accessories (Redis example):",
             "accessories: {}",
@@ -1470,11 +1527,14 @@ module Saci
           "# variables in your shell/password manager before `bin/kamal deploy`.",
           "KAMAL_REGISTRY_PASSWORD=$KAMAL_REGISTRY_PASSWORD",
           "",
-          "# Required by config/deploy.yml env.secret:",
-          "SECRET_KEY_BASE=$SECRET_KEY_BASE",
-          "DATABASE_URL=$DATABASE_URL",
+          "# Required by config/deploy.yml env.secret. The master key decrypts",
+          "# config/credentials.yml.enc, which holds secret_key_base, so no",
+          "# separate SECRET_KEY_BASE is needed.",
+          "RAILS_MASTER_KEY=$(cat config/master.key)",
         ]
-        case normalize_db(db)
+        ndb = normalize_db(db)
+        lines << "DATABASE_URL=$DATABASE_URL" unless ndb == "sqlite"
+        case ndb
         when "postgres"
           lines << ""
           lines << "# Used by the generated db accessory:"
@@ -1637,18 +1697,29 @@ module Saci
         DOCKER
       end
 
-      def self.dockerfile(name : String) : String
+      def self.dockerfile(name : String, local_saci : Bool = false) : String
+        saci_note = if local_saci
+                      "# NOTE: shard.yml points at a local Saci checkout (--saci-path), which\n" \
+                      "# is outside the build context. Switch it to `github: #{SACI_GITHUB}`\n" \
+                      "# (or vendor Saci into the app) before building the image.\n"
+                    else
+                      "# Saci comes from GitHub at the version pinned in shard.lock.\n"
+                    end
         <<-DOCKER
         # Multi-stage build: compile with the official Crystal image, then
         # ship only the release binaries in a slim, non-root runtime.
-        FROM crystallang/crystal:1.22.0 AS build
+        FROM #{CRYSTAL_IMAGE} AS build
         WORKDIR /app
 
+        # crystal-sqlite3 links against libsqlite3, which the Crystal image lacks.
+        RUN apt-get update \\
+         && apt-get install -y --no-install-recommends libsqlite3-dev \\
+         && rm -rf /var/lib/apt/lists/*
+
         # Dependencies first so source edits do not invalidate the cache.
-        # NOTE: the generated shard.yml uses a local `path:` for saci. Make
-        # that path available in the build context (or vendor/publish Saci)
-        # before building the image.
-        COPY shard.yml ./
+        # `--production` installs exactly what shard.lock pins: commit it.
+        #{saci_note.chomp}
+        COPY shard.yml shard.lock ./
         RUN shards install --production
 
         COPY . .
@@ -1657,18 +1728,25 @@ module Saci
         RUN crystal build src/#{name}.cr --release --no-debug -Dexecution_context -o bin/#{name}
         RUN crystal build db/migrate.cr --release --no-debug -o bin/saci-migrate
         RUN crystal build script/doctor.cr --release --no-debug -o bin/saci-doctor
+        # Fingerprint src/assets into public/assets (`saci assets:precompile`):
+        # every deploy gets new asset URLs, served with `immutable` caching.
+        RUN if [ -d src/assets ]; then crystal eval 'require "saci/assets"; Saci::Assets.precompile'; fi
 
-        FROM debian:bookworm-slim AS runtime
-        # Runtime libraries required by the release binary (verified with
+        # Same distro as #{CRYSTAL_IMAGE} (#{RUNTIME_IMAGE.sub(":", " ")}): the binaries need
+        # the glibc they were linked against, so an older base cannot start them.
+        FROM #{RUNTIME_IMAGE} AS runtime
+        # Runtime libraries required by the release binaries (verified with
         # `ldd`). crystal-pg/crystal-mysql speak the wire protocol in pure
         # Crystal, so no libpq/libmysqlclient is needed.
         RUN apt-get update \\
          && apt-get install -y --no-install-recommends \\
-              ca-certificates curl libgcc-s1 libpcre2-8-0 libsqlite3-0 libssl3 \\
+              ca-certificates curl libgcc-s1 libgmp10 libpcre2-8-0 libsqlite3-0 libssl3t64 \\
               libstdc++6 libyaml-0-2 libzstd1 tzdata zlib1g \\
          && rm -rf /var/lib/apt/lists/*
 
-        RUN useradd --create-home --uid 1000 --shell /usr/sbin/nologin saci \\
+        # Ubuntu images ship a default "ubuntu" user on uid 1000.
+        RUN (userdel --remove ubuntu 2>/dev/null || true) \\
+         && useradd --create-home --uid 1000 --shell /usr/sbin/nologin saci \\
          && mkdir -p /app/bin /app/config/locales /app/db /app/log /app/public \\
                      /app/storage /app/tmp/pids \\
          && chown -R saci:saci /app
@@ -1690,6 +1768,9 @@ module Saci
         COPY --from=build --chown=saci:saci /app/config/recurring.yml /app/config/recurring.yml
         COPY --from=build --chown=saci:saci /app/config/storage.yml /app/config/storage.yml
         COPY --from=build --chown=saci:saci /app/config/server.yml /app/config/server.yml
+        # Encrypted (secret_key_base + app secrets); readable only with
+        # RAILS_MASTER_KEY, passed at run time (a Kamal secret).
+        COPY --from=build --chown=saci:saci /app/config/credentials.yml.enc /app/config/credentials.yml.enc
         COPY --from=build --chown=saci:saci /app/public /app/public
 
         USER saci
@@ -1722,6 +1803,7 @@ module Saci
         vendor
         db/*.db
         db/*.db-*
+        public/assets
         config/master.key
         *.dwarf
         .DS_Store
@@ -1738,7 +1820,16 @@ module Saci
         IGNORE
       end
 
-      def self.ci_workflow : String
+      def self.ci_workflow(local_saci : Bool = false) : String
+        # Indented for its place under `steps:` (interpolated lines keep their
+        # own leading spaces; heredoc dedent only touches the literal ones).
+        install_run = String.build do |io|
+          if local_saci
+            io << "        # shard.yml points at a local Saci checkout (--saci-path): switch it\n"
+            io << "        # to `github: #{SACI_GITHUB}` before enabling CI.\n"
+          end
+          io << "        run: shards install"
+        end
         <<-YAML
         name: CI
 
@@ -1756,9 +1847,7 @@ module Saci
                 with:
                   crystal: 1.22.0
               - name: shards install
-                # This app's shard.yml points at a local Saci checkout. Publish
-                # Saci (or vendor it and rewrite the path) before enabling CI.
-                run: shards install
+        #{install_run}
 
           format:
             name: Format
@@ -1816,9 +1905,9 @@ module Saci
         TXT
       end
 
-      # These are intentionally comment-only. Parallel framework work may add
-      # CORS/assets/initializer APIs; a generated app must compile even when
-      # those APIs are absent. Uncomment and adapt once the API is available.
+      # Initializers. `filter_parameter_logging.cr`, `cors.cr` and
+      # `assets.cr` are comment-only examples; `content_security_policy.cr`
+      # and `trusted_proxies.cr` hold active (default) settings.
 
       def self.initializer_filter_parameter_logging : String
         <<-CRYSTAL
@@ -1854,26 +1943,109 @@ module Saci
 
       def self.initializer_assets : String
         <<-CRYSTAL
-        # Asset pipeline configuration.
+        # Asset pipeline.
         #
-        # Saci has no digesting asset helper in the core scaffold yet. Static
-        # files live in public/ and are served by the static middleware when
-        # the framework build provides it; otherwise let your reverse proxy
-        # serve public/. If an assets helper becomes available, configure it
-        # here, for example:
+        # Sources live in src/assets/. Views reference them by logical name:
         #
-        #   Saci::Assets.manifest_path = "public/assets/.manifest.json"
-        #   Saci::Assets.prefix = "/assets"
+        #   <%= stylesheet_link_tag("application.css") %>
+        #   <%= image_tag("logo.svg", alt: "Logo") %>
         #
-        # Comment-only by design: generated apps must compile without the
-        # optional assets API.
+        # Development serves /assets/* straight from src/assets/ with
+        # `Cache-Control: no-cache`, so edits show on reload. For production,
+        # `saci assets:precompile` (run by the Dockerfile) copies them into
+        # public/assets/ under fingerprinted names (application-<sha256>.css)
+        # plus a manifest, and the helpers above switch to those names, which
+        # are cached as immutable. `saci assets:clobber` removes that output.
+        #
+        # Optional settings:
+        #
+        #   Saci.configure do |config|
+        #     config.assets.source = "src/assets"   # development source
+        #     config.assets.enabled = true          # also outside development/test
+        #   end
         CRYSTAL
+      end
+
+      def self.initializer_content_security_policy : String
+        <<-CRYSTAL
+        # Content-Security-Policy sent with every controller response.
+        #
+        # This is Saci's default, written out so it is visible. It only allows
+        # files from this app: inline <style> and <script> tags, style="..."
+        # attributes and other origins (Google Fonts, CDNs, analytics) are all
+        # blocked by the browser, and the page renders without them. In
+        # development Saci logs a warning when a page contains markup the
+        # policy blocks.
+        #
+        # Prefer stylesheets and scripts under src/assets. When you need more:
+        #
+        # * an external origin: add it to the matching directive, e.g. Google
+        #   Fonts needs "style-src 'self' https://fonts.googleapis.com" and
+        #   "font-src 'self' https://fonts.gstatic.com";
+        # * an inline <style>/<script>: add 'nonce' to style-src/script-src
+        #   (Saci replaces it with a per-request nonce) and render the tag as
+        #   <style nonce="<%= csp_nonce %>">. A nonce changes on every request,
+        #   so avoid it on pages served with ETag/stale? caching: a 304 brings
+        #   a new nonce that no longer matches the cached body.
+        #   style="..." attributes cannot use nonces (only 'unsafe-inline' in
+        #   style-src-attr allows them); move them into a stylesheet;
+        # * per controller: `csp "..."` or `skip_csp` (see Saci::SecureHeaders).
+        Saci::SecureHeaders.configure do |headers|
+          headers["Content-Security-Policy"] = [
+            "default-src 'self'",
+            # "style-src 'self' https://fonts.googleapis.com",
+            # "font-src 'self' https://fonts.gstatic.com",
+            # "script-src 'self' 'nonce'",
+            # "img-src 'self' data:",
+          ].join("; ")
+        end
+        CRYSTAL
+      end
+
+      def self.initializer_trusted_proxies : String
+        <<-CRYSTAL
+        # Proxies whose X-Forwarded-For Saci believes
+        # (Saci::Middleware::RemoteIp). Behind kamal-proxy, nginx or another
+        # reverse proxy the app's peer is the proxy, so without this every
+        # request appears to come from the proxy's address, and
+        # Saci::Throttle / `rate_limit` put all visitors in one bucket. A
+        # forwarded address is only taken from these peers; anyone else's
+        # header is ignored.
+        #
+        # Behind a CDN such as Cloudflare, also list its ranges
+        # (https://www.cloudflare.com/ips/) and set `forward_headers: true`
+        # under `proxy:` in config/deploy.yml.
+        Saci.configure do |config|
+          config.trusted_proxies = Saci::Middleware::RemoteIp::PRIVATE_NETWORKS.dup
+        end
+        CRYSTAL
+      end
+
+      def self.application_css : String
+        <<-CSS
+        /* Served from src/assets in development; fingerprinted into
+           public/assets by `saci assets:precompile` for production. */
+        body {
+          font-family: system-ui, -apple-system, sans-serif;
+          margin: 4rem auto;
+          max-width: 42rem;
+          padding: 0 1rem;
+          line-height: 1.5;
+        }
+        CSS
       end
 
       def self.layout_view : String
         <<-ECR
-        <html>
-        <head><title>Saci app</title></head>
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>Saci app</title>
+          <%= stylesheet_link_tag("application.css") %>
+          <%= content_for(:head) %>
+        </head>
         <body><%= content %></body>
         </html>
         ECR

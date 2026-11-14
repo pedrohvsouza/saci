@@ -43,7 +43,9 @@ describe "saci new scaffold" do
         yaml = YAML.parse(read_file(dir, "shard.yml"))
         deps = yaml["dependencies"].as_h
 
-        deps["saci"]["path"].as_s.should eq(Saci::CLI::New::SACI_ROOT)
+        deps["saci"]["github"].as_s.should eq("pedrohvsouza/saci")
+        deps["saci"]["version"].as_s.should eq("~> #{Saci::VERSION}")
+        deps["saci"]["path"]?.should be_nil
         deps["pg"]["github"].as_s.should eq("will/crystal-pg")
         deps["pg"]["version"].as_s.should eq("~> 0.30.0")
         deps.has_key?(YAML::Any.new("mysql")).should be_false
@@ -54,7 +56,7 @@ describe "saci new scaffold" do
       with_new_app("newmysqlapp", db: "mysql") do |dir|
         deps = YAML.parse(read_file(dir, "shard.yml"))["dependencies"].as_h
 
-        deps["saci"]["path"].as_s.should eq(Saci::CLI::New::SACI_ROOT)
+        deps["saci"]["github"].as_s.should eq("pedrohvsouza/saci")
         deps["mysql"]["github"].as_s.should eq("crystal-lang/crystal-mysql")
         deps["mysql"]["version"].as_s.should eq("~> 0.17.0")
         deps.has_key?(YAML::Any.new("pg")).should be_false
@@ -70,6 +72,15 @@ describe "saci new scaffold" do
         raw.should contain("# pg:")
         raw.should contain("# mysql:")
       end
+    end
+
+    it "writes a local path dependency only with --saci-path" do
+      deps = YAML.parse(Saci::CLI::New.shard_yml("blog", "/src/saci"))["dependencies"]
+      deps["saci"]["path"].as_s.should eq("/src/saci")
+      deps["saci"]["github"]?.should be_nil
+      Saci::CLI::New.parse_opts(["blog", "--saci-path", "/src/saci"])[:saci_path].should eq("/src/saci")
+      Saci::CLI::New.dockerfile("blog", local_saci: true).should contain("--saci-path")
+      Saci::CLI::New.dockerfile("blog").should_not contain("--saci-path")
     end
 
     it "accepts the postgresql alias for --db" do
@@ -143,7 +154,18 @@ describe "saci new scaffold" do
     with_new_app("newdocker") do |dir|
       dockerfile = read_file(dir, "Dockerfile")
       dockerfile.should contain("FROM crystallang/crystal:1.22.0 AS build")
-      dockerfile.should contain("FROM debian:bookworm-slim AS runtime")
+      # Same distro as the build image, or the binaries miss its glibc.
+      dockerfile.should contain("FROM ubuntu:26.04 AS runtime")
+      dockerfile.should contain("libssl3t64")
+      dockerfile.should contain("libgmp10")
+      dockerfile.should contain("userdel --remove ubuntu")
+      # SQLite (the default) links against libsqlite3; --production needs the lock.
+      dockerfile.should contain("install -y --no-install-recommends libsqlite3-dev")
+      dockerfile.should contain("COPY shard.yml shard.lock ./")
+      dockerfile.should contain("shards install --production")
+      # Credentials (secret_key_base) ship encrypted; RAILS_MASTER_KEY opens them.
+      dockerfile.should contain("/app/config/credentials.yml.enc /app/config/credentials.yml.enc")
+      dockerfile.should contain("Saci::Assets.precompile")
       dockerfile.should contain("USER saci")
       dockerfile.should contain("EXPOSE 3000")
       dockerfile.should contain("ENTRYPOINT [\"/app/bin/docker-entrypoint\"]")
@@ -151,6 +173,7 @@ describe "saci new scaffold" do
       dockerfile.should contain("HEALTHCHECK")
 
       read_file(dir, ".dockerignore").should contain("config/master.key")
+      read_file(dir, ".dockerignore").should contain("public/assets")
       ci = read_file(dir, ".github", "workflows", "ci.yml")
       ci.should contain("crystal tool format --check")
       ci.should contain("crystal spec")
@@ -170,9 +193,11 @@ describe "saci new scaffold" do
     end
   end
 
-  it "keeps generated initializers comment-only so fresh apps always compile" do
+  it "keeps optional initializers comment-only so fresh apps always compile" do
     with_new_app("newinit") do |dir|
+      active = ["content_security_policy.cr", "trusted_proxies.cr"]
       Dir.glob(File.join(dir, "config", "initializers", "*.cr")).each do |file|
+        next if active.includes?(File.basename(file))
         File.read(file).each_line do |line|
           stripped = line.strip
           next if stripped.empty?
@@ -181,6 +206,30 @@ describe "saci new scaffold" do
       end
       read_file(dir, "src", "newinit.cr").should contain("require \"../config/initializers/*\"")
       read_file(dir, "spec", "spec_helper.cr").should contain("require \"../config/initializers/*\"")
+    end
+  end
+
+  it "spells out the CSP and the trusted proxies in active initializers" do
+    with_new_app("newcsp") do |dir|
+      csp = read_file(dir, "config", "initializers", "content_security_policy.cr")
+      csp.should contain("Saci::SecureHeaders.configure")
+      csp.should contain(%("default-src 'self'"))
+      csp.should contain("https://fonts.googleapis.com")
+      csp.should contain("csp_nonce")
+      proxies = read_file(dir, "config", "initializers", "trusted_proxies.cr")
+      proxies.should contain("config.trusted_proxies = Saci::Middleware::RemoteIp::PRIVATE_NETWORKS.dup")
+      proxies.should contain("forward_headers: true")
+    end
+  end
+
+  it "sets up src/assets with a stylesheet the layout links" do
+    with_new_app("newassets") do |dir|
+      read_file(dir, "src", "assets", "application.css").should contain("body")
+      layout = read_file(dir, "src", "views", "layouts", "application.ecr")
+      layout.should contain(%(<%= stylesheet_link_tag("application.css") %>))
+      layout.should contain("<%= content_for(:head) %>")
+      read_file(dir, ".gitignore").should contain("/public/assets/")
+      read_file(dir, "config", "initializers", "assets.cr").should contain("saci assets:precompile")
     end
   end
 
