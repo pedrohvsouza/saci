@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 — 2026-11-14
 
-Fixes from building and deploying a real app with Saci.
+Fixes from building and deploying a real app with Saci (phvsz.com), plus
+adaptive GC pacing, Cable and router throughput work, and safer threading.
+Read the behavior changes before upgrading an app that runs behind a proxy.
 
 ### Behavior changes
 
@@ -54,6 +56,26 @@ Fixes from building and deploying a real app with Saci.
   to attachments.
 - I18n keys for `paginate_nav` labels (`saci.pagination.*`).
 - `Middleware::RemoteIp::PRIVATE_NETWORKS`.
+- Adaptive GC pacing under a memory budget: `SACI_MEMORY_LIMIT` (whole
+  resident set) or `SACI_GC_HEAP_LIMIT` (GC heap only) picks Boehm's
+  free-space divisor, and the bytes allocated between collections, from
+  the live heap.
+- `saci serve --host` with no value exposes the app on the local network
+  and prints the network URLs (not inside containers).
+- `serve --watch` also watches path dependencies.
+- Cable connections expose the handshake request, cookies and session.
+
+### Performance
+
+- Cable: each broadcast is encoded once for all subscribers, remote
+  broadcasts without local listeners are not decoded, Redis uses one
+  channel per stream with pipelined publishes, frame workers are bounded,
+  and idle sockets and connection stacks are trimmed.
+- Router: routes are indexed by method and idle per-request work is
+  skipped. `Static` skips the filesystem for paths outside the public
+  root.
+- Smaller per-socket and WebSocket buffers; memoized cookie key
+  derivation and verified encrypted cookies.
 
 ### Fixed
 
@@ -63,8 +85,11 @@ Fixes from building and deploying a real app with Saci.
   (`maximum is NICKNAME_MAX characters`) instead of its value.
 - `db:schema:check` warned about framework models (`Saci::*`) and their
   `saci_*` tables in apps that do not use them.
-- `saci serve` and `Application#listen` stop with a short message when the
-  port is taken, instead of a stack trace.
+- The database pool could hand one connection to two threads under
+  `-Dexecution_context`.
+- `saci runner` loads services and initializers.
+- The GC tuner subtracted memory unmapped to the OS twice and could raise
+  `OverflowError` while sampling the heap.
 - Generated Dockerfile: builds with SQLite, installs from `shard.lock`,
   precompiles assets, runs on the Crystal image's Ubuntu release (the
   older base could not start the binaries), and copies the encrypted
