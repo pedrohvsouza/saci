@@ -1037,8 +1037,16 @@ module Saci
       route.regex.source.starts_with?("^" + Regex.escape(prefix)) ? prefix : ""
     end
 
+    # A `HEAD` with no route of its own uses the `GET` route (as Rails does);
+    # `Middleware::Head` drops the body.
     def find(method : String, path : String) : {Route, Hash(String, String)}?
       verb = method.upcase
+      found = find_verb(verb, path)
+      found = find_verb("GET", path) if found.nil? && verb == "HEAD"
+      found
+    end
+
+    private def find_verb(verb : String, path : String) : {Route, Hash(String, String)}?
       candidates = route_index[verb]?
       return nil if candidates.nil?
       candidates.each do |entry|

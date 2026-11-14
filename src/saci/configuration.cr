@@ -93,6 +93,7 @@ module Saci
 
     def initialize
       @middleware = Middleware::Stack.new
+      @middleware.use(Middleware::Head.new(self))
       @middleware.use(Middleware::RemoteIp.new(self))
       @middleware.use(Middleware::HostAuthorization.new(self))
       @middleware.use(Middleware::SSL.new(self))

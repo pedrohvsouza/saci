@@ -248,6 +248,7 @@ module Saci
 end
 
 require "./middleware/net"
+require "./middleware/head"
 require "./middleware/cors"
 require "./middleware/host_authorization"
 require "./middleware/remote_ip"
