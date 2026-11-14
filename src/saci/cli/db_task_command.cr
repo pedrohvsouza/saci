@@ -213,7 +213,7 @@ module Saci
           io << Inspect::Runner.framework_require_line << "\n"
           io << "require \"file_utils\"\n"
           io << Inspect::Runner.driver_require_line(name)
-          io << "require \"../src/models/*\"\n" if Dir.exists?("src/models")
+          io << Util.models_require("../src") if Dir.exists?("src/models")
           io << "require \"../db/migrations\"\n"
           io << "\nFileUtils.mkdir_p(\"db\")\n"
           io << "env_name = ENV.fetch(\"APP_ENV\", \"development\")\n"
@@ -360,7 +360,7 @@ module Saci
           io << Inspect::Runner.framework_require_line << "\n"
           io << "require \"file_utils\"\n"
           io << Inspect::Runner.driver_require_line(name)
-          io << "require \"../src/models/*\"\n" if Dir.exists?("src/models")
+          io << Util.models_require("../src") if Dir.exists?("src/models")
           io << Util.internal_require("db_tasks") << "\n"
           io << "\nFileUtils.mkdir_p(\"db\")\n"
           io << "env_name = ENV.fetch(\"APP_ENV\", \"development\")\n"

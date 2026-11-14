@@ -540,17 +540,19 @@ module Saci
         # config/server.yml supplies defaults; HOST/PORT/SACI_* override them.
         require "../config/server"
         # Base classes first: globs load files alphabetically, and a subclass
-        # such as admin_controller.cr must not load before its parent.
+        # such as admin_controller.cr must not load before its parent. `**`
+        # also loads subdirectories (src/controllers/admin/ from
+        # `saci generate admin`).
         require "./models/application_record"
         require "./controllers/application_controller"
         require "./channels/application_channel"
         require "./jobs/application_job"
         require "./mailers/application_mailer"
-        require "./models/*"
-        require "./controllers/*"
-        require "./channels/*"
-        require "./jobs/*"
-        require "./mailers/*"
+        require "./models/**"
+        require "./controllers/**"
+        require "./channels/**"
+        require "./jobs/**"
+        require "./mailers/**"
 
         env_name = ENV.fetch("APP_ENV", "development")
         FileUtils.mkdir_p("db")
@@ -764,7 +766,7 @@ module Saci
         #{driver}require "saci"
         require "file_utils"
         require "../src/models/application_record"
-        require "../src/models/*"
+        require "../src/models/**"
         require "./migrations"
 
         FileUtils.mkdir_p("db")
@@ -856,11 +858,11 @@ module Saci
         require "../src/channels/application_channel"
         require "../src/jobs/application_job"
         require "../src/mailers/application_mailer"
-        require "../src/models/*"
-        require "../src/controllers/*"
-        require "../src/channels/*"
-        require "../src/jobs/*"
-        require "../src/mailers/*"
+        require "../src/models/**"
+        require "../src/controllers/**"
+        require "../src/channels/**"
+        require "../src/jobs/**"
+        require "../src/mailers/**"
         require "../db/migrations"
 
         # Isolated test database (never touch development data).

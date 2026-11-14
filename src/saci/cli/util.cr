@@ -87,6 +87,16 @@ module Saci
         unprefixed_app?(dir)
       end
 
+      # Requires for an app's models from a generated runner: the base class
+      # first (globs load alphabetically, so `account.cr` would precede
+      # `application_record.cr`), then every model, subdirectories included.
+      def self.models_require(src : String) : String
+        String.build do |io|
+          io << "require \"" << src << "/models/application_record\"\n" if File.exists?("src/models/application_record.cr")
+          io << "require \"" << src << "/models/**\"\n"
+        end
+      end
+
       def self.unprefix(source : String) : String
         source.gsub(/\bSaci::(?=[A-Z])/, "")
       end

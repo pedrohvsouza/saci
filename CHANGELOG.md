@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased
+
+- **Fixed: `saci generate authentication` wrote views that did not
+  compile.** ECR has no `<%= helper do %>` tag. `form_with` now takes an
+  ECR block written with `<% %>` and puts the form into the page:
+  `<% form_with("/login") do |f| %> … <% end %>`. A block that returns
+  the fields as a String still works with `<%= %>`. The scaffold, admin
+  and password views use the new form.
+- **Fixed: generated code that did not compile or failed its own
+  specs.** `scaffold_controller` and `admin` controllers now declare
+  typed defaults for their instance variables. `admin` controllers under
+  `src/controllers/admin/` are loaded, because the entrypoint,
+  `spec/spec_helper.cr` and `db/migrate.cr` now use recursive `**`
+  globs. The `db:*` runners load `application_record.cr` before the
+  other models. Migration and controller-spec templates are indented the
+  way `crystal tool format` expects, and every generated file ends with a
+  newline.
+- `render_template` treats a name with a slash (`"shared/feed"` or
+  `:"admin/posts/index"`) as a path from `src/views/`, as in Rails. Bare
+  names stay relative to the controller.
+- `saci generate authentication` keeps the stock `HomeController` and
+  `HealthController` public with `allow_unauthenticated_access`, so the
+  welcome page and the `/up` probe are not redirected to `/login`.
+  Edited controllers get a note instead, and `saci destroy
+  authentication` restores the stock files.
+- A smoke spec (`SACI_SMOKE=1 crystal spec
+  spec/generated_app_smoke_spec.cr`, CI job `smoke`) generates an app,
+  runs every generator, then checks that the app is formatted, compiles
+  and passes its own specs.
+
 ## 0.6.2 — 2026-11-14
 
 App code can drop the `Saci::` prefix, the generators lean on

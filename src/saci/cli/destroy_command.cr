@@ -233,6 +233,20 @@ module Saci
         remove("src/views/passwords/edit.ecr", Generate.auth_reset_view)
         remove("spec/requests/sessions_controller_spec.cr", Generate.auth_spec_source(user_class))
 
+        {
+          "src/controllers/home_controller.cr"   => New.home_controller,
+          "src/controllers/health_controller.cr" => New.health_controller,
+        }.each do |path, stock|
+          next unless File.exists?(path)
+          next unless File.read(path) == Generate.final_content(path, Generate.public_controller(stock))
+          if Generate.pretend?
+            Generate.log "  restore #{path} (remove allow_unauthenticated_access)"
+          else
+            File.write(path, Generate.final_content(path, stock))
+            Generate.log "  restore #{path}"
+          end
+        end
+
         app_controller = "src/controllers/application_controller.cr"
         auth_controller = "require \"./authentication\"\n\nclass ApplicationController < Saci::Controller\n  include Authentication\nend\n"
         if File.exists?(app_controller)
@@ -300,9 +314,8 @@ module Saci
           return
         end
 
-        # Generators drop the `Saci::` prefix at write time; compare against
-        # what they actually wrote.
-        expected = Util.unprefix(expected) if expected && Util.unprefix_target?(path)
+        # Compare against what the generator actually wrote.
+        expected = Generate.final_content(path, expected) if expected
         if expected.nil? || Generate.force? || File.read(path) == expected
           delete_file(path)
           return

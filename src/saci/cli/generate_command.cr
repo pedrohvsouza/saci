@@ -147,8 +147,16 @@ module Saci
       # `db/migrations.cr` manifest is derived state (rebuilt from
       # `db/migrate/*.cr`), so it passes `prompt: false` and always
       # overwrites like before — identical content still skips.
-      def self.write_file(path : String, content : String, prompt : Bool = true) : Symbol
+      # What a generator writes for `content`: the `Saci::` prefix dropped
+      # where the app allows it (see `Util.unprefix_target?`) and a final
+      # newline, so generated files pass `crystal tool format --check`.
+      def self.final_content(path : String, content : String) : String
         content = Util.unprefix(content) if Util.unprefix_target?(path)
+        content.empty? || content.ends_with?('\n') ? content : content + "\n"
+      end
+
+      def self.write_file(path : String, content : String, prompt : Bool = true) : Symbol
+        content = final_content(path, content)
         exists = File.exists?(path)
         same = exists && File.read(path) == content
 
@@ -427,7 +435,7 @@ module Saci
 
       def self.controller_spec_source(base : String, class_name : String, actions : Array(String)) : String
         base_path = Util.file_name(base)
-        routes = actions.map { |a| "      #{controller_route_for(base_path, class_name, a)}" }.join("\n")
+        routes = actions.map { |a| "    #{controller_route_for(base_path, class_name, a)}" }.join("\n")
         tests = actions.map do |a|
           verb, path = controller_request_for(base_path, a)
           <<-TEST
@@ -556,7 +564,7 @@ module Saci
       end
 
       def self.add_columns_source(class_name : String, table : String, fields : Array(Field)) : String
-        ops = fields.map { |(name, type)| "      add_column :#{table}, :#{name}, :#{type}" }.join("\n")
+        ops = fields.map { |(name, type)| "    add_column :#{table}, :#{name}, :#{type}" }.join("\n")
         <<-CRYSTAL
         class #{class_name} < Saci::Record::Migration
           def change
@@ -874,6 +882,11 @@ module Saci
           class #{plural}Controller < ::ApplicationController
             before_action :require_admin
 
+            # Typed defaults: Crystal infers instance variables from their
+            # assignments, and the views read these.
+            @page = Saci::Pagination::Page(#{class_name}).new([] of #{class_name}, 0_i64, 0, 1, 25, nil, nil)
+            @record = #{class_name}.new
+
             def index
               query = #{class_name}.all
               __SEARCH__
@@ -1014,7 +1027,7 @@ module Saci
         inputs = "    <p>No editable fields.</p>" if inputs.empty?
         <<-ECR
         <h1>Edit #{class_name} #<%= @record.id %> (admin)</h1>
-        <%= form_with("/admin/#{table}/<%= @record.id %>", method: "patch", model: @record, scope: "#{table.chomp("s")}") do |f| %>
+        <% form_with("/admin/#{table}/\#{@record.id}", method: "patch", model: @record, scope: "#{table.chomp("s")}") do |f| %>
           <%= f.error_messages %>
         #{inputs}
           <%= f.submit("Update #{class_name}") %>
@@ -1474,6 +1487,11 @@ module Saci
         assigns_update = fields.map { |(name, type)| assignment_line("@#{var}", name, type) }.join("\n    ")
         <<-CRYSTAL
         class #{plural}Controller < ApplicationController
+          # Typed defaults: Crystal infers instance variables from their
+          # assignments, and the views read these in every action.
+          @#{table} = [] of #{class_name}
+          @#{var} = #{class_name}.new
+
           def index
             @#{table} = #{class_name}.all.to_a
             render_template :index
@@ -1580,7 +1598,7 @@ module Saci
         inputs = "  <p>No editable fields.</p>" if inputs.empty?
         <<-ECR
         <h1>New #{class_name}</h1>
-        <%= form_with("/#{table}", model: @#{var}) do |f| %>
+        <% form_with("/#{table}", model: @#{var}) do |f| %>
           <%= f.error_messages %>
         #{inputs}
           <%= f.submit("Create #{class_name}") %>
@@ -1594,7 +1612,7 @@ module Saci
         inputs = "  <p>No editable fields.</p>" if inputs.empty?
         <<-ECR
         <h1>Edit #{class_name} #<%= @#{var}.id %></h1>
-        <%= form_with("/#{table}/<%= @#{var}.id %>", method: "patch", model: @#{var}) do |f| %>
+        <% form_with("/#{table}/\#{@#{var}.id}", method: "patch", model: @#{var}) do |f| %>
           <%= f.error_messages %>
         #{inputs}
           <%= f.submit("Update #{class_name}") %>
@@ -1685,6 +1703,7 @@ module Saci
         end
 
         wire_application_controller!
+        open_stock_controllers!
         puts ""
         puts "Add these routes to your router:"
         puts "  r.get \"/login\", SessionsController, :new"
@@ -1845,7 +1864,7 @@ module Saci
         <% if message = @error %>
           <p class="error"><%= h(message) %></p>
         <% end %>
-        <%= form_with("/login") do |f| %>
+        <% form_with("/login") do |f| %>
           <label>Email <%= f.text_field("email") %></label>
           <label>Password <%= f.password_field("password") %></label>
           <%= f.submit("Log in") %>
@@ -1857,7 +1876,7 @@ module Saci
       def self.auth_forgot_view : String
         <<-ECR
         <h1>Reset your password</h1>
-        <%= form_with("/passwords") do |f| %>
+        <% form_with("/passwords") do |f| %>
           <label>Email <%= f.text_field("email") %></label>
           <%= f.submit("Send reset instructions") %>
         <% end %>
@@ -1878,7 +1897,7 @@ module Saci
         <<-ECR
         <h1>Choose a new password</h1>
         <% if @user %>
-          <%= form_with("/passwords/<%= @token %>", method: "patch") do |f| %>
+          <% form_with("/passwords/\#{@token}", method: "patch") do |f| %>
             <label>Password <%= f.password_field("password") %></label>
             <label>Confirmation <%= f.password_field("password_confirmation") %></label>
             <%= f.submit("Update password") %>
@@ -1909,6 +1928,30 @@ module Saci
           puts "  require \"./authentication\""
           puts "  include Authentication"
         end
+      end
+
+      # `include Authentication` puts every controller behind a login. The
+      # welcome page and the `/up` health check that `saci new` generates
+      # stay public (probes must not be redirected to /login), but only
+      # while they are the stock files; edited ones get a note instead.
+      def self.open_stock_controllers! : Nil
+        {
+          "src/controllers/home_controller.cr"   => New.home_controller,
+          "src/controllers/health_controller.cr" => New.health_controller,
+        }.each do |path, stock|
+          next unless File.exists?(path)
+          current = File.read(path)
+          next if current.includes?("allow_unauthenticated_access")
+          if current.strip == stock.strip
+            write_file(path, public_controller(stock), prompt: false)
+          else
+            puts "note: #{path} now requires a login; add `allow_unauthenticated_access` to keep it public."
+          end
+        end
+      end
+
+      def self.public_controller(stock : String) : String
+        stock.sub(/^(class \w+ < ApplicationController)$/m, "\\1\n  allow_unauthenticated_access\n")
       end
 
       def self.default_application_controller?(content : String) : Bool
