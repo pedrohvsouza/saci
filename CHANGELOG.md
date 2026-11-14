@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 — 2026-11-14
+
+Models get the rest of the Rails callback chain, `throw_abort` to halt
+it, and a chainable `scope` macro. Every generator's output now
+compiles, passes its own specs and is formatted, and `form_with` takes
+ECR blocks. Read the callback entries before upgrading:
+`after_commit on: :update` no longer runs after `destroy`, and
+timestamps are set after `before_create`/`before_update`.
 
 - **More model callbacks.** `before_create`, `before_update`,
   `after_update`, `before_destroy` and `around_save`, `around_create`,
