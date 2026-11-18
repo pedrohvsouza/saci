@@ -17,7 +17,7 @@ module Saci
       WATCH_DIRS  = ["src", "db", "config"]
       WATCH_FILES = ["shard.yml", "shard.lock"]
       IGNORE_DIRS = ["tmp", "log", ".git", "lib", ".shards", "bin"]
-      IGNORE_RES  = [/\.db$/, /\.log$/, /\.tmp$/]
+      IGNORE_RES  = [/\.(db|sqlite3?)(-shm|-wal|-journal)?$/, /\.log$/, /\.tmp$/]
 
       # `root` is the watched directory the path was found under; ignore
       # rules apply to the part below it, so a path dependency living under

@@ -51,3 +51,76 @@ describe Saci::TestSession do
     end
   end
 end
+
+record TestSessionUser, id : Int64, email : String, session_token : String = "tok-1"
+
+class TestSessionAuthController < Saci::Controller
+  before_action :require_login
+  allow_unauthenticated_access only: [:sign_out_user]
+
+  memoize_current_user TestSessionUser
+
+  private def find_current_user(id : Int64) : TestSessionUser?
+    TestSessionUser.new(id, "u#{id}@example.com") if id == 7
+  end
+
+  def me
+    render json: {email: current_user.try(&.email)}
+  end
+
+  def sign_out_user
+    logout
+    head :no_content
+  end
+end
+
+def auth_demo_router : Saci::Router
+  Saci::Router.new.draw do |r|
+    r.get "/me", TestSessionAuthController, :me
+    r.delete "/session", TestSessionAuthController, :sign_out_user
+  end
+end
+
+describe "Saci::TestSession#sign_in_as" do
+  it "logs the user in for the following requests" do
+    Saci::TestSession.serve(auth_demo_router) do |app|
+      app.get("/me").status_code.should eq(302)
+      app.sign_in_as(TestSessionUser.new(7_i64, "u7@example.com"))
+      app.track_cookies?.should be_true
+      resp = app.get("/me")
+      resp.status_code.should eq(200)
+      JSON.parse(resp.body)["email"].should eq("u7@example.com")
+      app.get("/me").status_code.should eq(200)
+    end
+  end
+
+  it "rejects a session whose token the record rotated" do
+    Saci::TestSession.serve(auth_demo_router) do |app|
+      app.sign_in_as(TestSessionUser.new(7_i64, "u7@example.com", session_token: "old"))
+      app.get("/me").status_code.should eq(302)
+    end
+  end
+
+  it "keeps the cookies the app sets, so a logout sticks" do
+    Saci::TestSession.serve(auth_demo_router) do |app|
+      app.sign_in_as(TestSessionUser.new(7_i64, "u7@example.com"))
+      app.delete("/session").status_code.should eq(204)
+      app.get("/me").status_code.should eq(302)
+    end
+  end
+
+  it "forgets the session on sign_out" do
+    Saci::TestSession.serve(auth_demo_router) do |app|
+      app.sign_in_as(TestSessionUser.new(7_i64, "u7@example.com"))
+      app.sign_out
+      app.get("/me").status_code.should eq(302)
+    end
+  end
+
+  it "leaves an explicit Cookie header alone" do
+    Saci::TestSession.serve(auth_demo_router) do |app|
+      app.sign_in_as(TestSessionUser.new(7_i64, "u7@example.com"))
+      app.get("/me", HTTP::Headers{"Cookie" => "other=1"}).status_code.should eq(302)
+    end
+  end
+end

@@ -175,7 +175,7 @@ saci new NAME [--db=sqlite|postgres|mysql] [--devcontainer] [--saci-path PATH] [
 saci generate KIND NAME [fields...] [--pretend] [--force]
 saci destroy KIND NAME
 saci serve [--port 3000] [--host] [--watch] [--mt [--workers N]] [-- crystal flags]
-saci test [spec paths] [-- crystal flags]
+saci test [spec paths|file:line] [--watch] [--rebuild] [--fail-fast ...] [-- crystal flags]
 saci routes [--grep PATTERN] [--boot [-- crystal flags]]
 saci runner -e CODE | saci runner FILE [args]
 saci console [-e CODE]
@@ -1142,6 +1142,14 @@ end
 
 - `TestSession.serve(router)` starts the full middleware and
   router stack over real HTTP on an ephemeral port.
+  `app.sign_in_as(user)` logs a user in for the following requests
+  without posting the login form. After `saci generate authentication`,
+  generated request specs call `sign_in(app)` from
+  `spec/support/authentication_helper.cr`.
+- `saci test` compiles the whole suite once into `tmp/.saci-test/specs`
+  and reuses it until a file changes, so running one file or one line
+  needs no compile. `saci test --watch` reruns the same specs after every
+  change.
 - Includes YAML fixtures (label references, ERB), factories with traits
   and associations, transactional tests with savepoints, assertions for
   mail, jobs, cable, changes and queries, time travel, `assert_select`,

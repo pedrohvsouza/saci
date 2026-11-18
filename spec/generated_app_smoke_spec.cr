@@ -33,9 +33,19 @@ SMOKE_GENERATORS = [
   ["benchmark", "Search"],
 ]
 
-# `authentication` makes every controller require a login, so the specs
-# other generators write would get 302s. It gets an app of its own.
-SMOKE_AUTH_GENERATORS = [["authentication"]]
+# `authentication` puts every controller behind a login; the specs the
+# generators write afterwards call `sign_in(app)` and must still pass.
+SMOKE_AUTH_GENERATORS = [
+  ["authentication"],
+  ["scaffold", "Product", "title:string", "price:integer"],
+  ["controller", "Pages", "index", "about"],
+  ["model", "Order", "total:integer", "paid:boolean"],
+  ["admin", "Order", "total:integer", "paid:boolean"],
+  ["resource", "Comment", "body:text"],
+  ["model", "Invoice", "number:string"],
+  ["scaffold_controller", "Invoice", "number:string"],
+  ["integration_test", "Checkout"],
+]
 
 private def smoke_run(dir : String, cmd : String, args : Array(String)) : Nil
   output = IO::Memory.new
@@ -77,7 +87,7 @@ describe "generated app smoke test" do
       smoke_app("smoke_app", SMOKE_GENERATORS)
     end
 
-    it "builds and passes its specs after the authentication generator" do
+    it "builds and passes its specs when authentication comes first" do
       smoke_app("smoke_auth", SMOKE_AUTH_GENERATORS)
     end
   {% else %}

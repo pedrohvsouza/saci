@@ -232,6 +232,23 @@ module Saci
         remove("src/views/passwords/create.ecr", Generate.auth_sent_view)
         remove("src/views/passwords/edit.ecr", Generate.auth_reset_view)
         remove("spec/requests/sessions_controller_spec.cr", Generate.auth_spec_source(user_class))
+        remove(Generate::AUTH_HELPER, Generate.auth_helper_source(user_class))
+        spec_helper = "spec/spec_helper.cr"
+        if File.exists?(spec_helper) && !File.exists?(Generate::AUTH_HELPER)
+          current = File.read(spec_helper)
+          line = Generate::AUTH_HELPER_REQUIRE + "\n"
+          if current.includes?(line)
+            if Generate.pretend?
+              Generate.log "  update #{spec_helper} (remove the authentication helper require)"
+            else
+              File.write(spec_helper, current.sub(line, ""))
+              Generate.log "  update #{spec_helper}"
+            end
+          end
+        end
+        if Dir["spec/**/*_spec.cr"].any? { |spec| File.read(spec).includes?("sign_in(app)") }
+          @@notes << "note: some specs still call `sign_in(app)`; remove those lines."
+        end
 
         {
           "src/controllers/home_controller.cr"   => New.home_controller,

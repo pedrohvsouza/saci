@@ -288,7 +288,22 @@ module Saci
       when "restart"
         "Usage: saci restart\n\nTouches tmp/restart.txt so watchers/process managers restart the app."
       when "test", "t"
-        "Usage: saci test [spec files/options] [-- crystal compiler flags]\n\nRuns the app's spec suite (crystal spec). Uses the test database via APP_ENV=test."
+        <<-HELP
+        Usage: saci test [spec files|dirs|file:line] [options] [-- crystal compiler flags]
+
+        Runs the app's spec suite. Uses the test database via APP_ENV=test.
+
+        The whole suite is compiled once into tmp/.saci-test/specs and reused
+        until a file in src/, spec/, config/, db/ or shard.yml/shard.lock
+        changes, so running another file or line needs no compile.
+
+          --watch      rerun the same specs after every change
+          --rebuild    compile even when nothing changed
+
+        Spec runner options (--fail-fast, -e NAME, --order random, --tag TAG,
+        -v, -p, --junit_output DIR, ...) are passed to the spec binary; any
+        other option (--error-trace, -Dflag, ...) goes to the compiler.
+        HELP
       else
         <<-HELP
         Saci #{Saci::VERSION} — Rails-compatible web framework for Crystal.

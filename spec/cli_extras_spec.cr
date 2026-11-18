@@ -225,6 +225,8 @@ describe "saci destroy" do
         File.exists?("src/models/user.cr").should be_false
         File.exists?("src/controllers/sessions_controller.cr").should be_false
         File.exists?("src/controllers/authentication.cr").should be_false
+        File.exists?("spec/support/authentication_helper.cr").should be_false
+        File.read("spec/spec_helper.cr").should_not contain("authentication_helper")
         File.read("src/controllers/application_controller.cr").should eq(Saci::CLI::New.application_controller)
       end
     end
@@ -336,6 +338,29 @@ describe "saci generate extras" do
         migration = File.read(Dir.glob("db/migrate/*_create_users.cr").first)
         migration.should contain("t.string :password_digest, null: false")
         migration.should contain("add_index :users, :email, unique: true")
+
+        File.read("spec/support/authentication_helper.cr").should contain("def sign_in(app : TestSession, user : User = create_spec_user)")
+        helper = File.read("spec/spec_helper.cr")
+        helper.should contain(%(require "../db/migrations"\nrequire "./support/authentication_helper"\n))
+        Saci::CLI::Generate.require_auth_helper!
+        File.read("spec/spec_helper.cr").scan("authentication_helper").size.should eq(1)
+      end
+    end
+  end
+
+  it "signs the spec user in from request specs generated after authentication" do
+    with_extras_app(name: "gen_auth_specs") do |dir|
+      Dir.cd(dir) do
+        Saci::CLI::Generate.run(["authentication"])
+        Saci::CLI::Generate.run(["controller", "Pages", "index", "about"])
+        spec = File.read("spec/requests/pages_controller_spec.cr")
+        spec.scan(/^ +TestSession\.serve\(router\) do \|app\|\n +sign_in\(app\)\n/m).size.should eq(2)
+        File.read("spec/requests/sessions_controller_spec.cr").should_not contain("sign_in(app)")
+
+        capture_extras_output do
+          Saci::CLI::Destroy.run(["controller", "Pages", "index", "about"]).should eq(0)
+        end
+        File.exists?("spec/requests/pages_controller_spec.cr").should be_false
       end
     end
   end

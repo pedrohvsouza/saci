@@ -37,6 +37,17 @@
 - `live/s3.sh` runs `live/s3_live_spec.cr` against RustFS in Docker, or
   against any S3 endpoint given in `S3_*` variables. CI runs it in the
   `live` job.
+- **Fixed: Cable channels were tracked only through their streams.**
+  A channel with no `stream_from` never received client messages, a
+  channel with several streams only unsubscribed from one and ran
+  `unsubscribed` once per stream on disconnect, and subscribing twice
+  under one identifier created a duplicate channel. Channels are now
+  tracked by identifier.
+- **Fixed: clients that disconnected mid-response logged unhandled
+  errors.** `HTTP::Server::ClientError` and closed responses are now
+  treated as routine disconnects, and errors raised after headers were
+  flushed report to `Saci.error_reporter` without attempting to rewrite
+  the status line.
 - **Faster `runner`, `console`, `task`, `ci` and `db:*` rebuilds.** These
   commands used to write their generated wrapper to a new file name on
   every run (`tmp/.saci-runner-<pid>-<random>.cr`). Crystal keys its
@@ -48,6 +59,31 @@
   `saci runner -e` (and so each `console` line) drops from about 9s to
   about 4s. A lock file next to the source keeps concurrent commands from
   overwriting each other's wrapper while it compiles.
+- **`saci test` reuses its build.** The suite compiles once into
+  `tmp/.saci-test/specs`, and the binary is reused until a file in
+  `src/`, `spec/`, `config/`, `db/` or `shard.yml`/`shard.lock` changes.
+  Running one file, a directory or a `file:line` now only changes the
+  `--location` filters and needs no compile. The runner keeps a fixed
+  path, so the compiler cache is reused too, and per-run cache
+  directories no longer pile up. `--watch` reruns the same selection
+  after every change, and `--rebuild` forces a compile. Spec runner
+  options (`--fail-fast`, `-e`, `--order`, `--tag`, `-v`, ...) go to the
+  binary, and other options go to the compiler. The first run of a single
+  file now compiles the whole suite.
+- **`TestSession#sign_in_as(user)`.** It writes the session
+  `Controller#login` would write and sends its cookie with the following
+  requests. `TestSession` now has a `cookies` jar, plus `track_cookies`
+  to keep `Set-Cookie` responses (`sign_in_as` turns it on) and
+  `sign_out`.
+- **Generated specs work with authentication.** `saci generate
+  authentication` writes `spec/support/authentication_helper.cr`
+  (`sign_in(app)`, `create_spec_user`) and requires it from
+  `spec/spec_helper.cr`. Request specs generated afterwards call
+  `sign_in(app)`, so they pass behind `require_login`. Existing specs need
+  the line added by hand, and the generator says so.
+- **Fixed: SQLite `-wal`/`-shm` files triggered rebuilds.** `saci serve
+  --watch` now ignores them, as well as `.sqlite3` files and their
+  journals.
 
 ## 0.8.0 — 2026-11-14
 

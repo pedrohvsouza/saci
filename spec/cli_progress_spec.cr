@@ -66,10 +66,10 @@ end
 
 describe "saci test spec selection" do
   it "reads files, directories and file:line like crystal spec" do
-    root = File.join("/tmp/opencode", "saci-spec-select-#{Random::Secure.hex(4)}")
+    root = File.join(Dir.tempdir, "saci-spec-select-#{Random::Secure.hex(4)}")
     Dir.mkdir_p(File.join(root, "spec", "models"))
     File.write(File.join(root, "spec", "a_spec.cr"), "")
-    File.write(File.join(root, "spec", "models", "b_spec.cr"), "")
+    File.write(File.join(root, "spec", "models", "b_spec.cr"), "require \"../spec_helper\"\n\ndescribe B do\n  it \"x\" { }\nend\n\nSpec.describe C do\nend\n")
     File.write(File.join(root, "spec", "models", "helper.cr"), "")
     begin
       Dir.cd(root) do
@@ -83,10 +83,26 @@ describe "saci test spec selection" do
         locations.should eq([{"spec/a_spec.cr", "12"}])
         options.should eq(["--error-trace"])
 
-        Saci::CLI::Test.location_options(["spec/a_spec.cr"], [{"spec/a_spec.cr", "12"}]).should eq(["-l", "12"])
-        Saci::CLI::Test.location_options(files, locations).should eq(["--location", "spec/a_spec.cr:12"])
+        Saci::CLI::Test.filter_options(["spec/a_spec.cr"], [{"spec/a_spec.cr", "12"}]).should eq(["--location", "spec/a_spec.cr:12"])
 
         expect_raises(Saci::CLI::Error, /is not a file/) { Saci::CLI::Test.select_specs(["spec/missing_spec.cr"]) }
+
+        # A whole file runs through its top-level groups; a file without
+        # any (specs from macros) selects all of its lines.
+        Saci::CLI::Test.filter_options(files, locations).should eq([
+          "--location", "spec/a_spec.cr:12",
+          "--location", "spec/models/b_spec.cr:3",
+          "--location", "spec/models/b_spec.cr:7",
+        ])
+        File.write("spec/a_spec.cr", "{% for x in %w(a b) %}\n{% end %}\n")
+        Saci::CLI::Test.filter_options(["spec/a_spec.cr"], [] of {String, String}).should eq([
+          "--location", "spec/a_spec.cr:1", "--location", "spec/a_spec.cr:2",
+        ])
+        Saci::CLI::Test.suite_files(["spec/models/helper.cr"]).should eq(["spec/a_spec.cr", "spec/models/b_spec.cr", "spec/models/helper.cr"])
+
+        runtime, compiler = Saci::CLI::Test.split_options(["--fail-fast", "-e", "saves", "--error-trace", "--order=random", "-Dfoo", "--tag", "slow"])
+        runtime.should eq(["--fail-fast", "-e", "saves", "--order=random", "--tag", "slow"])
+        compiler.should eq(["--error-trace", "-Dfoo"])
 
         source = Saci::CLI::Test.runner_source(["spec/a_spec.cr", "spec/models/b_spec.cr"], "tmp")
         source.should eq(%(require "../spec/a_spec.cr"\nrequire "../spec/models/b_spec.cr"\n))
