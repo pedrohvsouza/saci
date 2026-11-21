@@ -35,8 +35,6 @@ These are known gaps in the current release:
     Rails never asks for. COMING_FROM_RAILS.md should explain Crystal's
     inference rules, and an `assigns`-style macro could remove the
     annotations.
-  - A `saci views:check` linter for ECR: `<%= helper do %>` (needs
-    `<% %>`), `<%= %>` inside string literals, and missing partials.
   - Generators print routes for the user to copy. They could insert them
     into the router's `draw` block instead.
   - App specs could write their logs to `log/test.log` in Saci's format

@@ -177,6 +177,7 @@ saci destroy KIND NAME
 saci serve [--port 3000] [--host] [--watch] [--mt [--workers N]] [-- crystal flags]
 saci test [spec paths|file:line] [--watch] [--rebuild] [--fail-fast ...] [-- crystal flags]
 saci routes [--grep PATTERN] [--boot [-- crystal flags]]
+saci views:check [PATH]
 saci runner -e CODE | saci runner FILE [args]
 saci console [-e CODE]
 saci db:migrate [--all] | db:rollback [STEPS] [--all] | db:seed

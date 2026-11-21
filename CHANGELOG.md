@@ -88,6 +88,11 @@
   model to exist.** They stop before writing anything and name the
   missing `src/models/...` file and the `saci generate model` command.
   `admin` also resolves a plural name (`Posts`) to the existing model.
+- **`saci views:check`.** Lints ECR templates (default `src/views`) for
+  block helpers written as `<%= helper do %>` (they need `<% %>`), ECR
+  tags inside Crystal string literals, and `render_partial`/`render
+  partial:` targets that do not exist. It prints `file:line` for each
+  issue and exits 1, so it can gate CI.
 
 ## 0.8.0 — 2026-11-14
 

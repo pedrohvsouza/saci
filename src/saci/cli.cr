@@ -37,6 +37,7 @@ require "./cli/ci_command"
 require "./cli/app_update_command"
 require "./cli/importmap_command"
 require "./cli/assets_command"
+require "./cli/views_check_command"
 require "./cli/watch"
 
 module Saci
@@ -87,6 +88,8 @@ module Saci
         Secret.run(args)
       when "routes"
         Inspect::Routes.run(args)
+      when "views:check"
+        ViewsCheck.run(args)
       when "runner"
         Inspect::Runner.run(args)
       when "console"
@@ -222,6 +225,8 @@ module Saci
         "Usage: saci secret\n\nPrints a random secret for SECRET_KEY_BASE."
       when "routes"
         Inspect::Routes.help
+      when "views:check"
+        ViewsCheck.help
       when "runner"
         Inspect::Runner.help
       when "console"
@@ -334,6 +339,7 @@ module Saci
           assets:precompile|clobber fingerprint src/assets into public/assets (production)
           app:update                copy missing scaffold files (--force to overwrite)
           routes [--boot] [--expanded] [--grep PATTERN]
+          views:check [PATH]         lint ECR templates (block helpers, nested tags, partials)
           about|stats|notes|middleware|initializers|dbconsole
           dev:cache|log:clear|tmp:clear|time:zones|restart
           secret                    print a random SECRET_KEY_BASE

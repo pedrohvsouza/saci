@@ -705,7 +705,7 @@ describe "saci CLI help surface" do
       "db:version", "db:migrate:status", "db:fixtures:load", "db:test:prepare",
       "credentials:fetch", "about", "stats", "notes", "middleware",
       "initializers", "dbconsole", "dev:cache", "log:clear", "tmp:clear",
-      "time:zones", "restart", "routes", "generate",
+      "time:zones", "restart", "routes", "views:check", "generate",
     ].each do |topic|
       Saci::CLI.run(["help", topic]).should eq(0)
     end
