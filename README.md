@@ -72,7 +72,7 @@ Application.new(router).listen(3000)
 | Realtime | ActionCable-compatible WebSocket channels, with in-process, Redis or database fan-out |
 | Security | CSRF, CSP with nonces, secure headers, signed and encrypted cookies, pluggable session stores, `has_secure_password`, auth helpers, signed IDs, JWT, TOTP 2FA, rate limiting, encrypted credentials |
 | Extras | Storage with signed URLs, blobs, attachments, direct uploads and S3; rich text; GraphQL; XLSX/PDF/CSV; serializers; policies; search; audit trail; I18n; time zones; metrics; structured logging |
-| Tooling | `saci` CLI (new app scaffold, generators, `db:*` tasks, routes, runner, console, hot reload, credentials, local CI) and a testing kit (fixtures, factories, transactional tests, assertions, time travel, `assert_select`) |
+| Tooling | `saci` CLI (new app scaffold, generators, `db:*` tasks, routes, runner, console, hot reload, credentials, local CI) and a testing kit (fixtures, factories, transactional tests, assertions, time travel, `assert_select`, browser system tests) |
 
 ## Installation
 
@@ -193,8 +193,8 @@ saci ci | app:update | secret | about | stats | notes | middleware | initializer
 
 Generators: `model`, `controller`, `migration`, `scaffold`,
 `scaffold_controller`, `resource`, `admin`, `authentication`, `channel`,
-`job`, `mailer`, `task`, `helper`, `test`, `integration_test`, `benchmark`,
-`application_record`.
+`job`, `mailer`, `task`, `helper`, `test`, `integration_test`,
+`system_test`, `benchmark`, `application_record`.
 
 - Generators write the files, rebuild `db/migrations.cr` from
   `db/migrate/*.cr`, and insert the routes into the app's
@@ -1163,6 +1163,23 @@ end
   and reuses it until a file changes, so running one file or one line
   needs no compile. `saci test --watch` reruns the same specs after every
   change.
+- `Saci::SystemTest.serve(router)` boots the real stack and drives
+  headless Chrome/Chromium through the DevTools protocol. `saci generate
+  system_test Checkout` writes a `spec/system/` skeleton:
+  ```crystal
+  Saci::SystemTest.serve(router) do |page|
+    page.visit "/posts"
+    page.fill_in "Title", with: "Hello"
+    page.click_on "Create"
+    page.assert_text "Post created"
+    page.assert_selector "h1", text: "Posts"
+    page.within("form") { page.assert_selector "input[name=title]" }
+    page.screenshot "tmp/posts.png"
+  end
+  ```
+  Chrome comes from `CHROME_BIN` or the usual `google-chrome`/`chromium`
+  command. Specs should `pending!` when `Saci::SystemTest.available?` is
+  false, so the suite still runs on machines without a browser.
 - Includes YAML fixtures (label references, ERB), factories with traits
   and associations, transactional tests with savepoints, assertions for
   mail, jobs, cable, changes and queries, time travel, `assert_select`,

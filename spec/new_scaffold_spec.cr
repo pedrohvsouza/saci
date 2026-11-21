@@ -112,7 +112,7 @@ describe "saci new scaffold" do
 
       %w[
         spec/controllers/.gitkeep spec/models/.gitkeep spec/mailers/.gitkeep
-        spec/integration/.gitkeep spec/fixtures/.gitkeep
+        spec/integration/.gitkeep spec/system/.gitkeep spec/fixtures/.gitkeep
         storage/.gitkeep log/.gitkeep tmp/pids/.gitkeep vendor/.gitkeep script/.gitkeep
       ].each do |relative|
         File.exists?(File.join(dir, relative)).should be_true

@@ -267,6 +267,15 @@ describe "saci generate extras" do
         Saci::CLI::Generate.run(["integration_test", "Posts"])
         File.read("spec/integration/posts_test.cr").should contain("pending")
 
+        Saci::CLI::Generate.run(["system_test", "Checkout"])
+        system_test = File.read("spec/system/checkout_test.cr")
+        system_test.should contain("SystemTest.available?")
+        system_test.should contain("pending!")
+        capture_extras_output do
+          Saci::CLI::Destroy.run(["system_test", "Checkout"]).should eq(0)
+        end
+        File.exists?("spec/system/checkout_test.cr").should be_false
+
         Saci::CLI::Generate.run(["benchmark", "Post#import"])
         File.read("benchmarks/post_import_benchmark.cr").should contain("Benchmark.ips")
 

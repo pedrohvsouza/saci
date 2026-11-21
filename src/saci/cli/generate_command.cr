@@ -293,24 +293,25 @@ module Saci
         end
         kind = rest.shift? || raise Error.new("Usage: saci generate KIND NAME [fields...]\nKinds: #{GENERATOR_KINDS.join(", ")}")
         case kind.downcase
-        when "model"                           then model(rest)
-        when "controller"                      then controller(rest)
-        when "migration"                       then migration(rest)
-        when "channel"                         then channel(rest)
-        when "job"                             then job(rest)
-        when "mailer"                          then mailer(rest)
-        when "scaffold"                        then scaffold(rest)
-        when "admin"                           then admin(rest)
-        when "authentication", "auth"          then authentication(rest)
-        when "task"                            then task(rest)
-        when "helper"                          then helper(rest)
-        when "test"                            then model_test(rest)
-        when "integration_test", "system_test" then integration_test(rest)
-        when "resource"                        then resource(rest)
-        when "scaffold_controller"             then scaffold_controller(rest)
-        when "benchmark"                       then benchmark(rest)
-        when "application_record"              then application_record(rest)
-        else                                        raise Error.new("Unknown generator '#{kind}'. Kinds: #{GENERATOR_KINDS.join(", ")}.")
+        when "model"                  then model(rest)
+        when "controller"             then controller(rest)
+        when "migration"              then migration(rest)
+        when "channel"                then channel(rest)
+        when "job"                    then job(rest)
+        when "mailer"                 then mailer(rest)
+        when "scaffold"               then scaffold(rest)
+        when "admin"                  then admin(rest)
+        when "authentication", "auth" then authentication(rest)
+        when "task"                   then task(rest)
+        when "helper"                 then helper(rest)
+        when "test"                   then model_test(rest)
+        when "integration_test"       then integration_test(rest)
+        when "system_test"            then system_test(rest)
+        when "resource"               then resource(rest)
+        when "scaffold_controller"    then scaffold_controller(rest)
+        when "benchmark"              then benchmark(rest)
+        when "application_record"     then application_record(rest)
+        else                               raise Error.new("Unknown generator '#{kind}'. Kinds: #{GENERATOR_KINDS.join(", ")}.")
         end
         0
       ensure
@@ -320,8 +321,8 @@ module Saci
       GENERATOR_KINDS = [
         "model", "controller", "migration", "channel", "job", "mailer",
         "scaffold", "admin", "authentication", "task", "helper", "test",
-        "integration_test", "resource", "scaffold_controller", "benchmark",
-        "application_record",
+        "integration_test", "system_test", "resource", "scaffold_controller",
+        "benchmark", "application_record",
       ]
 
       alias Field = Tuple(String, String)
@@ -1280,6 +1281,36 @@ module Saci
             #     app.get("/#{base}").status_code.should eq(200)
             #   end
             pending "add #{class_name} integration requests"
+          end
+        end
+        CRYSTAL
+        puts "Run with: saci test #{path}"
+      end
+
+      # `saci generate system_test Posts` -> spec/system/posts_test.cr,
+      # a browser-driven spec using `Saci::SystemTest` (headless Chrome).
+      def self.system_test(args : Array(String)) : Nil
+        raw = args.shift? || raise Error.new("Usage: saci generate system_test NAME")
+        ensure_app!
+        base = Util.file_name(raw)
+        class_name = Util.class_name(base)
+        path = "spec/system/#{base}_test.cr"
+        write_file(path, <<-CRYSTAL)
+        require "../spec_helper"
+
+        describe "#{class_name} system" do
+          it "drives the page in a browser" do
+            pending! "Chrome/Chromium not found (set CHROME_BIN)" unless Saci::SystemTest.available?
+
+            # Wire your real route here, then replace the pending line:
+            #   router = Saci::Router.new.draw do |r|
+            #     r.get "/#{base}", #{class_name}Controller, :index
+            #   end
+            #   Saci::SystemTest.serve(router) do |page|
+            #     page.visit "/#{base}"
+            #     page.assert_text "#{class_name}"
+            #   end
+            pending! "wire the router and replace this pending"
           end
         end
         CRYSTAL

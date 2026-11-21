@@ -135,6 +135,7 @@ module Saci
         write(File.join(dir, "spec", "models", ".gitkeep"), "")
         write(File.join(dir, "spec", "mailers", ".gitkeep"), "")
         write(File.join(dir, "spec", "integration", ".gitkeep"), "")
+        write(File.join(dir, "spec", "system", ".gitkeep"), "")
         write(File.join(dir, "spec", "fixtures", ".gitkeep"), "")
 
         # Rails-like operating surface. Tests are Crystal specs, not minitest:
@@ -453,8 +454,10 @@ module Saci
           routes for browsers) and `robots.txt`, served by Saci's static
           middleware. The `/up` route is dynamic and lives in
           `src/controllers/health_controller.cr`.
-        - `spec/{controllers,models,mailers,integration,fixtures}/` — the
-          Crystal equivalent of Rails' `test/` tree (`crystal spec` runs it).
+        - `spec/{controllers,models,mailers,integration,system,fixtures}/` —
+          the Crystal equivalent of Rails' `test/` tree (`crystal spec` runs
+          it). `spec/system/` holds browser-driven tests; Chrome/Chromium is
+          required only when they run.
         - `db/migrate/` + `db/migrations.cr` — migrations and their manifest.
         - `storage/`, `log/`, `tmp/pids/`, `vendor/`, `script/` — runtime and
           auxiliary directories. `.gitkeep` keeps empty ones in Git.

@@ -194,6 +194,7 @@ module Saci
           helper NAME                          src/helpers/<name>_helper.cr
           test NAME                            spec/models/<name>_test.cr skeleton
           integration_test NAME                spec/integration/<name>_test.cr skeleton
+          system_test NAME                     spec/system/<name>_test.cr browser spec
           benchmark NAME                       benchmarks/<name>_benchmark.cr
           application_record                   src/models/application_record.cr
 
@@ -252,7 +253,8 @@ module Saci
           destroy mailer User           destroy authentication
           destroy helper Posts          destroy task reports:daily
           destroy test Post             destroy integration_test Posts
-          destroy benchmark Post        destroy application_record
+          destroy system_test Checkout  destroy benchmark Post
+          destroy application_record
 
         Modified files prompt before removal; --force removes without prompting;
         --pretend prints the plan only. Empty component directories are pruned,

@@ -163,7 +163,7 @@ type behind `Saci::`.
 | Ransack | `Search` with `searchable_attributes` |
 | PaperTrail, Audited | `Auditable` |
 | Kaminari, Pagy | `Pagination` |
-| Sidekiq, GoodJob | `:db` job adapter (there is no Redis queue adapter) |
+| Sidekiq, GoodJob | `:db` or `:redis` job adapter |
 | sidekiq-cron, whenever | `Recurring` |
 | Rack::Attack | `Throttle` |
 | rack-cors | `Middleware::CORS` |
@@ -171,6 +171,7 @@ type behind `Saci::`.
 | caxlsx, Prawn, csv | `Office` (XLSX, PDF, CSV) |
 | jwt, rotp | `JWT`, `TOTP`, `has_two_factor` |
 | FactoryBot, fixtures | `Testing::Factory`, `Testing::Fixtures` |
+| Capybara, Selenium | `Saci::SystemTest` (headless Chrome via the DevTools protocol) |
 | Searchkick (basic search) | SQLite FTS5 through `Record::FTS` |
 | ActiveAdmin, Administrate | `saci g admin` scaffold |
 | Sentry hooks | `Saci.error_reporter = ->(ex : Exception) { ... }` |
@@ -246,6 +247,13 @@ type behind `Saci::`.
   - `perform(payload : JSON::Any)` takes a single JSON payload.
     `perform_later` accepts named tuples and hashes, and records are
     encoded as GlobalID references.
+- **Testing**
+  - `Saci::SystemTest.serve(router) { |page| ... }` is the browser-driven
+    equivalent of a Capybara system test. `visit`, `fill_in`, `check`,
+    `select_option`, `click_on`, `within`, `assert_text` and
+    `assert_selector` cover the common DSL; `screenshot` saves a PNG.
+    Chrome/Chromium is needed only when a system test runs, and
+    `SystemTest.available?` lets a spec `pending!` otherwise.
 - **Drivers**
   - Saci never requires a database driver. Add `pg` or `mysql` to your
     app's `shard.yml` and require it yourself (`saci new --db=...` does
@@ -260,7 +268,5 @@ type behind `Saci::`.
 - `delegated_type`, composite primary keys,
   async queries, `strict_loading`,
   `store_accessor` and `normalizes`.
-- Browser-driven system tests. `saci g system_test` generates an HTTP
-  integration test.
 - GIS / PostGIS types.
 - A bundled HTTP/2 proxy in place of Thruster.

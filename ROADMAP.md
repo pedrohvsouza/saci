@@ -29,8 +29,6 @@ These are known gaps in the current release:
   PostgreSQL has push delivery (`LISTEN/NOTIFY`).
 - **Deploy**: there is no bundled HTTP/2 proxy (Thruster is only
   documented).
-- **Testing**: there are no browser-driven system tests.
-
 ## Out of scope
 
 - Rack compatibility. Saci middleware is plain `HTTP::Handler`.

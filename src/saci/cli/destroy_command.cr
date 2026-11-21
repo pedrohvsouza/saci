@@ -66,8 +66,10 @@ module Saci
           destroy_task(name!(raw, kind))
         when "test"
           destroy_model_test(name!(raw, kind))
-        when "integration_test", "system_test"
+        when "integration_test"
           destroy_integration_test(name!(raw, kind))
+        when "system_test"
+          destroy_system_test(name!(raw, kind))
         when "benchmark"
           destroy_benchmark(name!(raw, kind))
         when "application_record"
@@ -313,6 +315,11 @@ module Saci
       def self.destroy_integration_test(raw : String) : Nil
         base = Util.file_name(raw)
         remove("spec/integration/#{base}_test.cr", nil)
+      end
+
+      def self.destroy_system_test(raw : String) : Nil
+        base = Util.file_name(raw)
+        remove("spec/system/#{base}_test.cr", nil)
       end
 
       def self.destroy_benchmark(raw : String) : Nil

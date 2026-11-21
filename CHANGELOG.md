@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- **Browser-driven system tests.** `Saci::SystemTest.serve(router)` boots
+  the real stack and drives headless Chrome/Chromium through the DevTools
+  protocol: `visit`, `fill_in`, `check`, `uncheck`, `choose`,
+  `select_option`, `click_on`, `within`, `assert_text`,
+  `assert_selector`, `screenshot` and `execute_script`. `saci generate
+  system_test NAME` writes a `spec/system/` skeleton and
+  `saci destroy system_test` removes it. Chrome comes from `CHROME_BIN` or
+  the usual `google-chrome`/`chromium` commands; specs `pending!` when
+  `SystemTest.available?` is false. No new shard or Node dependency.
+
 ## 0.9.0 — 2026-11-21
 
 The developer loop and the compiler-time tooling are the focus of this

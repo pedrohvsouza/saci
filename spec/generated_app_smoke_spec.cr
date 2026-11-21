@@ -27,6 +27,7 @@ SMOKE_GENERATORS = [
   ["helper", "Format"],
   ["test", "Account"],
   ["integration_test", "Checkout"],
+  ["system_test", "Checkout"],
   ["resource", "Comment", "body:text"],
   ["model", "Invoice", "number:string"],
   ["scaffold_controller", "Invoice", "number:string"],
@@ -45,6 +46,7 @@ SMOKE_AUTH_GENERATORS = [
   ["model", "Invoice", "number:string"],
   ["scaffold_controller", "Invoice", "number:string"],
   ["integration_test", "Checkout"],
+  ["system_test", "Checkout"],
 ]
 
 private def smoke_run(dir : String, cmd : String, args : Array(String)) : Nil
