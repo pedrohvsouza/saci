@@ -79,6 +79,7 @@ describe "saci new" do
       helper.should contain("APP_ENV")
       helper.index(%(ENV["APP_ENV"] = "test")).not_nil!.should be <
                                                                helper.index(%(require "../config/environments/*")).not_nil!
+      helper.should contain("Saci.setup_spec_logging")
       helper.should contain("Migrator.migrate")
       File.read(File.join(dir, "spec", "spec_helper.cr")).should contain("src/channels/*")
       File.read(File.join(dir, "src", "cli_test_app.cr")).should contain("APP_ENV")

@@ -853,6 +853,9 @@ module Saci
         # guards on `Saci.env`, and test settings (quiet logs, no request
         # lines, bcrypt cost) must win under `crystal spec`.
         ENV["APP_ENV"] = "test"
+        # Migrations run while this file loads, before the spec runner's
+        # before_suite hook: send those logs to log/test.log too.
+        Saci.setup_spec_logging(default_level: :warn) unless ENV["SACI_LOG_SETUP"]? == "0"
         # Globs so every env file (including staging) and initializer loads
         # without editing this (each env file guards on `Saci.env` itself).
         require "../config/environments/*"

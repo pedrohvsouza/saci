@@ -197,9 +197,12 @@ Generators: `model`, `controller`, `migration`, `scaffold`,
 `application_record`.
 
 - Generators write the files, rebuild `db/migrations.cr` from
-  `db/migrate/*.cr`, and print the routes you need to add. Routes stay
-  hand-edited. Migration names starting with `AddIndex...` (or `--unique`)
-  generate `add_index`.
+  `db/migrate/*.cr`, and insert the routes into the app's
+  `Router.new.draw` block (or `src/routes.cr` when present), reusing an
+  existing `/admin` namespace. They print the copy-paste hint only when
+  no draw block is found, and `saci destroy` removes the inserted lines.
+  Migration names starting with `AddIndex...` (or `--unique`) generate
+  `add_index`.
 - If a target file already exists with different content, the generator
   asks `overwrite? [y/n/a/q]` on a TTY. Piped input never blocks: EOF
   skips with a warning. Use `--force` in CI. `--pretend` shows what would

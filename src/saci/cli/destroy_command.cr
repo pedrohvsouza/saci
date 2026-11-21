@@ -122,6 +122,7 @@ module Saci
         actions = actions_from("src/controllers/#{file}.cr") || ["index"]
         remove("src/controllers/#{file}.cr", Generate.controller_source(class_name, actions))
         remove("spec/requests/#{file}_spec.cr", Generate.controller_spec_source(base, class_name, actions))
+        Generate.remove_routes(actions.map { |action| Generate.controller_route_for(Util.file_name(base), class_name, action) })
       end
 
       def self.destroy_migration(raw : String) : Nil
@@ -158,6 +159,7 @@ module Saci
         remove("src/controllers/#{Util.file_name(plural)}_controller.cr", Generate.controller_source("#{plural}Controller", actions))
         remove("spec/requests/#{Util.file_name(plural)}_controller_spec.cr",
           Generate.controller_spec_source(plural, "#{plural}Controller", actions))
+        Generate.remove_routes([%(r.resources "#{table}", #{plural}Controller)])
         destroy_migrations("Create#{plural}", "create_#{table}")
       end
 
@@ -195,6 +197,8 @@ module Saci
         remove("spec/requests/#{Util.file_name(plural)}_controller_spec.cr",
           Generate.resource_spec_source(class_name, plural, table, fields))
         remove("src/routes/#{Util.file_name(plural)}_routes.cr", Generate.resource_route_source(plural, table))
+        Generate.remove_routes(["Routes.draw_#{table}(r)"],
+          requires: [%(require "./routes/#{Util.file_name(plural)}_routes")])
         destroy_migrations("Create#{plural}", "create_#{table}")
       end
 
@@ -216,6 +220,7 @@ module Saci
         }.each do |view, expected|
           remove("src/views/#{table}/#{view}.ecr", expected)
         end
+        Generate.remove_routes([%(r.resources "#{table}", #{plural}Controller)])
       end
 
       def self.destroy_authentication(raw : String?) : Nil
@@ -232,6 +237,7 @@ module Saci
         remove("src/views/passwords/create.ecr", Generate.auth_sent_view)
         remove("src/views/passwords/edit.ecr", Generate.auth_reset_view)
         remove("spec/requests/sessions_controller_spec.cr", Generate.auth_spec_source(user_class))
+        Generate.remove_routes(Generate.auth_route_lines)
         remove(Generate::AUTH_HELPER, Generate.auth_helper_source(user_class))
         spec_helper = "spec/spec_helper.cr"
         if File.exists?(spec_helper) && !File.exists?(Generate::AUTH_HELPER)
@@ -272,7 +278,9 @@ module Saci
             if Generate.pretend?
               Generate.log "  restore #{app_controller} (remove include Authentication)"
             else
-              File.write(app_controller, New.application_controller)
+              restored = New.application_controller
+              restored += "\n" unless restored.empty? || restored.ends_with?('\n')
+              File.write(app_controller, restored)
               Generate.log "  restore #{app_controller}"
             end
           elsif !current.includes?("include Authentication")

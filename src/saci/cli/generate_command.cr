@@ -1,3 +1,5 @@
+require "./router_edit"
+
 module Saci
   module CLI
     # `saci generate model|controller|migration ...` (alias `saci g ...`).
@@ -85,6 +87,10 @@ module Saci
         @@error
       end
 
+      def self.output : IO
+        @@output
+      end
+
       def self.reset_output! : Nil
         @@output = STDOUT
         @@error = STDERR
@@ -103,6 +109,20 @@ module Saci
 
       def self.log_raw(message : String) : Nil
         @@output.print(message)
+      end
+
+      # Routes/require lines go into the app's draw block. False means no
+      # draw block was found, so the caller prints the old copy-paste hint.
+      def self.add_routes(lines : Array(String), requires : Array(String) = [] of String) : Bool
+        RouterEdit.add(lines, requires: requires, pretend: pretend?, io: output) != RouterEdit::Result::NotFound
+      end
+
+      def self.add_namespace_routes(prefix : String, resource : String, controller : String) : Bool
+        RouterEdit.add_namespace(prefix, resource, controller, pretend: pretend?, io: output) != RouterEdit::Result::NotFound
+      end
+
+      def self.remove_routes(lines : Array(String), requires : Array(String) = [] of String) : Nil
+        RouterEdit.remove(lines, requires: requires, pretend: pretend?, io: output)
       end
 
       # Reads one y/n/a/q answer (used by destroy / app:update prompts too).
@@ -313,7 +333,7 @@ module Saci
         end
       end
 
-      def self.model(args : Array(String)) : Nil
+      def self.model(args : Array(String), routes_hint : Bool = true) : Nil
         raw_name = args.shift? || raise Error.new("Usage: saci generate model Name [field:type ...]")
         class_name = Util.class_name(Util.file_name(raw_name))
         fields = parse_fields(args)
@@ -332,8 +352,10 @@ module Saci
         unless skip?(:migration)
           create_migration_file(migration_name, create_table_source(migration_name, table, fields))
         end
-        puts "Add routes to your router, e.g.:"
-        puts "  r.resources \"#{table}\", #{Record::Inflector.pluralize(class_name)}Controller"
+        if routes_hint
+          puts "Add routes to your router, e.g.:"
+          puts "  r.resources \"#{table}\", #{Record::Inflector.pluralize(class_name)}Controller"
+        end
       end
 
       def self.model_source(class_name : String, fields : Array(Field)) : String
@@ -385,7 +407,7 @@ module Saci
         end.join(", ")
       end
 
-      def self.controller(args : Array(String)) : Nil
+      def self.controller(args : Array(String), routes : Bool = true) : Nil
         raw_name = args.shift? || raise Error.new("Usage: saci generate controller Name [action ...]")
         base = Util.class_name(Util.file_name(raw_name.sub(/Controller$/i, "")))
         class_name = "#{base}Controller"
@@ -404,9 +426,12 @@ module Saci
           write_file(spec_path, controller_spec_source(base, class_name, actions))
         end
 
-        puts "Add routes to your router, e.g.:"
-        actions.each do |a|
-          puts "  #{controller_route_for(Util.file_name(base), class_name, a)}"
+        if routes && !skip?(:route)
+          lines = actions.map { |a| controller_route_for(Util.file_name(base), class_name, a) }
+          unless add_routes(lines)
+            puts "Add routes to your router, e.g.:"
+            lines.each { |line| puts "  #{line}" }
+          end
         end
       end
 
@@ -811,8 +836,8 @@ module Saci
       end
 
       # One command for the standard REST stack: model + migration +
-      # controller (all REST actions) + specs. Prints the route to add
-      # (routes stay hand-edited by design).
+      # controller (all REST actions) + specs. Inserts the resource route
+      # into the app's draw block, or prints the hint when there is none.
       def self.scaffold(args : Array(String)) : Nil
         raw_name = args.first? || raise Error.new("Usage: saci generate scaffold Name [field:type ...]")
         fields = args.size > 1 ? args[1..] : [] of String
@@ -820,18 +845,24 @@ module Saci
         plural = Record::Inflector.pluralize(class_name)
         table = Record::Inflector.pluralize(Record::Inflector.underscore(class_name))
 
-        model([class_name] + fields) unless skip?(:model)
-        controller([plural, "index", "show", "create", "update", "destroy"]) unless skip?(:controller)
+        model([class_name] + fields, routes_hint: false) unless skip?(:model)
+        controller([plural, "index", "show", "create", "update", "destroy"], routes: false) unless skip?(:controller)
 
-        puts ""
-        puts "Add to your router:"
-        puts "  r.resources \"#{table}\", #{plural}Controller"
+        unless skip?(:route) || skip?(:controller)
+          line = %(r.resources "#{table}", #{plural}Controller)
+          unless add_routes([line])
+            puts ""
+            puts "Add to your router:"
+            puts "  #{line}"
+          end
+        end
       end
 
       # Admin-namespace scaffold (RailsAdmin-flavored minimal): namespaced
       # controller (search on string columns + sortable headers + pagination
       # via `Saci::Pagination.paginate`) + namespaced ECR views + request
-      # spec. Routes stay hand-edited by design (hint printed below).
+      # spec. Inserts the route under `/admin` in the draw block (reusing
+      # an existing namespace), or prints the hint when there is none.
       # Reruns overwrite like the other generators.
       def self.admin(args : Array(String)) : Nil
         raw_name = args.first? || raise Error.new("Usage: saci generate admin Name [field:type ...]")
@@ -865,11 +896,15 @@ module Saci
           write_file(spec_path, admin_spec_source(class_name, plural, table, fields))
         end
 
-        puts ""
-        puts "Add to your router:"
-        puts "  r.namespace(\"/admin\") do |a|"
-        puts "    a.resources \"#{table}\", Admin::#{plural}Controller"
-        puts "  end"
+        unless skip?(:route) || skip?(:controller)
+          unless add_namespace_routes("/admin", table, "Admin::#{plural}Controller")
+            puts ""
+            puts "Add to your router:"
+            puts "  r.namespace(\"/admin\") do |a|"
+            puts "    a.resources \"#{table}\", Admin::#{plural}Controller"
+            puts "  end"
+          end
+        end
       end
 
       def self.admin_controller_source(class_name : String, plural : String, table : String, fields : Array(Field)) : String
@@ -1287,7 +1322,7 @@ module Saci
         fields = parse_fields(args)
         ensure_app_layout!
 
-        model([class_name] + args) unless skip?(:model)
+        model([class_name] + args, routes_hint: false) unless skip?(:model)
         unless skip?(:controller)
           file_base = Util.file_name(plural)
           write_file("src/controllers/#{file_base}_controller.cr",
@@ -1301,9 +1336,15 @@ module Saci
         unless skip?(:route)
           route_file = "src/routes/#{Util.file_name(plural)}_routes.cr"
           write_file(route_file, resource_route_source(plural, table))
-          puts "Require and call the route helper from your router:"
-          puts "  require \"./routes/#{Util.file_name(plural)}_routes\""
-          puts "  Routes.draw_#{table}(r)"
+          unless skip?(:controller)
+            require_line = %(require "./routes/#{Util.file_name(plural)}_routes")
+            draw_line = "Routes.draw_#{table}(r)"
+            unless add_routes([draw_line], requires: [require_line])
+              puts "Require and call the route helper from your router:"
+              puts "  #{require_line}"
+              puts "  #{draw_line}"
+            end
+          end
         end
       end
 
@@ -1464,9 +1505,14 @@ module Saci
             scaffold_controller_spec_source(class_name, plural, table, fields))
         end
 
-        puts ""
-        puts "Add to your router:"
-        puts "  r.resources \"#{table}\", #{plural}Controller"
+        unless skip?(:route) || skip?(:controller)
+          line = %(r.resources "#{table}", #{plural}Controller)
+          unless add_routes([line])
+            puts ""
+            puts "Add to your router:"
+            puts "  #{line}"
+          end
+        end
       end
 
       # Class name for generators that take a model name which may be
@@ -1733,20 +1779,31 @@ module Saci
 
         wire_application_controller!
         open_stock_controllers!
-        puts ""
-        puts "Add these routes to your router:"
-        puts "  r.get \"/login\", SessionsController, :new"
-        puts "  r.post \"/login\", SessionsController, :create"
-        puts "  r.delete \"/logout\", SessionsController, :destroy"
-        puts "  r.get \"/passwords/new\", PasswordsController, :new"
-        puts "  r.post \"/passwords\", PasswordsController, :create"
-        puts "  r.get \"/passwords/:token/edit\", PasswordsController, :edit"
-        puts "  r.patch \"/passwords/:token\", PasswordsController, :update"
+        unless skip?(:route)
+          lines = auth_route_lines
+          unless add_routes(lines)
+            puts ""
+            puts "Add these routes to your router:"
+            lines.each { |line| puts "  #{line}" }
+          end
+        end
         puts "Set Saci::Auth.configure login_path / already_logged_in_path if you rename /login or /."
         unless skip?(:spec) || skip?(:test)
           puts "Request specs generated from now on call `sign_in(app)` (#{AUTH_HELPER});"
           puts "add it to existing ones right after `TestSession.serve(router) do |app|`."
         end
+      end
+
+      def self.auth_route_lines : Array(String)
+        [
+          %(r.get "/login", SessionsController, :new),
+          %(r.post "/login", SessionsController, :create),
+          %(r.delete "/logout", SessionsController, :destroy),
+          %(r.get "/passwords/new", PasswordsController, :new),
+          %(r.post "/passwords", PasswordsController, :create),
+          %(r.get "/passwords/:token/edit", PasswordsController, :edit),
+          %(r.patch "/passwords/:token", PasswordsController, :update),
+        ]
       end
 
       def self.auth_helper_source(user_class : String) : String
@@ -1844,6 +1901,7 @@ module Saci
         class SessionsController < ApplicationController
           allow_unauthenticated_access only: [:new, :create]
           before_action :require_no_login, only: [:new]
+          assigns error : String?
 
           def new
             @error = nil
@@ -1874,6 +1932,7 @@ module Saci
         <<-CRYSTAL
         class PasswordsController < ApplicationController
           allow_unauthenticated_access only: [:new, :create, :edit, :update]
+          assigns reset_path : String?, token : String = "", user : #{user_class}?
 
           def new
             render_template :new
@@ -1892,21 +1951,22 @@ module Saci
           end
 
           def edit
-            @token = params["token"]?.to_s
+            @token = params["token"]? || ""
             @user = #{user_class}.find_signed(@token, purpose: "password_reset")
             render_template :edit, status: 422 if @user.nil?
           end
 
           def update
-            @token = params["token"]?.to_s
-            @user = #{user_class}.find_signed(@token, purpose: "password_reset")
-            if @user.nil?
+            @token = params["token"]? || ""
+            user = #{user_class}.find_signed(@token, purpose: "password_reset")
+            @user = user
+            if user.nil?
               render text: "Invalid or expired reset link", status: :unprocessable_entity
               return
             end
-            @user.password = params["password"]?
-            @user.password_confirmation = params["password_confirmation"]?
-            if @user.save
+            user.password = params["password"]?
+            user.password_confirmation = params["password_confirmation"]?
+            if user.save
               redirect_to "/login"
             else
               render_template :edit, status: 422

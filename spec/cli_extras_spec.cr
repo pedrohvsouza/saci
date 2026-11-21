@@ -158,6 +158,7 @@ describe "saci destroy" do
         File.exists?("src/views/posts/index.ecr").should be_false
         Dir.exists?("src/views/posts").should be_false
         Dir.exists?("src/views").should be_true
+        File.read("src/destroy_scaffold_controller.cr").should_not contain(%(resources "posts", PostsController))
       end
     end
   end
@@ -177,6 +178,7 @@ describe "saci destroy" do
         File.exists?("spec/requests/posts_controller_spec.cr").should be_false
         Dir.glob("db/migrate/*_create_posts.cr").should be_empty
         File.exists?("src/models/other.cr").should be_true
+        File.read("src/destroy_scaffold.cr").should_not contain(%(resources "posts", PostsController))
       end
     end
   end
@@ -194,6 +196,9 @@ describe "saci destroy" do
         File.exists?("src/controllers/posts_controller.cr").should be_false
         File.exists?("src/models/post.cr").should be_false
         Dir.exists?("src/routes").should be_false
+        entry = File.read("src/destroy_resource.cr")
+        entry.should_not contain("posts_routes")
+        entry.should_not contain("Routes.draw_posts")
       end
     end
   end
@@ -227,7 +232,10 @@ describe "saci destroy" do
         File.exists?("src/controllers/authentication.cr").should be_false
         File.exists?("spec/support/authentication_helper.cr").should be_false
         File.read("spec/spec_helper.cr").should_not contain("authentication_helper")
-        File.read("src/controllers/application_controller.cr").should eq(Saci::CLI::New.application_controller)
+        File.read("src/controllers/application_controller.cr").should eq(Saci::CLI::New.application_controller + "\n")
+        entry = File.read("src/destroy_auth.cr")
+        entry.should_not contain(%(get "/login"))
+        entry.should_not contain(%(patch "/passwords/:token"))
       end
     end
   end
@@ -380,6 +388,101 @@ describe "saci generate extras" do
           Saci::CLI::Destroy.run(["controller", "Pages", "index", "about"]).should eq(0)
         end
         File.exists?("spec/requests/pages_controller_spec.cr").should be_false
+        File.read("src/gen_auth_specs.cr").should_not contain("PagesController")
+      end
+    end
+  end
+
+  it "inserts controller routes and keeps reruns idempotent" do
+    with_extras_app(name: "gen_routes_controller") do |dir|
+      Dir.cd(dir) do
+        capture_extras_output do
+          Saci::CLI::Generate.run(["controller", "Pages", "index", "about"]).should eq(0)
+        end
+        entry = File.read("src/gen_routes_controller.cr")
+        entry.should contain(%(  r.get "/pages", PagesController, :index))
+        entry.should contain(%(  r.get "/pages/about", PagesController, :about))
+
+        capture_extras_output do
+          Saci::CLI::Generate.run(["controller", "Pages", "index", "about"]).should eq(0)
+        end
+        File.read("src/gen_routes_controller.cr").scan(%(r.get "/pages", PagesController, :index)).size.should eq(1)
+      end
+    end
+  end
+
+  it "inserts scaffold, scaffold_controller, admin, resource and authentication routes" do
+    with_extras_app(name: "gen_routes_many") do |dir|
+      Dir.cd(dir) do
+        capture_extras_output do
+          Saci::CLI::Generate.run(["scaffold", "Post", "title:string"]).should eq(0)
+          Saci::CLI::Generate.run(["model", "Invoice", "number:string"]).should eq(0)
+          Saci::CLI::Generate.run(["scaffold_controller", "Invoices"]).should eq(0)
+          Saci::CLI::Generate.run(["model", "Order", "total:integer"]).should eq(0)
+          Saci::CLI::Generate.run(["admin", "Order", "total:integer"]).should eq(0)
+          Saci::CLI::Generate.run(["resource", "Comment", "body:text"]).should eq(0)
+          Saci::CLI::Generate.run(["authentication"]).should eq(0)
+        end
+        entry = File.read("src/gen_routes_many.cr")
+        entry.scan(%(r.resources "posts", PostsController)).size.should eq(1)
+        entry.should_not contain(%(r.get "/posts", PostsController))
+        entry.should contain(%(r.resources "invoices", InvoicesController))
+        entry.should contain(%(r.namespace("/admin") do |a|))
+        entry.should contain(%(a.resources "orders", Admin::OrdersController))
+        entry.should contain(%(require "./routes/comments_routes"))
+        entry.should contain("Routes.draw_comments(r)")
+        entry.should contain(%(r.get "/login", SessionsController, :new))
+        entry.should contain(%(r.patch "/passwords/:token", PasswordsController, :update))
+      end
+    end
+  end
+
+  it "honors --no-route and --pretend" do
+    with_extras_app(name: "gen_routes_flags") do |dir|
+      Dir.cd(dir) do
+        capture_extras_output do
+          Saci::CLI::Generate.run(["controller", "Drafts", "index", "--no-route"]).should eq(0)
+        end
+        entry = File.read("src/gen_routes_flags.cr")
+        entry.should_not contain("DraftsController")
+
+        before = File.read("src/gen_routes_flags.cr")
+        out, _ = capture_extras_output do
+          Saci::CLI::Generate.run(["controller", "Reports", "index", "--pretend"]).should eq(0)
+        end
+        out.should contain("would update")
+        File.read("src/gen_routes_flags.cr").should eq(before)
+      end
+    end
+  end
+
+  it "falls back to the hint when the app has no draw block" do
+    with_extras_app(name: "gen_routes_fallback") do |dir|
+      Dir.cd(dir) do
+        entry_path = "src/gen_routes_fallback.cr"
+        File.write(entry_path, %(require "saci"\n\nputs "no router"\n))
+        out, _ = capture_extras_output do
+          Saci::CLI::Generate.run(["controller", "Pages", "index"]).should eq(0)
+        end
+        out.should contain("Add routes to your router")
+        File.read(entry_path).should_not contain("PagesController")
+      end
+    end
+  end
+
+  it "prefers src/routes.cr for route insertion" do
+    with_extras_app(name: "gen_routes_file") do |dir|
+      Dir.cd(dir) do
+        File.write("src/routes.cr", <<-CRYSTAL)
+        Saci::Routes.define AppRoutes do |r|
+          r.get "/up", HealthController, :show
+        end
+        CRYSTAL
+        capture_extras_output do
+          Saci::CLI::Generate.run(["controller", "Pages", "index"]).should eq(0)
+        end
+        File.read("src/routes.cr").should contain(%(r.get "/pages", PagesController, :index))
+        File.read("src/gen_routes_file.cr").should_not contain("PagesController")
       end
     end
   end

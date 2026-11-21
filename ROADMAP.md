@@ -30,9 +30,6 @@ These are known gaps in the current release:
 - **Deploy**: there is no bundled HTTP/2 proxy (Thruster is only
   documented).
 - **Testing**: there are no browser-driven system tests.
-- **Developer experience** (from building an app with Saci):
-  - Generators print routes for the user to copy. They could insert them
-    into the router's `draw` block instead.
 
 ## Out of scope
 

@@ -108,6 +108,16 @@
   admin and scaffold_controller controllers use it, and COMING_FROM_RAILS
   documents the inference rules. Assigning from an action only sets a slot
   declared in the class body.
+- **Generators insert their routes into the router.** `saci generate
+  controller`, `scaffold`, `scaffold_controller`, `admin`, `resource` and
+  `authentication` write into the app's `Router.new.draw` block (or
+  `src/routes.cr` when present), reuse an existing `/admin` namespace,
+  respect the block variable (`|r|` or `|router|`) and never duplicate a
+  route on rerun. `--no-route` skips the insertion, `--pretend` shows the
+  lines, and apps without a draw block still get the old copy-paste hint.
+  `saci destroy` removes the lines it added. Route insertion also exposed
+  and fixed the generated authentication controllers' untyped/nilable
+  `@token`, `@user` and `@error` slots.
 
 ## 0.8.0 — 2026-11-14
 
