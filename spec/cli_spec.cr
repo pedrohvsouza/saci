@@ -75,8 +75,11 @@ describe "saci new" do
       File.read(File.join(dir, ".gitignore")).should contain("/config/master.key")
       File.read(File.join(dir, "db", "migrations.cr")).should contain("SACI_MIGRATIONS = [] of Saci::Record::Migration.class")
       File.exists?(File.join(dir, "spec", "spec_helper.cr")).should be_true
-      File.read(File.join(dir, "spec", "spec_helper.cr")).should contain("APP_ENV")
-      File.read(File.join(dir, "spec", "spec_helper.cr")).should contain("Migrator.migrate")
+      helper = File.read(File.join(dir, "spec", "spec_helper.cr"))
+      helper.should contain("APP_ENV")
+      helper.index(%(ENV["APP_ENV"] = "test")).not_nil!.should be <
+                                                               helper.index(%(require "../config/environments/*")).not_nil!
+      helper.should contain("Migrator.migrate")
       File.read(File.join(dir, "spec", "spec_helper.cr")).should contain("src/channels/*")
       File.read(File.join(dir, "src", "cli_test_app.cr")).should contain("APP_ENV")
     end

@@ -849,6 +849,10 @@ module Saci
         require "spec"
         #{driver}require "saci"
         require "file_utils"
+        # Select the test environment before the env files load: each one
+        # guards on `Saci.env`, and test settings (quiet logs, no request
+        # lines, bcrypt cost) must win under `crystal spec`.
+        ENV["APP_ENV"] = "test"
         # Globs so every env file (including staging) and initializer loads
         # without editing this (each env file guards on `Saci.env` itself).
         require "../config/environments/*"
@@ -869,7 +873,6 @@ module Saci
         # Multidb apps: establish named DBs here too and use
         # `Saci::Record.clean_all!` in specs to truncate all connections.
         FileUtils.mkdir_p("db")
-        ENV["APP_ENV"] = "test"
         db_url = Saci::ConfigFile.database_url("test") || ENV.fetch("DATABASE_URL", "#{url_default}")
         Saci::Record.connect(db_url)
         Saci::I18n.reload!

@@ -37,8 +37,6 @@ These are known gaps in the current release:
     annotations.
   - Generators print routes for the user to copy. They could insert them
     into the router's `draw` block instead.
-  - App specs could write their logs to `log/test.log` in Saci's format
-    instead of printing them between the dots.
 
 ## Out of scope
 

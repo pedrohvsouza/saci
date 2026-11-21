@@ -195,15 +195,49 @@ module Saci
   # `SACI_LOG_SETUP=0` to keep Crystal's default, or call `Log.setup`
   # afterwards to override it.
   #
-  # Under `crystal spec` it runs again before the suite with
-  # `default_level: :none`. The spec runner calls `Log.setup_from_env`
-  # just before the examples, which would otherwise swap in Crystal's
-  # formatter halfway through the output. Specs stay quiet unless
-  # `LOG_LEVEL` is set, as with plain `crystal spec`, and print Saci's
-  # format when it is.
+  # Under `crystal spec` it runs again before the suite through
+  # `setup_spec_logging`: in the test environment that sends Saci's format
+  # to `log/test.log`, elsewhere to STDOUT. The spec runner calls
+  # `Log.setup_from_env` just before the examples, which would otherwise
+  # swap in Crystal's formatter halfway through the output. Specs stay
+  # quiet unless `LOG_LEVEL` is set, as with plain `crystal spec`.
   def self.setup_logging(io : IO = STDOUT, default_level : ::Log::Severity = :info) : Nil
     backend = log_json? ? json_log_backend(io) : text_log_backend(io)
     ::Log.setup_from_env(backend: backend, default_level: default_level)
+  end
+
+  # Backend for a spec run. In the test environment Saci appends its text
+  # (or JSON) format to `log/test.log`, so the suite's dots stay clean and
+  # the output is still there to read afterwards. Other environments keep
+  # STDOUT. `LOG_LEVEL` still wins over *default_level*.
+  def self.setup_spec_logging(default_level : ::Log::Severity = :none) : Nil
+    setup_logging(spec_log_io || STDOUT, default_level: default_level)
+    if raw = ENV["LOG_LEVEL"]?
+      if severity = ::Log::Severity.parse?(raw)
+        logger.level = severity
+      end
+    end
+  end
+
+  @@spec_log : File? = nil
+
+  # `log/test.log` under `Saci.root`, opened once per process. Nil outside
+  # the test environment or when the directory cannot be written.
+  private def self.spec_log_io : File?
+    return nil unless env == "test"
+    @@spec_log ||= begin
+      path = File.join(root, "log", "test.log")
+      Dir.mkdir_p(File.dirname(path))
+      File.open(path, "a")
+    end
+  rescue File::Error
+    nil
+  end
+
+  # Forgets the sink (specs that change `SACI_ROOT`). The descriptor stays
+  # open on purpose: an async backend must never write into a closed file.
+  def self.reset_spec_log! : Nil
+    @@spec_log = nil
   end
 
   # Logger that fans out to several sinks (Rails `BroadcastLogger`). This is a
@@ -310,7 +344,7 @@ module Saci::SpecLogging
   macro finished
     {% if @top_level.has_constant?("Spec") %}
       ::Spec.before_suite do
-        Saci.setup_logging(default_level: :none) unless ENV["SACI_LOG_SETUP"]? == "0"
+        Saci.setup_spec_logging unless ENV["SACI_LOG_SETUP"]? == "0"
       end
     {% end %}
   end

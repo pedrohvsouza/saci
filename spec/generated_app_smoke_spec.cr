@@ -76,6 +76,7 @@ private def smoke_app(name : String, generators : Array(Array(String))) : Nil
     smoke_run(dir, crystal, ["build", "--no-codegen", "src/#{name}.cr"])
     smoke_run(dir, crystal, ["build", "--no-codegen", "db/migrate.cr"])
     smoke_run(dir, crystal, ["spec", "--no-color"])
+    File.exists?(File.join(dir, "log", "test.log")).should be_true
   ensure
     FileUtils.rm_rf(dir)
   end

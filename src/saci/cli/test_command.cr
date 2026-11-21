@@ -67,8 +67,8 @@ module Saci
           STDERR.puts "Specs are up to date, reusing #{BINARY}."
         end
         filters = selected ? filter_options(selection, locations) : [] of String
-        status = Process.run(BINARY, args: filters + runtime_opts, input: Process::Redirect::Inherit,
-          output: Process::Redirect::Inherit, error: Process::Redirect::Inherit)
+        status = Process.run(BINARY, args: filters + runtime_opts, env: {"APP_ENV" => "test"},
+          input: Process::Redirect::Inherit, output: Process::Redirect::Inherit, error: Process::Redirect::Inherit)
         status.success? ? 0 : 1
       end
 

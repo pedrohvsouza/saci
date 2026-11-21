@@ -93,6 +93,14 @@
   tags inside Crystal string literals, and `render_partial`/`render
   partial:` targets that do not exist. It prints `file:line` for each
   issue and exits 1, so it can gate CI.
+- **App specs write their logs to `log/test.log`.** In the test
+  environment the spec hook appends Saci's text (or JSON) format to
+  `log/test.log` instead of printing between the runner's dots.
+  `saci new` now sets `APP_ENV=test` before loading
+  `config/environments/*`, so the test settings apply under plain
+  `crystal spec`, and `saci test` exports it for the spec binary.
+  `LOG_LEVEL` still selects the level and `SACI_LOG_SETUP=0` keeps
+  Crystal's backend.
 
 ## 0.8.0 — 2026-11-14
 

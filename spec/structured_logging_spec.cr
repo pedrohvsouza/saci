@@ -1,5 +1,6 @@
 require "spec"
 require "json"
+require "file_utils"
 require "../src/saci"
 
 private def log_entry(source : String, message : String, data = Log::Metadata.empty,
@@ -92,6 +93,13 @@ private def wait_for_output(io : IO::Memory, text : String) : Nil
   end
 end
 
+private def wait_for_file(path : String, text : String) : Nil
+  100.times do
+    break if File.exists?(path) && File.read(path).includes?(text)
+    sleep 5.milliseconds
+  end
+end
+
 describe "Saci.setup_logging" do
   it "uses default_level when LOG_LEVEL is unset and Saci's text format" do
     io = IO::Memory.new
@@ -115,6 +123,35 @@ describe "Saci.setup_logging" do
     ensure
       # What the suite runs with: Saci's backend, quiet unless LOG_LEVEL is set.
       Saci.setup_logging(default_level: :none)
+    end
+  end
+end
+
+describe "Saci.setup_spec_logging" do
+  it "appends test-environment logs to log/test.log" do
+    root = File.join("/tmp/opencode", "saci-spec-log-#{Random.rand(1_000_000)}")
+    old_env = ENV["APP_ENV"]?
+    old_root = ENV["SACI_ROOT"]?
+    old_level = ENV["LOG_LEVEL"]?
+    begin
+      ENV["APP_ENV"] = "test"
+      ENV["SACI_ROOT"] = root
+      ENV.delete("LOG_LEVEL")
+      Saci.reset_spec_log!
+      Saci.setup_spec_logging(default_level: :warn)
+      Saci.logger.warn { "written to test.log" }
+
+      path = File.join(root, "log", "test.log")
+      wait_for_file(path, "written to test.log")
+      File.read(path).should contain("written to test.log")
+      File.read(path).should contain("WARN")
+    ensure
+      Saci.setup_logging(default_level: :none)
+      Saci.reset_spec_log!
+      old_env ? (ENV["APP_ENV"] = old_env) : ENV.delete("APP_ENV")
+      old_root ? (ENV["SACI_ROOT"] = old_root) : ENV.delete("SACI_ROOT")
+      old_level ? (ENV["LOG_LEVEL"] = old_level) : ENV.delete("LOG_LEVEL")
+      FileUtils.rm_rf(root)
     end
   end
 end
