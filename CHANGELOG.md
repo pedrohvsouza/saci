@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.9.0 — 2026-11-21
+
+The developer loop and the compiler-time tooling are the focus of this
+release: `saci test` reuses its build, app specs write to
+`log/test.log`, generators insert their routes and require the model,
+`saci views:check` lints ECR, and `assigns` removes the ivar annotations
+Crystal used to demand. Models gain attribute encryption; jobs get a
+durable Redis adapter; storage signs S3 keys correctly and has a live
+RustFS spec.
 
 - **Attribute encryption.** `encrypts :ssn` stores a `String` column as
   an AES-256-GCM envelope and decrypts it on load, so in memory it holds
@@ -113,9 +121,12 @@
   `authentication` write into the app's `Router.new.draw` block (or
   `src/routes.cr` when present), reuse an existing `/admin` namespace,
   respect the block variable (`|r|` or `|router|`) and never duplicate a
-  route on rerun. `--no-route` skips the insertion, `--pretend` shows the
-  lines, and apps without a draw block still get the old copy-paste hint.
-  `saci destroy` removes the lines it added. Route insertion also exposed
+  route on rerun. Resource routes use `only:` matching the actions each
+  generator wrote (no phantom `new`/`create`), and `saci routes` expands
+  the `Routes.draw_*` helper. `--no-route` skips the insertion,
+  `--pretend` shows the lines, and apps without a draw block still get
+  the old copy-paste hint. `saci destroy` removes the lines it added.
+  Route insertion also exposed
   and fixed the generated authentication controllers' untyped/nilable
   `@token`, `@user` and `@error` slots.
 
