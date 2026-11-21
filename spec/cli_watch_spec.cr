@@ -39,10 +39,18 @@ describe Saci::CLI::Watch do
         File.write("tmp/cache.tmp", "x")
         File.write("log/app.log", "x")
         File.write("lib/dep/a.cr", "x")
+        File.write("db/app.db-wal", "x")
+        File.write("db/app.db-shm", "x")
+        File.write("db/app.sqlite3", "x")
+        File.write("db/app.sqlite3-journal", "x")
         snap = Saci::CLI::Watch.snapshot
         snap.has_key?("tmp/cache.tmp").should be_false
         snap.has_key?("log/app.log").should be_false
         snap.has_key?("lib/dep/a.cr").should be_false
+        snap.has_key?("db/app.db-wal").should be_false
+        snap.has_key?("db/app.db-shm").should be_false
+        snap.has_key?("db/app.sqlite3").should be_false
+        snap.has_key?("db/app.sqlite3-journal").should be_false
       end
     end
   end
