@@ -1192,6 +1192,7 @@ end
   Saci::SystemTest.serve(router) do |page|
     page.visit "/posts"
     page.fill_in "Title", with: "Hello"
+    page.attach_file "Cover", "spec/fixtures/cover.png"
     page.click_on "Create"
     page.assert_text "Post created"
     page.assert_selector "h1", text: "Posts"
@@ -1199,6 +1200,13 @@ end
     page.screenshot "tmp/posts.png"
   end
   ```
+  `attach_file` finds the input by label, name, id or placeholder and
+  sets it through the DevTools DOM domain. Native JS dialogs (`alert`,
+  `confirm`, `prompt`) are accepted automatically so they do not hang
+  `click_on`; call `dismiss_dialog` before the action that opens one
+  (`page.dismiss_dialog` then `page.click_on "Delete"`), or
+  `accept_dialog` to restore the default. `last_dialog_message` returns
+  the message of the most recent dialog.
   Chrome comes from `CHROME_BIN` or the usual `google-chrome`/`chromium`
   command. Specs should `pending!` when `Saci::SystemTest.available?` is
   false, so the suite still runs on machines without a browser.

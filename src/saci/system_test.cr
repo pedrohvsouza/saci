@@ -26,10 +26,11 @@ module Saci
   # run or mark the example pending. Each test launches one browser; use
   # `Saci::SystemTest.serve` so it is closed even when an assertion fails.
   #
-  # The implementation uses `Runtime.evaluate` for DOM queries instead of
-  # the DevTools DOM domain: it is enough for server-rendered pages and
-  # keeps the client small. Native JS dialogs (`confirm`, `alert`) are not
-  # handled yet.
+  # The implementation uses `Runtime.evaluate` for most DOM queries and
+  # the DevTools DOM domain only to set file inputs. Native JS dialogs
+  # (`alert`, `confirm`, `prompt`) are accepted automatically so they do
+  # not block `click_on`; call `dismiss_dialog` before the action to
+  # dismiss the next one.
   class SystemTest
     class Error < Exception
     end
@@ -40,6 +41,7 @@ module Saci
     @closed : Bool = false
     @id : Int32 = 0
     @messages : Channel(JSON::Any)
+    @next_dialog_accept : Bool = true
     @stderr : IO::Memory
     @profile : String
     @port : Int32
@@ -48,6 +50,8 @@ module Saci
 
     getter base_url : String
     getter timeout : Time::Span
+    # Message of the most recent native JS dialog, if any.
+    getter last_dialog_message : String?
 
     # `CHROME_BIN`, then the usual Chrome/Chromium executables.
     def self.browser : String?
@@ -111,6 +115,7 @@ module Saci
       spawn { drain_stderr }
       @socket = HTTP::WebSocket.new(URI.parse(wait_for_page_ws))
       spawn { read_messages }
+      command("Page.enable")
     end
 
     # Navigates to *path* (or an absolute URL) and waits for the document.
@@ -199,6 +204,78 @@ module Saci
       })()
       JS
       raise Error.new("No option #{value.inspect} for #{field.inspect}") unless selected
+    end
+
+    # Attaches the file at *path* to a file input found by label text,
+    # name, id or placeholder.
+    #
+    # Uses `DOM.setFileInputFiles`. When the browser cannot read *path*
+    # (sandboxed browsers such as the Chromium snap see a private `/tmp`),
+    # it falls back to assigning a `File` through `DataTransfer`.
+    def attach_file(field : String, path : String) : Nil
+      absolute = File.expand_path(path)
+      raise Error.new("File not found: #{path}") unless File.file?(absolute)
+
+      marker = "saci-file-#{Random::Secure.hex(6)}"
+      marked = evaluate_bool(<<-JS)
+      (() => {
+        const el = #{find_field_js(field, "input[type=file]", "input[type=file]")};
+        if (!el) return false;
+        el.setAttribute("data-saci-file", #{marker.to_json});
+        return true;
+      })()
+      JS
+      raise Error.new("No file field matching #{field.inspect}") unless marked
+
+      selector = %([data-saci-file="#{marker}"])
+      begin
+        document = command("DOM.getDocument", params: JSON.parse({"depth" => 0}.to_json))
+        root = document["root"]? || raise Error.new("DOM.getDocument returned no root")
+        root_id = root["nodeId"]?.try(&.as_i64) || raise Error.new("DOM.getDocument returned no node id")
+        node = command("DOM.querySelector", params: JSON.parse({
+          "nodeId"   => root_id,
+          "selector" => selector,
+        }.to_json))
+        node_id = node["nodeId"]?.try(&.as_i64) || 0
+        raise Error.new("No file field matching #{field.inspect}") if node_id == 0
+        command("DOM.setFileInputFiles", params: JSON.parse({
+          "nodeId" => node_id,
+          "files"  => [absolute],
+        }.to_json))
+
+        expected = File.size(absolute)
+        unless file_input_size(selector) == expected
+          fill_file_input_via_data_transfer(field, absolute)
+          unless file_input_size(selector) == expected
+            raise Error.new("Could not attach #{path.inspect} to #{field.inspect}")
+          end
+        end
+      ensure
+        begin
+          evaluate_bool(<<-JS)
+          (() => {
+            const el = document.querySelector(#{selector.to_json});
+            if (!el) return false;
+            el.removeAttribute("data-saci-file");
+            return true;
+          })()
+          JS
+        rescue
+        end
+      end
+    end
+
+    # Accepts the next native JS dialog. Dialogs are accepted by default;
+    # this only matters after `dismiss_dialog`.
+    def accept_dialog : Nil
+      @next_dialog_accept = true
+    end
+
+    # Dismisses the next native JS dialog, so `confirm` returns false and
+    # `alert`/`prompt` close. One-shot: later dialogs are accepted again.
+    # Call it before the action that opens the dialog.
+    def dismiss_dialog : Nil
+      @next_dialog_accept = false
     end
 
     # Runs the block with selectors rooted at *selector*.
@@ -300,6 +377,38 @@ module Saci
       raise Error.new("No checkbox matching #{field.inspect}") unless changed
     end
 
+    # Size of the file currently selected in the input matching *selector*,
+    # or -1 when the input is empty.
+    private def file_input_size(selector : String) : Int64
+      result = evaluate(<<-JS)
+      (() => {
+        const el = document.querySelector(#{selector.to_json});
+        return el && el.files && el.files.length > 0 ? el.files[0].size : -1;
+      })()
+      JS
+      result["value"]?.try(&.as_i64?) || -1_i64
+    end
+
+    # In-page fallback for browsers that cannot read the host's temp files.
+    private def fill_file_input_via_data_transfer(field : String, absolute : String) : Nil
+      encoded = Base64.strict_encode(File.read(absolute))
+      filename = File.basename(absolute)
+      attached = evaluate_bool(<<-JS)
+      (() => {
+        const el = #{find_field_js(field, "input[type=file]", "input[type=file]")};
+        if (!el || typeof DataTransfer === "undefined") return false;
+        const bytes = Uint8Array.from(atob(#{encoded.to_json}), char => char.charCodeAt(0));
+        const transfer = new DataTransfer();
+        transfer.items.add(new File([bytes], #{filename.to_json}, { type: "application/octet-stream" }));
+        el.files = transfer.files;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+      })()
+      JS
+      raise Error.new("No file field matching #{field.inspect}") unless attached
+    end
+
     # JS expression resolving a form field by label text, name, id or
     # placeholder, optionally restricted to a selector.
     private def find_field_js(field : String, selector : String = "input,textarea,select", fallback : String = selector) : String
@@ -393,14 +502,7 @@ module Saci
     end
 
     private def command(method : String, params : JSON::Any? = nil) : JSON::Any
-      @id += 1
-      id = @id
-      payload = JSON::Any.new({
-        "id"     => JSON::Any.new(id.to_i64),
-        "method" => JSON::Any.new(method),
-      })
-      payload.as_h["params"] = params if params
-      @socket.send(payload.to_json)
+      id = send_command(method, params)
 
       deadline = Time.instant + @timeout
       loop do
@@ -410,11 +512,14 @@ module Saci
         end
         select
         when message = @messages.receive
-          if message["id"]?.try(&.as_i64?) == id.to_i64
+          if message_id = message["id"]?.try(&.as_i64?)
+            next unless message_id == id.to_i64
             if error = message["error"]?
               raise Error.new("#{method}: #{error.to_json}")
             end
             return message["result"]? || JSON::Any.new(nil)
+          else
+            dispatch_event(message)
           end
         when timeout(remaining)
           raise Error.new("DevTools command #{method} timed out")
@@ -422,6 +527,31 @@ module Saci
       end
     rescue ex : Channel::ClosedError
       raise Error.new("Chrome closed the DevTools connection (#{method})")
+    end
+
+    private def send_command(method : String, params : JSON::Any? = nil) : Int32
+      @id += 1
+      id = @id
+      payload = JSON::Any.new({
+        "id"     => JSON::Any.new(id.to_i64),
+        "method" => JSON::Any.new(method),
+      })
+      payload.as_h["params"] = params if params
+      @socket.send(payload.to_json)
+      id
+    end
+
+    # Runs handlers for DevTools events that arrive while a command is in
+    # flight. Native dialogs must be answered here: Chrome blocks the
+    # renderer until `Page.handleJavaScriptDialog` arrives.
+    private def dispatch_event(message : JSON::Any) : Nil
+      case message["method"]?.try(&.as_s)
+      when "Page.javascriptDialogOpening"
+        accept = @next_dialog_accept
+        @next_dialog_accept = true
+        @last_dialog_message = message["params"]?.try { |params| params["message"]?.try(&.as_s) } || ""
+        send_command("Page.handleJavaScriptDialog", JSON.parse({"accept" => accept}.to_json))
+      end
     end
 
     private def read_messages : Nil

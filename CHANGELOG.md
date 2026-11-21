@@ -34,6 +34,13 @@
   the gitignored `docs/api/`, and the new `docs` CI job rebuilds and
   uploads it. CLI command internals and spec-only testing plumbing are
   marked `:nodoc:` so the generated site describes the app-facing API.
+- **System tests upload files and handle dialogs.** `attach_file` finds a
+  file input by label, name, id or placeholder and sets it through the
+  DevTools DOM domain, falling back to an in-page `DataTransfer` when a
+  sandboxed browser cannot read the file path. Native JS dialogs are
+  answered automatically so `alert`/`confirm`/`prompt` no longer hang
+  `click_on`; `dismiss_dialog` and `accept_dialog` choose the response for
+  the next dialog, and `last_dialog_message` exposes its text.
 
 ## 0.9.0 — 2026-11-21
 

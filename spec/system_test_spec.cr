@@ -19,6 +19,13 @@ class SystemTestPageController < Saci::Controller
         </select>
         <button type="submit">Send</button>
       </form>
+      <form action="/upload" method="post" enctype="multipart/form-data">
+        <label for="avatar">Avatar</label>
+        <input id="avatar" name="avatar" type="file">
+        <button type="submit">Upload</button>
+      </form>
+      <button type="button" id="confirm-button">Delete</button>
+      <p id="confirm-result">Waiting</p>
     </body>
     </html>
     HTML
@@ -33,12 +40,30 @@ class SystemTestPageController < Saci::Controller
     </html>
     HTML
   end
+
+  def upload
+    if file = params.file("avatar")
+      render html: <<-HTML
+      <!doctype html>
+      <html>
+      <body>
+        <h1>Upload</h1>
+        <p>File: #{HTML.escape(file.filename)}</p>
+        <pre>#{HTML.escape(file.read)}</pre>
+      </body>
+      </html>
+      HTML
+    else
+      render html: "<!doctype html><html><body><h1>Upload</h1><p>No file</p></body></html>"
+    end
+  end
 end
 
 def system_test_router : Saci::Router
   Saci::Router.new.draw do |r|
     r.get "/system", SystemTestPageController, :index
     r.post "/echo", SystemTestPageController, :echo
+    r.post "/upload", SystemTestPageController, :upload
   end
 end
 
@@ -78,6 +103,49 @@ describe Saci::SystemTest do
       page.assert_no_selector "form"
       page.current_path.should eq("/echo")
       page.has_selector?("a", text: "Back").should be_true
+    end
+  end
+
+  it "attaches a file to a file input" do
+    pending! "Chrome/Chromium not found (set CHROME_BIN)" unless Saci::SystemTest.available?
+
+    path = File.join("/tmp/opencode", "saci-upload-#{Process.pid}-#{Random.rand(1_000_000)}.txt")
+    File.write(path, "avatar-bytes")
+    begin
+      Saci::SystemTest.serve(system_test_router, timeout: 10.seconds) do |page|
+        page.visit "/system"
+        page.attach_file "Avatar", path
+        page.click_on "Upload"
+        page.assert_text "Upload"
+        page.assert_text "File: #{File.basename(path)}"
+        page.assert_text "avatar-bytes"
+        page.current_path.should eq("/upload")
+      end
+    ensure
+      File.delete(path) if File.exists?(path)
+    end
+  end
+
+  it "accepts confirm dialogs by default and dismisses them on request" do
+    pending! "Chrome/Chromium not found (set CHROME_BIN)" unless Saci::SystemTest.available?
+
+    Saci::SystemTest.serve(system_test_router, timeout: 10.seconds) do |page|
+      page.visit "/system"
+      page.execute_script(<<-JS)
+      document.getElementById("confirm-button").addEventListener("click", () => {
+        document.getElementById("confirm-result").textContent = confirm("Delete this post?") ? "Confirmed" : "Dismissed";
+      });
+      JS
+      page.assert_text "Waiting"
+
+      page.click_on "Delete"
+      page.assert_text "Confirmed"
+      page.last_dialog_message.should eq("Delete this post?")
+
+      page.dismiss_dialog
+      page.click_on "Delete"
+      page.assert_text "Dismissed"
+      page.last_dialog_message.should eq("Delete this post?")
     end
   end
 
