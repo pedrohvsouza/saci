@@ -12,6 +12,15 @@
   written by external tools and hosts that block loopback broadcast are
   still delivered. Uses only the stdlib `socket` module and is same host
   only; across machines use Redis or PostgreSQL `LISTEN/NOTIFY`.
+- **`saci views:check` now tokenizes templates.** The linter reads ECR
+  through `ECR::Lexer`, so multiline tags, `<%# %>` comments, `<%%`
+  escapes and `<%- -%>` trim markers are handled like the compiler handles
+  them; tags inside Crystal strings are still reported, and an unclosed
+  tag becomes an issue instead of a crash. It also checks explicit
+  `layout: "name"` options in templates and `src/controllers/**/*.cr`
+  against `src/views/layouts/name.ecr`. Dynamic names (`"#{...}"`) and
+  `layout: false` are skipped, and the implicit `application` layout is
+  left alone.
 - **Browser-driven system tests.** `Saci::SystemTest.serve(router)` boots
   the real stack and drives headless Chrome/Chromium through the DevTools
   protocol: `visit`, `fill_in`, `check`, `uncheck`, `choose`,

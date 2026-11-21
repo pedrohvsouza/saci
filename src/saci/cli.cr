@@ -342,7 +342,7 @@ module Saci
           assets:precompile|clobber fingerprint src/assets into public/assets (production)
           app:update                copy missing scaffold files (--force to overwrite)
           routes [--boot] [--expanded] [--grep PATTERN]
-          views:check [PATH]         lint ECR templates (block helpers, nested tags, partials)
+          views:check [PATH]         lint ECR templates (block helpers, nested tags, partials, layouts)
           about|stats|notes|middleware|initializers|dbconsole
           dev:cache|log:clear|tmp:clear|time:zones|restart
           secret                    print a random SECRET_KEY_BASE

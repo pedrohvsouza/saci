@@ -220,6 +220,19 @@ Generators: `model`, `controller`, `migration`, `scaffold`,
   the app and prints the router it actually builds (it sets
   `SACI_ROUTES_DUMP`, so the app prints its routes and exits before
   binding a port).
+- `views:check` reads templates through Crystal's `ECR::Lexer`, so
+  multiline tags, `<%# %>` comments, `<%%` escapes and `<%- -%>` trim
+  markers are interpreted the same way the compiler interprets them. It
+  flags block helpers written as `<%= helper do %>`, ECR tags inside
+  Crystal string literals, `render_partial`/`render partial:` targets
+  with no file, and explicit layouts (`layout: "admin"`) with no
+  `src/views/layouts/admin.ecr`. When PATH is a `views` directory, layout
+  options in the sibling `src/controllers/**/*.cr` are checked too.
+  Dynamic names (`"#{...}"`) and `layout: false` are skipped; the
+  implicit `application` layout is not checked. Each issue prints as
+  `file:line` and the command exits 1, so it can gate CI (for example
+  `Saci::CI.run "Views", "saci views:check"` in `config/ci.cr` where the
+  `saci` binary is installed).
 - When the port is taken, `serve` (before compiling) and
   `Application#listen` move on to the next free port and print which one
   they picked, instead of raising `Address already in use`.
