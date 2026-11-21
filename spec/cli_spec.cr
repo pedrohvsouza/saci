@@ -396,6 +396,7 @@ describe "saci generate" do
   it "generates an admin scaffold with search, sort and pagination" do
     with_tmp_app do |dir|
       Dir.cd(dir) do
+        Saci::CLI::Generate.run(["model", "Post", "title:string", "published:boolean"])
         Saci::CLI::Generate.run(["admin", "Post", "title:string", "published:boolean"])
         src = File.read("src/controllers/admin/posts_controller.cr")
         src.should contain("module Admin")
@@ -439,6 +440,7 @@ describe "saci generate" do
   it "overwrites admin files on rerun like the other generators" do
     with_tmp_app do |dir|
       Dir.cd(dir) do
+        Saci::CLI::Generate.run(["model", "Post", "title:string"])
         Saci::CLI::Generate.run(["admin", "Post", "title:string"])
         File.write("src/controllers/admin/posts_controller.cr", "stale")
         Saci::CLI::Generate.run(["admin", "Post", "title:string", "--force"])
@@ -875,6 +877,7 @@ describe "saci generate --pretend" do
   it "caps content previews at 40 lines" do
     with_tmp_app(name: "cli_pretend_cap") do |dir|
       Dir.cd(dir) do
+        Saci::CLI::Generate.run(["model", "Post", "title:string"])
         out, _ = capture_cli_output do
           Saci::CLI::Generate.run(["admin", "Post", "title:string", "--pretend"]).should eq(0)
         end
@@ -913,6 +916,7 @@ describe "saci generate conflicts" do
   it "answers a (overwrite all remaining files)" do
     with_tmp_app(name: "cli_conflict_all") do |dir|
       Dir.cd(dir) do
+        Saci::CLI::Generate.run(["model", "Post", "title:string"])
         Saci::CLI::Generate.run(["admin", "Post", "title:string"])
         File.write("src/controllers/admin/posts_controller.cr", "stale1")
         File.write("src/views/admin/posts/index.ecr", "stale2")

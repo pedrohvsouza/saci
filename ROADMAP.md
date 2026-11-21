@@ -41,8 +41,6 @@ These are known gaps in the current release:
     into the router's `draw` block instead.
   - App specs could write their logs to `log/test.log` in Saci's format
     instead of printing them between the dots.
-  - `saci generate admin` and `scaffold_controller` require the model to
-    exist first.
 
 ## Out of scope
 

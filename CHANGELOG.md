@@ -84,6 +84,10 @@
 - **Fixed: SQLite `-wal`/`-shm` files triggered rebuilds.** `saci serve
   --watch` now ignores them, as well as `.sqlite3` files and their
   journals.
+- **`saci generate admin` and `scaffold_controller` now require the
+  model to exist.** They stop before writing anything and name the
+  missing `src/models/...` file and the `saci generate model` command.
+  `admin` also resolves a plural name (`Posts`) to the existing model.
 
 ## 0.8.0 — 2026-11-14
 

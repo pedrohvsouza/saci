@@ -300,6 +300,25 @@ describe "saci generate extras" do
     end
   end
 
+  it "requires the model to exist for admin and scaffold_controller" do
+    with_extras_app(name: "gen_missing_model") do |dir|
+      Dir.cd(dir) do
+        expect_raises(Saci::CLI::Error, /Model Post not found/) do
+          Saci::CLI::Generate.run(["admin", "Post", "title:string"])
+        end
+        expect_raises(Saci::CLI::Error, /Model Post not found/) do
+          Saci::CLI::Generate.run(["scaffold_controller", "Post"])
+        end
+        File.exists?("src/controllers/admin/posts_controller.cr").should be_false
+        File.exists?("src/controllers/posts_controller.cr").should be_false
+
+        Saci::CLI::Generate.run(["model", "Post", "title:string"])
+        Saci::CLI::Generate.run(["admin", "Posts", "title:string"]).should eq(0)
+        File.exists?("src/controllers/admin/posts_controller.cr").should be_true
+      end
+    end
+  end
+
   it "honors --no-spec / --no-migration / --no-views flags" do
     with_extras_app(name: "gen_flags") do |dir|
       Dir.cd(dir) do

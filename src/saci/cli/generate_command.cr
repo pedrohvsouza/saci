@@ -836,11 +836,12 @@ module Saci
       def self.admin(args : Array(String)) : Nil
         raw_name = args.first? || raise Error.new("Usage: saci generate admin Name [field:type ...]")
         fields = parse_fields(args.size > 1 ? args[1..] : [] of String)
-        class_name = Util.class_name(Util.file_name(raw_name))
+        class_name = model_class_name(raw_name)
         plural = Record::Inflector.pluralize(class_name)
         file_base = Util.file_name(plural)
         table = Record::Inflector.pluralize(Record::Inflector.underscore(class_name))
         ensure_app_layout!
+        ensure_model_exists!(class_name)
 
         Dir.mkdir_p("src/controllers/admin")
         controller_path = "src/controllers/admin/#{file_base}_controller.cr"
@@ -1438,8 +1439,9 @@ module Saci
         plural = Record::Inflector.pluralize(class_name)
         table = Record::Inflector.pluralize(Record::Inflector.underscore(class_name))
         var = Util.file_name(class_name)
-        fields = args.empty? ? fields_for_model(class_name) : parse_fields(args)
         ensure_app_layout!
+        ensure_model_exists!(class_name)
+        fields = args.empty? ? fields_for_model(class_name) : parse_fields(args)
 
         file_base = Util.file_name(plural)
         write_file("src/controllers/#{file_base}_controller.cr",
@@ -1477,6 +1479,15 @@ module Saci
           return Util.class_name(base[0...-1])
         end
         Util.class_name(base)
+      end
+
+      # Generators that reuse a model (admin, scaffold_controller) fail
+      # before writing anything when the app has no such model.
+      def self.ensure_model_exists!(class_name : String) : Nil
+        path = "src/models/#{Util.file_name(class_name)}.cr"
+        return if File.exists?(path)
+        raise Error.new("Model #{class_name} not found (expected #{path}). " \
+                        "Run `saci generate model #{class_name} ...` first.")
       end
 
       # Reads `column name : Type` lines from an existing model file.
