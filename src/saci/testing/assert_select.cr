@@ -45,6 +45,7 @@ module Saci
 
       VOID_ELEMENTS = %w(area base br col embed hr img input link meta param source track wbr)
 
+      # :nodoc:
       class Parser
         def self.parse(html : String) : Element
           new.parse(html)
@@ -166,6 +167,7 @@ module Saci
         end
       end
 
+      # :nodoc:
       class SimpleSelector
         getter tag : String?
         getter id : String?

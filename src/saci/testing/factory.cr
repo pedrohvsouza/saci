@@ -51,6 +51,7 @@ module Saci
         end
       end
 
+      # :nodoc:
       class Attribute
         getter name : String
         getter block : Context -> Value
@@ -59,6 +60,7 @@ module Saci
         end
       end
 
+      # :nodoc:
       class BelongsTo
         getter assoc : String
         getter target_factory : String
@@ -68,6 +70,7 @@ module Saci
         end
       end
 
+      # :nodoc:
       class HasMany
         getter assoc : String
         getter target_factory : String
@@ -78,6 +81,7 @@ module Saci
         end
       end
 
+      # :nodoc:
       class Definition
         getter name : String
         getter model : Saci::Record::Base.class

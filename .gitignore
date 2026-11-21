@@ -13,3 +13,6 @@
 
 # live harness build artifact
 /live/ossl_shim.o
+
+# generated API reference (script/docs.sh)
+/docs/api/

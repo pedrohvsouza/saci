@@ -5,6 +5,7 @@ require "uri"
 require "./record"
 
 module Saci
+  # :nodoc:
   # Runtime DB-maintenance operations shared by the `saci db:*` commands
   # (G39/G40/G113) and the temporary runners used for PostgreSQL/MySQL.
   #

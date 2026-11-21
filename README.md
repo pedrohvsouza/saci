@@ -1242,6 +1242,21 @@ Source layout: `src/saci.cr` requires everything. Each subsystem lives in
 `office/`, `testing/`, `support/`, `middleware/`, `deploy/`). Specs
 mirror that layout under `spec/`.
 
+## API documentation
+
+The API reference is generated from the doc comments in `src/`:
+
+```sh
+shards install
+script/docs.sh
+```
+
+It writes HTML to `docs/api/` (open `docs/api/index.html`, or serve the
+directory with `python3 -m http.server -d docs/api`). The output is
+gitignored and rebuilt by the `docs` CI job, which uploads it as the
+`api-docs` artifact. Types and methods marked `:nodoc:` are internal
+implementation details and are left out of the generated site.
+
 ## License
 
 MIT

@@ -1,5 +1,6 @@
 module Saci
   module Testing
+    # :nodoc:
     # Fiber-local SQL statement counter used by `assert_queries` /
     # `assert_no_queries`.
     #

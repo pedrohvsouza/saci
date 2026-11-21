@@ -16,6 +16,24 @@ jobs:
       - name: Formatting
         run: crystal tool format --check src spec examples
 
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: crystal-lang/install-crystal@v1
+        with:
+          crystal: "1.22"
+      - name: Install dependencies
+        run: shards install
+      - name: API docs
+        run: script/docs.sh
+      - name: Upload API docs
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-docs
+          path: docs/api
+          if-no-files-found: error
+
   spec:
     runs-on: ubuntu-latest
     steps:

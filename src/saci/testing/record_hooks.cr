@@ -8,6 +8,7 @@ module Saci
     # discard exactly the hooks it created without touching hooks that were
     # already pending before the savepoint opened.
 
+    # :nodoc:
     # Removes and returns the pending `after_commit` hooks for `db` in the
     # current fiber. Used by `Saci::Testing.transactional` around a nested
     # savepoint.
@@ -29,6 +30,7 @@ module Saci
       end
     end
 
+    # :nodoc:
     # Puts previously extracted hooks back (after a nested savepoint ended).
     def self.__saci_testing_restore_after_commit(db : DB::Database, hooks : Array(Proc(Nil))) : Nil
       return if hooks.empty?
@@ -39,6 +41,7 @@ module Saci
       end
     end
 
+    # :nodoc:
     # `true` when this fiber currently has pending `after_commit` hooks for
     # `db` (used by the transactional helper's documentation examples).
     def self.__saci_testing_pending_after_commit?(db : DB::Database) : Bool
@@ -74,16 +77,19 @@ module Saci
       @@__saci_test_migrations = [] of Migration.class
       @@__saci_test_migrations_mutex = Mutex.new
 
+      # :nodoc:
       def self.register_test_migration(klass : Migration.class) : Nil
         @@__saci_test_migrations_mutex.synchronize do
           @@__saci_test_migrations << klass unless @@__saci_test_migrations.includes?(klass)
         end
       end
 
+      # :nodoc:
       def self.test_migrations : Array(Migration.class)
         @@__saci_test_migrations_mutex.synchronize { @@__saci_test_migrations.dup }
       end
 
+      # :nodoc:
       def self.reset_test_migrations! : Nil
         @@__saci_test_migrations_mutex.synchronize { @@__saci_test_migrations.clear }
       end

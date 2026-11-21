@@ -41,6 +41,7 @@ require "./cli/views_check_command"
 require "./cli/watch"
 
 module Saci
+  # :nodoc:
   # Command-line interface (`saci new/generate/serve/db:migrate/...`).
   module CLI
     def self.run(argv : Array(String)) : Int32

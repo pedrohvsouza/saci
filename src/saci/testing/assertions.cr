@@ -15,6 +15,7 @@ module Saci
     # assert_queries(1) { User.create!(...) }
     # ```
     module Assertions
+      # :nodoc:
       # Sentinel distinguishing "keyword omitted" from an explicit `nil`.
       class UnsetValue
       end

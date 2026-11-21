@@ -21,6 +21,10 @@
   `saci destroy system_test` removes it. Chrome comes from `CHROME_BIN` or
   the usual `google-chrome`/`chromium` commands; specs `pending!` when
   `SystemTest.available?` is false. No new shard or Node dependency.
+- **Generated API reference.** `script/docs.sh` runs `crystal docs` into
+  the gitignored `docs/api/`, and the new `docs` CI job rebuilds and
+  uploads it. CLI command internals and spec-only testing plumbing are
+  marked `:nodoc:` so the generated site describes the app-facing API.
 
 ## 0.9.0 — 2026-11-21
 

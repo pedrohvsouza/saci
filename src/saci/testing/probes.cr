@@ -1,5 +1,6 @@
 module Saci
   module Testing
+    # :nodoc:
     # Records job executions and cable broadcasts for the assertion helpers.
     # `Saci::Job` / `Saci::Cable` are reopened below with `previous_def` so
     # the production paths are unchanged.

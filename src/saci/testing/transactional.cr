@@ -1,5 +1,6 @@
 module Saci
   module Testing
+    # :nodoc:
     # Raised internally to roll back the outermost test transaction without
     # letting the signal escape the helper.
     class RollbackSignal < Exception

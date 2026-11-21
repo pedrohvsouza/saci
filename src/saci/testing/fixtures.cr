@@ -48,8 +48,10 @@ module Saci
         end
       end
 
+      # :nodoc:
       record Config, tables : Array(String), path : String?, delete_existing : Bool
 
+      # :nodoc:
       class Pending
         getter table : String
         getter label : String
