@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Same-host Cable push for SQLite and MySQL.** `Cable::DbServer` sends
+  one loopback UDP wake datagram after each broadcast, so pollers in other
+  processes on the same host fetch it immediately instead of waiting for
+  `poll_interval` (250ms by default). It is on by default
+  (`local_wake: true`); `wake_key:` namespaces the channel and derives a
+  deterministic port, `wake_port:` pins it, and `local_wake: false` keeps
+  polling only. Polling remains the fallback, so dropped datagrams, rows
+  written by external tools and hosts that block loopback broadcast are
+  still delivered. Uses only the stdlib `socket` module and is same host
+  only; across machines use Redis or PostgreSQL `LISTEN/NOTIFY`.
 - **Browser-driven system tests.** `Saci::SystemTest.serve(router)` boots
   the real stack and drives headless Chrome/Chromium through the DevTools
   protocol: `visit`, `fill_in`, `check`, `uncheck`, `choose`,

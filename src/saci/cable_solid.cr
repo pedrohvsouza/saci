@@ -1,5 +1,6 @@
 require "db"
 require "./cable"
+require "./cable_wake"
 
 module Saci
   module Cable
@@ -167,17 +168,28 @@ module Saci
     # each message exactly once per process.
     #
     # Latency/limits (documented):
-    # * cross-process delivery latency is bounded by `poll_interval`
+    # * on one host, `broadcast` also sends a loopback wake datagram (see
+    #   `Cable::LocalWake`), so peers poll immediately instead of waiting
+    #   out `poll_interval`; the datagram is only a nudge and polling stays
+    #   the fallback for dropped datagrams, foreign writers and hosts that
+    #   block loopback broadcast;
+    # * across hosts, delivery latency is still bounded by `poll_interval`
     #   (default 250ms) plus DB write latency; use `RedisServer`, or
-    #   `PostgresServer` with `listen_notify: true`, when sub-100ms fan-out
-    #   matters;
+    #   `PostgresServer` with `listen_notify: true`, when cross-host
+    #   sub-100ms fan-out matters;
     # * polling is one `SELECT` per interval per server, not per stream;
     # * retention defaults to 1 day and cleanup runs every
     #   `cleanup_interval` polls;
     # * the table grows with broadcast volume between cleanups.
     #
-    # `close` stops the poller; the database handle is owned by the caller
-    # and is never closed here.
+    # `local_wake:` (default `true`) enables the same-host wake channel;
+    # `wake_key:` namespaces it (default `<adapter>:<table>`) and
+    # `wake_port:` pins the derived UDP port. `DB::Database` does not expose
+    # its URL, so two apps using the same adapter and table on one host
+    # should pass distinct `wake_key`s; sharing one only causes extra polls.
+    #
+    # `close` stops the poller and the wake receiver; the database handle is
+    # owned by the caller and is never closed here.
     class DbServer < Server
       getter db : DB::Database
       getter adapter : DbAdapter
@@ -185,6 +197,8 @@ module Saci
       getter poll_interval : Time::Span
       getter retention : Time::Span
       getter batch_size : Int32
+      getter wake_key : String
+      getter wake_channel : LocalWake?
 
       @last_seen : Int64
       @poll_mutex = Mutex.new
@@ -197,6 +211,9 @@ module Saci
                      batch_size : Int32 = 500,
                      cleanup_interval : Int32 = 100,
                      start_polling : Bool = true,
+                     local_wake : Bool = true,
+                     wake_key : String? = nil,
+                     wake_port : Int32? = nil,
                      **server_options)
         super(**server_options)
         @db = db
@@ -208,16 +225,39 @@ module Saci
         @batch_size = batch_size
         @cleanup_interval = cleanup_interval
         @last_seen = @adapter.max_id
+        @wake_key = wake_key || "#{@adapter.adapter}:#{@adapter.table}"
         @stop = ::Channel(Nil).new(1)
         @wake = ::Channel(Nil).new(1)
         @closed = Atomic(Bool).new(false)
+        @wake_channel = nil
         spawn { poll_loop } if start_polling
+        if local_wake
+          begin
+            @wake_channel = LocalWake.new(@wake_key, wake_port, on_wake: -> { wake })
+          rescue ex
+            # Best effort: a blocked/reused port leaves polling in place.
+            Cable.report_error(ex, "local wake")
+          end
+        end
+      end
+
+      # True when this server owns a loopback wake socket. False after
+      # `local_wake: false` or when the socket could not be bound.
+      def local_wake? : Bool
+        !@wake_channel.nil?
+      end
+
+      # Completed poll passes. Lets specs wait for the initial poll before
+      # injecting a row, and is a cheap liveness counter in production.
+      def poll_count : Int32
+        @poll_mutex.synchronize { @poll_count }
       end
 
       # Asks the background poller to poll now instead of waiting for the
       # rest of `poll_interval`. Never blocks: wake-ups that arrive while
       # one is already pending collapse into it. The PostgreSQL
-      # LISTEN/NOTIFY listener calls this; custom schedulers may too.
+      # LISTEN/NOTIFY listener, the loopback wake channel and custom
+      # schedulers call this.
       def wake : Nil
         return if @closed.get
         select
@@ -237,8 +277,9 @@ module Saci
       end
 
       # Local delivery is immediate; the INSERT makes the message visible to
-      # peer servers on their next poll. DB failures are reported but never
-      # break local delivery (fail-open, like the Redis adapter).
+      # peer servers, and the wake datagram asks same-host peers to poll now.
+      # DB failures are reported but never break local delivery (fail-open,
+      # like the Redis adapter).
       def broadcast(stream : String, payload) : Nil
         message_json = Cable.encode_payload(payload)
         record_broadcast(stream, payload, message_json)
@@ -246,6 +287,7 @@ module Saci
         begin
           envelope = {"__saci_cable" => true, "sender" => @id, "message" => payload}
           @adapter.insert(stream, envelope.to_json)
+          @wake_channel.try(&.signal)
         rescue ex
           Cable.report_error(ex, "db broadcast")
         end
@@ -293,9 +335,11 @@ module Saci
         0_i64
       end
 
-      # Stops the background poller (idempotent). The DB handle stays open.
+      # Stops the background poller and the wake receiver (idempotent). The
+      # DB handle stays open.
       def close : Nil
         return if @closed.swap(true)
+        @wake_channel.try(&.close)
         begin
           # Buffered wake signal; receiving from a closed channel raises in
           # Crystal 1.22, so the channel is never closed.
@@ -328,9 +372,12 @@ module Saci
     #
     # Without `listen_notify`, this works exactly like `DbServer`
     # (`adapter: :postgres`): every server polls the messages table every
-    # `poll_interval` (default 250ms).
+    # `poll_interval` (default 250ms), and the same-host loopback wake
+    # channel is on by default (`local_wake: false` disables it).
     #
-    # With `listen_notify: true`, delivery is push-driven:
+    # With `listen_notify: true`, delivery is push-driven. The loopback wake
+    # channel is then redundant and off unless `local_wake: true` is passed
+    # explicitly:
     #
     # * `#broadcast` INSERTs the row, then runs
     #   `SELECT pg_notify(notify_channel, <server id>)`. PostgreSQL sends
@@ -403,6 +450,9 @@ module Saci
                      batch_size : Int32 = 500,
                      cleanup_interval : Int32 = 100,
                      start_polling : Bool = true,
+                     local_wake : Bool? = nil,
+                     wake_key : String? = nil,
+                     wake_port : Int32? = nil,
                      max_connections : Int32 = 0,
                      message_buffer_size : Int32 = Connection::DEFAULT_MESSAGE_BUFFER_SIZE)
         @notify_channel = notify_channel
@@ -429,7 +479,8 @@ module Saci
         end
         super(db, adapter: :postgres, poll_interval: poll_interval || (listen_notify ? 5.seconds : 250.milliseconds),
           retention: retention, table: table, batch_size: batch_size, cleanup_interval: cleanup_interval,
-          start_polling: start_polling, max_connections: max_connections,
+          start_polling: start_polling, local_wake: (local_wake.nil? ? !listen_notify : local_wake),
+          wake_key: wake_key, wake_port: wake_port, max_connections: max_connections,
           message_buffer_size: message_buffer_size)
         if factory && url
           @listener = factory.call(self, url)

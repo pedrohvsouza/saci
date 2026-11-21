@@ -692,12 +692,21 @@ end
   (built-in RESP2 client, no extra dependency) or to `Cable::DbServer`
   (database polling, Solid Cable style). If Redis is down, broadcasts
   still reach local subscribers.
+- `Cable::DbServer` also wakes peer processes on the same host: after the
+  INSERT it sends one loopback UDP datagram, so SQLite and MySQL (and
+  PostgreSQL without `listen_notify`) poll immediately instead of waiting
+  for `poll_interval`. Polling stays the fallback, so a dropped datagram
+  only delays a message. The channel is keyed by `wake_key:` (default
+  `<adapter>:<table>`) and derives a deterministic port; set `wake_port:`
+  to pin it, or `local_wake: false` to turn it off. It is same host only:
+  across machines use Redis or PostgreSQL `LISTEN/NOTIFY`.
 - On PostgreSQL, `Cable::PostgresServer.new(db, listen_notify: true,
   listen_url: ENV["DATABASE_URL"])` replaces polling with
   `LISTEN/NOTIFY`: peers fetch a broadcast as soon as it commits, and a
   5-second poll remains as a safety net. It needs `require "pg"` and
   `require "saci/cable_pg"` in the app, plus a direct connection
-  (PgBouncer in transaction mode does not support `LISTEN`).
+  (PgBouncer in transaction mode does not support `LISTEN`). The local
+  wake channel is off in this mode unless `local_wake: true` is passed.
 - Writes go through a shared pool of writer fibers with bounded
   per-connection queues, so idle sockets stay cheap and slow readers get
   disconnected instead of piling up memory.
