@@ -101,6 +101,13 @@
   `crystal spec`, and `saci test` exports it for the spec binary.
   `LOG_LEVEL` still selects the level and `SACI_LOG_SETUP=0` keeps
   Crystal's backend.
+- **`assigns` declares view-facing instance variables.** `assigns posts:
+  [] of Post, post: Post.new` gives each slot a typed class-body default,
+  so actions can assign `@posts`/`@post` without Crystal making them
+  nilable. `assigns current_user : User?` declares a nilable slot. Generated
+  admin and scaffold_controller controllers use it, and COMING_FROM_RAILS
+  documents the inference rules. Assigning from an action only sets a slot
+  declared in the class body.
 
 ## 0.8.0 — 2026-11-14
 

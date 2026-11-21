@@ -1,0 +1,4 @@
+<h1><%= h(@post.title) %></h1>
+<p><%= @posts.map(&.title).join(", ") %></p>
+<p><%= @label.upcase %></p>
+<% if @user %><span><%= h(@user) %></span><% end %>

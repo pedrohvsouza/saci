@@ -448,6 +448,50 @@ module Saci
   end
 
   class Controller
+    # Declares view-facing instance variables with a typed default, so
+    # Crystal does not make them nilable just because an action assigns
+    # them:
+    #
+    # ```
+    # class PostsController < ApplicationController
+    #   assigns posts: [] of Post, post: Post.new
+    #
+    #   def index
+    #     @posts = Post.all.to_a
+    #     render_template :index
+    #   end
+    # end
+    # ```
+    #
+    # A nilable slot may omit the value: `assigns current_user : User?`
+    # declares `@current_user : User? = nil`. The `name = value` and
+    # `name : Type = value` forms also work. Assignments from an action
+    # (`assigns post: Post.find(...)`) only set a slot declared here; they
+    # do not establish its type, because Crystal guesses types outside
+    # method bodies.
+    macro assigns(*declarations, **values)
+      {% for declaration in declarations %}
+        {% if declaration.is_a?(Assign) %}
+          @{{declaration.target.id}} = {{declaration.value}}
+        {% elsif declaration.is_a?(TypeDeclaration) %}
+          {% if declaration.value.nil? %}
+            {% if declaration.type.stringify.includes?("Nil") %}
+              @{{declaration.var.id}} : {{declaration.type}} = nil
+            {% else %}
+              {% raise "assigns: `#{declaration.var} : #{declaration.type}` needs a default (use a nilable type or `= value`)" %}
+            {% end %}
+          {% else %}
+            @{{declaration.var.id}} : {{declaration.type}} = {{declaration.value}}
+          {% end %}
+        {% else %}
+          {% raise "assigns expects `name = value` or `name : Type = value`, got #{declaration}" %}
+        {% end %}
+      {% end %}
+      {% for name, value in values %}
+        @{{name.id}} = {{value}}
+      {% end %}
+    end
+
     # Template content for layouts (`<%= content %>`).
     def content : String
       @__content ||= ""

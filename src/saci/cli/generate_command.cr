@@ -902,10 +902,9 @@ module Saci
           class #{plural}Controller < ::ApplicationController
             before_action :require_admin
 
-            # Typed defaults: Crystal infers instance variables from their
-            # assignments, and the views read these.
-            @page = Saci::Pagination::Page(#{class_name}).new([] of #{class_name}, 0_i64, 0, 1, 25, nil, nil)
-            @record = #{class_name}.new
+            # View-facing slots, typed once for every action.
+            assigns page: Saci::Pagination::Page(#{class_name}).new([] of #{class_name}, 0_i64, 0, 1, 25, nil, nil),
+              record: #{class_name}.new
 
             def index
               query = #{class_name}.all
@@ -1517,10 +1516,8 @@ module Saci
         assigns_update = fields.map { |(name, type)| assignment_line("@#{var}", name, type) }.join("\n    ")
         <<-CRYSTAL
         class #{plural}Controller < ApplicationController
-          # Typed defaults: Crystal infers instance variables from their
-          # assignments, and the views read these in every action.
-          @#{table} = [] of #{class_name}
-          @#{var} = #{class_name}.new
+          # View-facing slots, typed once for every action.
+          assigns #{table}: [] of #{class_name}, #{var}: #{class_name}.new
 
           def index
             @#{table} = #{class_name}.all.to_a

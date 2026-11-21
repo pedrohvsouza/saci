@@ -544,6 +544,8 @@ a table, or a column missing on either side. Only names are compared.
 
 ```crystal
 class PostsController < ApplicationController
+  assigns post: Post.new
+
   def show
     @post = Post.find(params["id"])
     render_template :show            # src/views/posts/show.ecr inside layouts/application.ecr
@@ -567,6 +569,12 @@ end
 <%= link_to("Delete", path_for(:post, @post.id), method: :delete) %>
 ```
 
+- `assigns name: default` declares view-facing instance variables once
+  with a type, so an action can assign them without Crystal making the
+  slot nilable (`assigns posts: [] of Post, post: Post.new`). Use
+  `assigns current_user : User?` for nilable state. The declaration must
+  be in the controller class body; see
+  [COMING_FROM_RAILS](COMING_FROM_RAILS.md#instance-variables-and-ecr).
 - `form_with` with an ECR block uses `<% %>`, not `<%= %>` (ECR has no
   block output tag), and writes the form into the page. A block that
   returns the fields as a String works with `<%= %>`:

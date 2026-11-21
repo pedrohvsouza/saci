@@ -47,6 +47,68 @@ not supported.
   own state (transactions, locale, time zone, `Current`, auth context)
   is scoped per fiber.
 
+## Instance variables and ECR
+
+ECR is not interpreted at runtime. `render_template` expands `ECR.embed`
+inside the action method, so a template can read controller instance
+variables (`@post`) and the action's local variables (`post`). There is no
+Rails-style `assigns` hash.
+
+Crystal infers each instance variable's type from every assignment to it
+in the controller class, not per action:
+
+- An ivar assigned only in an action is still nilable: the compiler adds
+  `Nil` because it is not initialized in every `initialize` or by a
+  class-body default. `@post = Post.find(...)` in `show` therefore makes
+  `@post` a `Post?`; `@post.title` in the view does not compile.
+- A class-body default (`@post = Post.new`) is a catch-all initializer:
+  the slot is non-nilable for every action and the view can call methods
+  on it directly. `assigns` declares those defaults once:
+
+  ```crystal
+  class PostsController < ApplicationController
+    assigns posts: [] of Post, post: Post.new
+
+    def index
+      @posts = Post.all.to_a
+      render_template :index
+    end
+
+    def show
+      @post = Post.find(params["id"])
+      render_template :show
+    end
+  end
+  ```
+
+- `@post : Post` alone is not a default. It must also be assigned in every
+  `initialize` or by a class-body default; otherwise the compiler rejects
+  it as "not initialized directly in all of the `initialize` methods".
+- `assigns current_user : User?` declares an explicit nilable slot
+  (`User? = nil`). The view must guard it:
+  `<% if user = @current_user %>...<% end %>`.
+- A base controller slot that children assign must be declared nilable or
+  with a default: `@current_user = nil` infers `Nil`; use
+  `assigns current_user : User?`.
+- Empty collections need an element type: `@posts = [] of Post`, not
+  `@posts = []`.
+- Assigning from an action (`assigns post: Post.find(...)`) only sets a
+  slot declared in the class body; it does not establish the type, because
+  Crystal guesses types outside method bodies.
+
+Prefer action locals when you do not need the value in other methods:
+
+```crystal
+def show
+  post = Post.find(params["id"])
+  render_template :show
+end
+```
+
+```erb
+<h1><%= h(post.title) %></h1>
+```
+
 ## Component map
 
 Rails namespaces its framework classes (`ActionController::Base`,
@@ -161,6 +223,9 @@ type behind `Saci::`.
 - **Rendering**
   - `render_template :show` replaces implicit rendering. An action that
     never renders returns a 500 that tells you so.
+  - Templates see controller ivars (`@post`) and action locals. Prefer
+    locals; `assigns` declares typed view slots once. See
+    [Instance variables and ECR](#instance-variables-and-ecr).
   - `render_partial("comments/comment", collection: list)` renders a
     collection.
   - Partial files have no leading underscore: `render_partial("shared/header")`

@@ -31,10 +31,6 @@ These are known gaps in the current release:
   documented).
 - **Testing**: there are no browser-driven system tests.
 - **Developer experience** (from building an app with Saci):
-  - Instance variables in controllers often need type annotations that
-    Rails never asks for. COMING_FROM_RAILS.md should explain Crystal's
-    inference rules, and an `assigns`-style macro could remove the
-    annotations.
   - Generators print routes for the user to copy. They could insert them
     into the router's `draw` block instead.
 
