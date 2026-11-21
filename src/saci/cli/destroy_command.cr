@@ -159,7 +159,7 @@ module Saci
         remove("src/controllers/#{Util.file_name(plural)}_controller.cr", Generate.controller_source("#{plural}Controller", actions))
         remove("spec/requests/#{Util.file_name(plural)}_controller_spec.cr",
           Generate.controller_spec_source(plural, "#{plural}Controller", actions))
-        Generate.remove_routes([%(r.resources "#{table}", #{plural}Controller)])
+        Generate.remove_routes([%(r.resources "#{table}", #{plural}Controller, only: [:index, :show, :create, :update, :destroy])])
         destroy_migrations("Create#{plural}", "create_#{table}")
       end
 

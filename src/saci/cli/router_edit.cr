@@ -59,11 +59,13 @@ module Saci
       # Adds `resource` under `r.namespace(prefix)`, reusing an existing
       # namespace block or creating one at the end of the draw block.
       def self.add_namespace(prefix : String, resource : String, controller : String,
+                             only : Array(Symbol)? = nil,
                              pretend : Bool = false, io : IO = STDOUT) : Result
         located = locate_for_add
         return Result::NotFound unless located
         path, lines, draw = located
         suffix = %(resources "#{resource}", #{controller})
+        suffix += ", only: [#{only.map { |action| ":#{action}" }.join(", ")}]" if only
         return Result::Unchanged if lines.any? { |line| normalized(line).ends_with?(suffix) }
 
         updated = lines.dup

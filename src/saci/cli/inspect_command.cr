@@ -152,9 +152,9 @@ module Saci
           raise Error.new("No routes found: expected src/routes.cr or #{entry}. Extract your routes into src/routes.cr or run from your app directory.")
         end
 
-        def self.parse(source : String) : Array(Row)
+        def self.parse(source : String, prefixes : Array(String) = [] of String) : Array(Row)
           rows = [] of Row
-          prefixes = [] of String
+          prefixes = prefixes.dup
           pushed_at = [] of Int32
           depth = 0
           source.each_line do |line|
@@ -169,6 +169,9 @@ module Saci
               rows << Row.new("GET", full_path(prefixes, "/"), "#{m[1]}##{m[2]}")
             elsif m = line.match(/[A-Za-z_]\w*\.resources\s+["']([^"']+)["']\s*,\s*([\w:]+)(.*)/)
               rows.concat(expand_resources(prefixes, m[1], m[2], m[3]))
+            elsif m = line.match(/(?:Saci::)?Routes\.draw_(\w+)\(/)
+              helper = "src/routes/#{m[1]}_routes.cr"
+              rows.concat(parse(File.read(helper), prefixes)) if File.file?(helper)
             elsif m = line.match(/[A-Za-z_]\w*\.redirect\(\s*["']([^"']+)["']\s*,\s*to:\s*["']([^"']+)["']/)
               rows << Row.new("GET", full_path(prefixes, m[1]), "redirect -> #{m[2]}")
             elsif m = line.match(/[A-Za-z_]\w*\.websocket\(\s*["']([^"']+)["']/)

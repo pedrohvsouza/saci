@@ -671,6 +671,20 @@ describe "saci routes" do
     end
   end
 
+  it "expands the route helper written by the resource generator" do
+    with_tmp_app(name: "cli_routes_helper") do |dir|
+      Dir.cd(dir) do
+        Saci::CLI::Generate.run(["resource", "Comment", "body:text"]).should eq(0)
+        rows = Saci::CLI::Inspect::Routes.parse(File.read("src/cli_routes_helper.cr"))
+        lines = rows.map { |r| "#{r.verb} #{r.path} #{r.target}" }
+        lines.should contain("GET /comments CommentsController#index")
+        lines.should contain("GET /comments/:id CommentsController#show")
+        lines.any? { |l| l.includes?("CommentsController#new") }.should be_false
+        lines.any? { |l| l.includes?("CommentsController#create") }.should be_true
+      end
+    end
+  end
+
   it "errors clearly outside an app" do
     dir = File.join("/tmp/opencode", "saci-cli-noroutes-#{Random.rand(1_000_000)}")
     begin

@@ -284,7 +284,7 @@ describe "saci generate extras" do
         File.read("src/controllers/posts_controller.cr").should contain("class PostsController")
         File.read("src/controllers/posts_controller.cr").should contain("render json:")
         File.read("src/routes/posts_routes.cr").should contain("def self.draw_posts(r : Router)")
-        File.read("src/routes/posts_routes.cr").should contain(%(r.resources "posts", PostsController))
+        File.read("src/routes/posts_routes.cr").should contain(%(r.resources "posts", PostsController, only: [:index, :show, :create, :update, :destroy]))
         Dir.glob("db/migrate/*_create_posts.cr").size.should eq(1)
       end
     end
@@ -425,10 +425,11 @@ describe "saci generate extras" do
         end
         entry = File.read("src/gen_routes_many.cr")
         entry.scan(%(r.resources "posts", PostsController)).size.should eq(1)
+        entry.should contain(%(only: [:index, :show, :create, :update, :destroy]))
         entry.should_not contain(%(r.get "/posts", PostsController))
         entry.should contain(%(r.resources "invoices", InvoicesController))
         entry.should contain(%(r.namespace("/admin") do |a|))
-        entry.should contain(%(a.resources "orders", Admin::OrdersController))
+        entry.should contain(%(a.resources "orders", Admin::OrdersController, only: [:index, :show, :edit, :update, :destroy]))
         entry.should contain(%(require "./routes/comments_routes"))
         entry.should contain("Routes.draw_comments(r)")
         entry.should contain(%(r.get "/login", SessionsController, :new))

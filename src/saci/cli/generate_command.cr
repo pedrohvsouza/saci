@@ -117,8 +117,10 @@ module Saci
         RouterEdit.add(lines, requires: requires, pretend: pretend?, io: output) != RouterEdit::Result::NotFound
       end
 
-      def self.add_namespace_routes(prefix : String, resource : String, controller : String) : Bool
-        RouterEdit.add_namespace(prefix, resource, controller, pretend: pretend?, io: output) != RouterEdit::Result::NotFound
+      def self.add_namespace_routes(prefix : String, resource : String, controller : String,
+                                    only : Array(Symbol)? = nil) : Bool
+        RouterEdit.add_namespace(prefix, resource, controller, only: only,
+          pretend: pretend?, io: output) != RouterEdit::Result::NotFound
       end
 
       def self.remove_routes(lines : Array(String), requires : Array(String) = [] of String) : Nil
@@ -849,7 +851,7 @@ module Saci
         controller([plural, "index", "show", "create", "update", "destroy"], routes: false) unless skip?(:controller)
 
         unless skip?(:route) || skip?(:controller)
-          line = %(r.resources "#{table}", #{plural}Controller)
+          line = %(r.resources "#{table}", #{plural}Controller, only: [:index, :show, :create, :update, :destroy])
           unless add_routes([line])
             puts ""
             puts "Add to your router:"
@@ -897,11 +899,12 @@ module Saci
         end
 
         unless skip?(:route) || skip?(:controller)
-          unless add_namespace_routes("/admin", table, "Admin::#{plural}Controller")
+          only = [:index, :show, :edit, :update, :destroy]
+          unless add_namespace_routes("/admin", table, "Admin::#{plural}Controller", only: only)
             puts ""
             puts "Add to your router:"
             puts "  r.namespace(\"/admin\") do |a|"
-            puts "    a.resources \"#{table}\", Admin::#{plural}Controller"
+            puts "    a.resources \"#{table}\", Admin::#{plural}Controller, only: #{only.inspect}"
             puts "  end"
           end
         end
@@ -1429,7 +1432,7 @@ module Saci
         #   Routes.draw_#{table}(r)
         module Routes
           def self.draw_#{table}(r : Saci::Router) : Nil
-            r.resources "#{table}", #{plural}Controller
+            r.resources "#{table}", #{plural}Controller, only: [:index, :show, :create, :update, :destroy]
           end
         end
         CRYSTAL
