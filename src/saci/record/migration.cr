@@ -32,7 +32,9 @@ module Saci
       def initialize(@name, @logical_type, @null, @default_value, @primary_key, @enum_values : Array(String)? = nil, @precision : Int32? = nil, @scale : Int32? = nil, *, @default_sql : String? = nil, @subtype : Symbol? = nil, @size : Int32? = nil, @generated_as : String? = nil, @stored : Bool = false)
       end
 
-      def to_sql(adapter : Adapter = :sqlite, table : String? = nil) : String
+      # `strict: true` renders the column for a SQLite `STRICT` table
+      # (`Migration.sqlite_strict_type`); ignored on other adapters.
+      def to_sql(adapter : Adapter = :sqlite, table : String? = nil, strict : Bool = false) : String
         String.build do |s|
           enum_type = table ? Migration.enum_type_name(table, @name) : nil
           type_sql = if NativeTypes.extended?(@logical_type)
@@ -40,6 +42,7 @@ module Saci
                      else
                        Record.db_type(@logical_type, adapter, @enum_values, enum_type, @precision, @scale)
                      end
+          type_sql = Migration.sqlite_strict_type(type_sql) if strict && adapter == :sqlite
           s << "#{Record.quote(@name, adapter)} #{type_sql}"
           if @primary_key
             # Only integer `:serial` primary keys auto-increment. UUID
@@ -712,7 +715,11 @@ module Saci
       # application-supplied string). `id: false` disables the key.
       # `if_not_exists: true` makes the migration rerunnable: the table
       # (and its enum types/indexes) is left untouched when it exists.
-      def create_table(name : String | Symbol, id : Bool | Symbol = true, if_not_exists : Bool = false, & : TableDefinition ->) : Nil
+      # `strict: true` creates a SQLite `STRICT` table (rejects values of
+      # the wrong storage class; columns map through
+      # `Migration.sqlite_strict_type`). PostgreSQL and MySQL already
+      # enforce column types, so the option is ignored there.
+      def create_table(name : String | Symbol, id : Bool | Symbol = true, if_not_exists : Bool = false, strict : Bool = false, & : TableDefinition ->) : Nil
         ad = Record.adapter_of(@db)
         tbl = name.to_s
         if if_not_exists && Introspection.table_exists?(@db, tbl)
@@ -761,11 +768,12 @@ module Saci
             Record.exec_compat(@db, stmt)
           end
         end
-        cols_sql = t.columns.map(&.to_sql(ad, tbl)).join(", ")
+        strict = strict && ad == :sqlite
+        cols_sql = t.columns.map(&.to_sql(ad, tbl, strict)).join(", ")
         fk_sql = t.foreign_keys.map { |fk| Migration.create_table_fk_sql(ad, tbl, fk) }
         check_sql = t.checks.map { |c| Migration.check_clause_sql(ad, c) }
         all_sql = ([cols_sql] + fk_sql + check_sql).reject(&.empty?).join(", ")
-        create = "CREATE TABLE#{if_not_exists ? " IF NOT EXISTS" : ""} #{Record.quote(tbl, ad)} (#{all_sql})"
+        create = "CREATE TABLE#{if_not_exists ? " IF NOT EXISTS" : ""} #{Record.quote(tbl, ad)} (#{all_sql})#{strict ? " STRICT" : ""}"
         Record.exec_compat(@db, create)
         t.pending_indexes.each do |col|
           index_name = "index_#{tbl}_on_#{col}"
@@ -785,6 +793,21 @@ module Saci
                    ""
                  end
         "#{prefix}CHECK (#{check.expression})"
+      end
+
+      # Maps a rendered SQLite column type to one a `STRICT` table accepts
+      # (`INTEGER`, `REAL`, `BLOB`, `ANY` kept; everything else, e.g.
+      # `VARCHAR(255)` or `TEXT_DECIMAL`, becomes `TEXT`). Every Saci
+      # logical type already stores as one of these classes on SQLite, so
+      # values round-trip unchanged.
+      def self.sqlite_strict_type(type_sql : String) : String
+        case type_sql.strip.upcase.split("(")[0].strip
+        when "INTEGER", "INT" then "INTEGER"
+        when "REAL"           then "REAL"
+        when "BLOB"           then "BLOB"
+        when "ANY"            then "ANY"
+        else                       "TEXT"
+        end
       end
 
       def self.drop_table_sql(adapter : Adapter, name : String | Symbol, if_exists : Bool = false) : String
@@ -835,7 +858,8 @@ module Saci
         exists_sql = (if_not_exists && ad == :postgres) ? " IF NOT EXISTS" : ""
         column_sql = ColumnDef.new(col, type, null, default, false, values, precision, scale,
           default_sql: default_sql, subtype: subtype, size: size, generated_as: generated_as, stored: stored)
-        Record.exec_compat(@db, "ALTER TABLE #{Record.quote(tbl, ad)} ADD COLUMN#{exists_sql} #{column_sql.to_sql(ad, tbl)}")
+        strict = ad == :sqlite && Introspection.sqlite_strict?(@db, tbl)
+        Record.exec_compat(@db, "ALTER TABLE #{Record.quote(tbl, ad)} ADD COLUMN#{exists_sql} #{column_sql.to_sql(ad, tbl, strict)}")
       end
 
       # `drop_column` is an alias of `remove_column` with the same

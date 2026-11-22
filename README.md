@@ -503,6 +503,16 @@ Post.transaction(isolation: :serializable) { post.lock!; ... }
   `reversible` for those. Also available: `change_table`, `revert`,
   `execute`, `if_not_exists:`, `disable_ddl_transaction!` and
   `algorithm: :concurrently`.
+- **SQLite `STRICT` tables**: SQLite accepts any value in any column
+  unless the table is `STRICT`. `create_table :posts, strict: true` opts
+  in: the wrong storage class raises instead of being stored. Columns are
+  declared as `INTEGER` (integer, bigint, boolean, serial and references),
+  `REAL` (float), `BLOB` (binary) or `TEXT` (everything else, including
+  decimal, dates, JSON, UUIDs, enums and string arrays), so models read
+  and write the same values as on a regular table. Rebuilds
+  (`change_column_null`/`change_column_default`), `add_column` and schema
+  snapshots keep the flag. It is off by default and ignored on PostgreSQL
+  and MySQL, which already enforce column types.
 - **Full-text search**: `Record::FTS.setup(Post, [:title, :body])`
   creates an FTS5 virtual table with triggers.
   `Post.search_fts("crystal")` returns a ranked, chainable query (SQLite
