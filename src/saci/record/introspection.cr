@@ -111,6 +111,21 @@ module Saci
         table_exists?(db, name) || view_exists?(db, name)
       end
 
+      # True when `table` is a SQLite `STRICT` table (`PRAGMA table_list`,
+      # SQLite 3.37+; older versions ignore the pragma, so false). Always
+      # false on PostgreSQL/MySQL, which have no STRICT tables.
+      def self.sqlite_strict?(db : DB::Database | DB::Connection, table : String | Symbol) : Bool
+        return false unless Record.adapter_of(db) == :sqlite
+        strict = false
+        Record.query_compat(db, "PRAGMA table_list(\"#{table.to_s.gsub('"', "\"\"")}\")") do |rs|
+          rs.each do
+            5.times { rs.read } # schema, name, type, ncol, wr
+            strict = bool(rs.read)
+          end
+        end
+        strict
+      end
+
       def self.column_exists?(db : DB::Database | DB::Connection, table : String | Symbol, column : String | Symbol) : Bool
         columns(db, table).any? { |c| c.name == column.to_s }
       end

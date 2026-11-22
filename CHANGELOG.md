@@ -19,6 +19,13 @@
   [:title, :body]` on the model enables `search_fts` without DDL or a
   rebuild, so booting no longer reindexes the table. `FTS.setup` keeps
   working and accepts the same `tokenize:`/`external_content:` options.
+- **SQLite `STRICT` tables.** `create_table :x, strict: true` creates a
+  SQLite `STRICT` table, which rejects values of the wrong storage class.
+  Every logical type maps to `INTEGER`, `REAL`, `TEXT` or `BLOB`
+  (`Migration.sqlite_strict_type`), so models round-trip unchanged.
+  `add_column`, the SQLite table rebuild behind `change_column_null` and
+  `change_column_default`, and `db:schema:dump`/`load` keep the flag.
+  Off by default; PostgreSQL and MySQL ignore it.
 - **Same-host Cable push for SQLite and MySQL.** `Cable::DbServer` sends
   one loopback UDP wake datagram after each broadcast, so pollers in other
   processes on the same host fetch it immediately instead of waiting for

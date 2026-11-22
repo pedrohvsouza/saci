@@ -50,15 +50,17 @@ module Saci
       # Table snapshot. `timestamps` means created_at + updated_at (both
       # NOT NULL, no defaults) were detected and are re-emitted by the
       # loader instead of two plain columns. `checks` are re-emitted inside
-      # CREATE TABLE so SQLite reloads them too.
+      # CREATE TABLE so SQLite reloads them too. `strict` marks a SQLite
+      # `STRICT` table (ignored when loading into PostgreSQL/MySQL).
       struct TableInfo
         getter name : String
         getter columns : Array(ColumnDef)
         getter indexes : Array(IndexInfo)
         getter timestamps : Bool
         getter checks : Array(CheckInfo)
+        getter strict : Bool
 
-        def initialize(@name : String, @columns : Array(ColumnDef), @indexes : Array(IndexInfo) = [] of IndexInfo, @timestamps : Bool = false, @checks : Array(CheckInfo) = [] of CheckInfo)
+        def initialize(@name : String, @columns : Array(ColumnDef), @indexes : Array(IndexInfo) = [] of IndexInfo, @timestamps : Bool = false, @checks : Array(CheckInfo) = [] of CheckInfo, *, @strict : Bool = false)
         end
       end
 
@@ -103,17 +105,18 @@ module Saci
         # them first so loading is repeatable even when views exist.
         drop_views(db, views(db))
         tables.each do |t|
-          cols = t.columns.map(&.to_sql(ad))
+          strict = t.strict && ad == :sqlite
+          cols = t.columns.map(&.to_sql(ad, strict: strict))
           if t.timestamps
-            cols << ColumnDef.new("created_at", :datetime, false, nil, false).to_sql(ad)
-            cols << ColumnDef.new("updated_at", :datetime, false, nil, false).to_sql(ad)
+            cols << ColumnDef.new("created_at", :datetime, false, nil, false).to_sql(ad, strict: strict)
+            cols << ColumnDef.new("updated_at", :datetime, false, nil, false).to_sql(ad, strict: strict)
           end
           t.checks.each do |c|
             prefix = c.name ? "CONSTRAINT #{Record.quote(c.name.not_nil!, ad)} " : ""
             cols << "#{prefix}CHECK (#{c.expression})"
           end
           Record.exec_compat(db, "DROP TABLE IF EXISTS #{Record.quote(t.name, ad)}")
-          Record.exec_compat(db, "CREATE TABLE #{Record.quote(t.name, ad)} (#{cols.join(", ")})")
+          Record.exec_compat(db, "CREATE TABLE #{Record.quote(t.name, ad)} (#{cols.join(", ")})#{strict ? " STRICT" : ""}")
           t.indexes.each do |ix|
             uniq = ix.unique ? "UNIQUE " : ""
             Record.exec_compat(db, "CREATE #{uniq}INDEX #{Record.quote(ix.name, ad)} ON #{Record.quote(t.name, ad)} (#{ix.columns.map { |c| Record.quote(c, ad) }.join(", ")})")
@@ -255,6 +258,7 @@ module Saci
           end
           io << "    ] of Saci::Record::Schema::CheckInfo,\n"
         end
+        io << "    strict: true, # SQLite STRICT table\n" if t.strict
         io << "  ),\n"
       end
 
@@ -414,7 +418,7 @@ module Saci
         idxs.sort_by!(&.name)
         columns, timestamps = extract_timestamps(cols)
         checks = Introspection.check_constraints(db, table).map { |c| CheckInfo.new(c.name, c.expression) }
-        TableInfo.new(table, columns, idxs, timestamps, checks)
+        TableInfo.new(table, columns, idxs, timestamps, checks, strict: Introspection.sqlite_strict?(db, table))
       end
 
       # Builds a SQLite ColumnDef, optionally carrying a parsed generated

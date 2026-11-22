@@ -662,17 +662,19 @@ module Saci
         fks = Introspection.foreign_keys(@db, table)
         checks = Introspection.check_constraints(@db, table)
 
+        strict = Introspection.sqlite_strict?(@db, table)
+
         rebuild = "#{table}__saci_rebuild"
         Record.exec_compat(@db, "DROP TABLE IF EXISTS #{Record.quote(rebuild, ad)}")
         col_sql = columns.map do |c|
           ColumnDef.new(c.name, c.type, c.null, c.default, c.primary_key, nil, nil,
-            subtype: c.subtype, size: c.size, default_sql: c.default_sql).to_sql(ad, rebuild)
+            subtype: c.subtype, size: c.size, default_sql: c.default_sql).to_sql(ad, rebuild, strict)
         end
         fk_sql = fks.map do |fk|
           Migration.create_table_fk_sql(ad, table, TableForeignKey.new(fk.column, fk.to_table, on_delete_symbol(fk.on_delete), fk.name, fk.deferrable))
         end
         check_sql = checks.map { |c| Migration.check_clause_sql(ad, TableCheck.new(c.expression, c.name)) }
-        Record.exec_compat(@db, "CREATE TABLE #{Record.quote(rebuild, ad)} (#{(col_sql + fk_sql + check_sql).join(", ")})")
+        Record.exec_compat(@db, "CREATE TABLE #{Record.quote(rebuild, ad)} (#{(col_sql + fk_sql + check_sql).join(", ")})#{strict ? " STRICT" : ""}")
 
         names = columns.map { |c| Record.quote(c.name, ad) }
         unless names.empty?
