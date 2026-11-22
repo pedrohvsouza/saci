@@ -128,7 +128,7 @@ module Saci
           io << "require \"../lib/tasks/*\"\n"
           io << "\nFileUtils.mkdir_p(\"db\")\n"
           io << "env_name = ENV.fetch(\"APP_ENV\", \"development\")\n"
-          io << "db_url = ENV.fetch(\"DATABASE_URL\", \"#{Inspect::Runner.db_default(app)}\")\n"
+          io << Inspect::Runner.db_url_line(Inspect::Runner.db_default(app))
           io << "Saci::Record.connect(db_url)\n"
           io << "Saci::I18n.reload!\n"
           io << "Saci::Task.run(\"#{escaped_name}\")\n"

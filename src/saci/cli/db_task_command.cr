@@ -93,13 +93,15 @@ module Saci
         {name: name, kind: Util.db_kind(name), env: ENV.fetch("APP_ENV", "development")}
       end
 
-      # URL for an environment: explicit DATABASE_URL (or DATABASE_URL_TEST)
-      # wins; otherwise the `saci new` convention.
+      # URL for an environment, resolved like db/migrate.cr:
+      # config/database.yml (whose `url:` carries DATABASE_URL), then
+      # DATABASE_URL, then the `saci new` convention. DATABASE_URL_TEST
+      # still wins for the test database.
       def self.url_for(name : String, kind : String, env : String, test : Bool = false) : String
         if test
-          ENV["DATABASE_URL_TEST"]? || ENV["DATABASE_URL"]? || New.db_url_default(name, kind, "test")
+          ENV["DATABASE_URL_TEST"]? || Saci::ConfigFile.database_url("test") || ENV["DATABASE_URL"]? || New.db_url_default(name, kind, "test")
         else
-          ENV["DATABASE_URL"]? || New.db_url_default(name, kind, env)
+          Saci::ConfigFile.database_url(env) || ENV["DATABASE_URL"]? || New.db_url_default(name, kind, env)
         end
       end
 
@@ -217,7 +219,12 @@ module Saci
           io << "require \"../db/migrations\"\n"
           io << "\nFileUtils.mkdir_p(\"db\")\n"
           io << "env_name = ENV.fetch(\"APP_ENV\", \"development\")\n"
-          io << "db_url = ENV.fetch(\"DATABASE_URL\", \"#{default_url}\")\n"
+          if test
+            # test_prepare resolved the URL in-process (url_for) and set DATABASE_URL.
+            io << Inspect::Runner.db_url_line(default_url)
+          else
+            io << Inspect::Runner.db_url_line(default_url)
+          end
           io << "Saci::Record.connect(db_url)\n"
           io << Util.internal_require("db_tasks") << "\n"
           io << "Saci::DBTasks.register_named_databases!\n"
@@ -364,7 +371,7 @@ module Saci
           io << Util.internal_require("db_tasks") << "\n"
           io << "\nFileUtils.mkdir_p(\"db\")\n"
           io << "env_name = ENV.fetch(\"APP_ENV\", \"development\")\n"
-          io << "db_url = ENV.fetch(\"DATABASE_URL\", \"#{default_url}\")\n"
+          io << Inspect::Runner.db_url_line(default_url)
           io << "Saci::Record.connect(db_url)\n"
           io << "Saci::DBTasks.register_named_databases!\n"
           io << "count = Saci::DBTasks.clean_databases!(ARGV.includes?(\"--all\"))\n"
@@ -457,7 +464,7 @@ module Saci
           io << Util.internal_require("db_tasks") << "\n"
           io << "\nFileUtils.mkdir_p(\"db\")\n"
           io << "env_name = ENV.fetch(\"APP_ENV\", \"development\")\n"
-          io << "db_url = ENV.fetch(\"DATABASE_URL\", \"#{default_url}\")\n"
+          io << Inspect::Runner.db_url_line(default_url)
           io << "Saci::Record.connect(db_url)\n"
           io << "Saci::DBTasks.register_named_databases!\n"
           io << "all = ARGV.includes?(\"--all\")\n"
@@ -504,7 +511,7 @@ module Saci
           io << New.db_driver_require(kind)
           io << Util.internal_require("db_tasks") << "\n"
           io << "\nenv_name = ENV.fetch(\"APP_ENV\", \"development\")\n"
-          io << "urls = [{\"primary\", ENV.fetch(\"DATABASE_URL\", \"#{default_url}\")}]\n"
+          io << "urls = [{\"primary\", Saci::ConfigFile.database_url(env_name) || ENV.fetch(\"DATABASE_URL\", \"#{default_url}\")}]\n"
           io << "if ARGV.includes?(\"--all\")\n"
           io << "  ENV.each do |key, value|\n"
           io << "    urls << {key[\"DATABASE_URL_\".size..].downcase, value} if key.starts_with?(\"DATABASE_URL_\") && !key.ends_with?(\"_TEST\")\n"

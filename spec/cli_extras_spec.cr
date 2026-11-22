@@ -18,9 +18,16 @@ end
 
 # Symlink the framework's lib into a fixture app so bare `db`/`sqlite3`
 # requires resolve without `shards install` (fixtures skip shards).
+# Each shard is linked on its own, so `lib/tasks/` written by a spec
+# stays in the fixture instead of landing in the framework's lib.
 def link_extras_framework_lib! : Nil
   framework_lib = File.join(Saci::CLI::New::SACI_ROOT, "lib")
-  File.symlink(framework_lib, "lib") unless File.exists?("lib")
+  Dir.mkdir_p("lib")
+  Dir.each_child(framework_lib) do |entry|
+    next if entry == "tasks"
+    target = File.join("lib", entry)
+    File.symlink(File.join(framework_lib, entry), target) unless File.exists?(target) || File.symlink?(target)
+  end
 end
 
 def capture_extras_output(& : ->) : Tuple(String, String)
@@ -628,6 +635,46 @@ describe "saci db:* surface" do
             ENV.delete("APP_ENV")
           end
         end
+      end
+    end
+  end
+
+  it "resolves URLs from config/database.yml in-process and in generated runners" do
+    with_extras_app(name: "db_yml") do |dir|
+      Dir.cd(dir) do
+        File.write("config/database.yml", "development:\n  adapter: sqlite3\n  database: ./db/other.db\n")
+        without_database_env do
+          Saci::CLI::Db.url_for("db_yml", "sqlite", "development").should eq("sqlite3://./db/other.db")
+        end
+        line = "db_url = Saci::ConfigFile.database_url(env_name) || ENV.fetch(\"DATABASE_URL\""
+        Saci::CLI::Inspect::Runner.wrapper_source(code_body: "1").should contain(line)
+        Saci::CLI::TaskCommand.runner_source("x").should contain(line)
+        opts = Saci::CLI::Db.parse_action_args([] of String)
+        Saci::CLI::Db.external_source("version", "db_yml", "sqlite", opts).should contain(line)
+        Saci::CLI::Db.create_drop_source("create", "postgres", "db_yml").should contain("Saci::ConfigFile.database_url(env_name) || ENV.fetch(\"DATABASE_URL\"")
+        Saci::CLI::Schema.dump_runner_source("sqlite3://./db/x.db").should contain(line)
+      end
+    end
+  end
+
+  it "runs tasks against the config/database.yml database" do
+    with_extras_app(name: "db_yml_task") do |dir|
+      Dir.cd(dir) do
+        link_extras_framework_lib!
+        File.write("config/database.yml", "development:\n  adapter: sqlite3\n  database: ./db/other.db\n")
+        DB.open("sqlite3://./db/other.db") { |db| db.exec("CREATE TABLE markers (id INTEGER PRIMARY KEY)") }
+        Dir.mkdir_p("lib/tasks")
+        File.write("lib/tasks/count.cr", <<-CRYSTAL)
+          task "spec:count", "Count markers" do
+            count = Saci::Record.database("primary").scalar("SELECT COUNT(*) FROM markers")
+            File.write("task_marker.txt", count.to_s)
+          end
+          CRYSTAL
+        without_database_env do
+          Saci::CLI.run(["task", "spec:count"]).should eq(0)
+        end
+        File.read("task_marker.txt").should eq("0")
+        File.exists?("db/db_yml_task_development.db").should be_false
       end
     end
   end

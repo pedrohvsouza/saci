@@ -71,6 +71,13 @@
   answered automatically so `alert`/`confirm`/`prompt` no longer hang
   `click_on`; `dismiss_dialog` and `accept_dialog` choose the response for
   the next dialog, and `last_dialog_message` exposes its text.
+- **Fixed: CLI runners ignored `config/database.yml`.** `saci db:seed`,
+  `saci runner`, `saci task`, `saci initializers`, the PG/MySQL `db:*`
+  runners, `db:schema:dump` and the generated `db/schema.cr` now resolve
+  the URL like `db/migrate.cr` (`config/database.yml`, then
+  `DATABASE_URL`, then the default), so they use the database
+  `db:migrate` migrated. `saci about`, `dbconsole` and the in-process
+  SQLite `db:*` tasks read it too.
 
 ## 0.9.0 — 2026-11-21
 
