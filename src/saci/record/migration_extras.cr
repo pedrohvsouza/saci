@@ -492,6 +492,34 @@ module Saci
         Record.exec_compat(@db, Migration.drop_view_sql(Record.adapter_of(@db), name, if_exists))
       end
 
+      # SQLite FTS5 index `<table>_fts` plus its sync triggers, backfilled
+      # once from existing rows (see `Record::FTS.create_sql` for
+      # `tokenize:` / `external_content:`). Auto-inverts to
+      # `drop_fts_table`. Pair it with `fts_search [...]` on the model.
+      def create_fts_table(table : String | Symbol, columns : Array, tokenize : String? = nil, external_content : Bool = false, primary_key : String | Symbol = "id") : Nil
+        ad = Record.adapter_of(@db)
+        FTS.ensure_sqlite!(ad)
+        tbl = table.to_s
+        if @inverting
+          @inverse_ops << -> { FTS.drop_sql(ad, tbl).each { |sql| Record.exec_compat(@db, sql) }; nil }
+          return
+        end
+        cols = columns.map(&.to_s)
+        pk = primary_key.to_s
+        (FTS.create_sql(ad, tbl, cols, pk, tokenize, external_content) +
+          FTS.rebuild_sql(ad, tbl, cols, pk, external_content)).each { |sql| Record.exec_compat(@db, sql) }
+      end
+
+      # Drops the triggers + `<table>_fts`. Irreversible inside `change`.
+      def drop_fts_table(table : String | Symbol) : Nil
+        if @inverting
+          raise IrreversibleMigration.new("Cannot auto-invert drop_fts_table #{table}; define up/down instead of change.")
+        end
+        ad = Record.adapter_of(@db)
+        FTS.ensure_sqlite!(ad)
+        FTS.drop_sql(ad, table.to_s).each { |sql| Record.exec_compat(@db, sql) }
+      end
+
       # PostgreSQL `CREATE EXTENSION [IF NOT EXISTS]`; no-op elsewhere.
       # Useful for `pgcrypto` on PostgreSQL < 13 (UUID defaults).
       def enable_extension(name : String | Symbol, if_not_exists : Bool = true) : Nil
