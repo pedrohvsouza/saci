@@ -26,6 +26,12 @@
   `add_column`, the SQLite table rebuild behind `change_column_null` and
   `change_column_default`, and `db:schema:dump`/`load` keep the flag.
   Off by default; PostgreSQL and MySQL ignore it.
+- **Runners load base classes before app globs.** `saci runner`,
+  `saci task` and the initializer check now require
+  `models/application_record` (and the other `application_*` bases)
+  before `src/<dir>/**`, like the boot file and `db/migrate.cr`, so a model
+  sorting before it (`answer.cr`) no longer fails with
+  `undefined constant ApplicationRecord`. Subdirectories load too.
 - **Same-host Cable push for SQLite and MySQL.** `Cable::DbServer` sends
   one loopback UDP wake datagram after each broadcast, so pollers in other
   processes on the same host fetch it immediately instead of waiting for
