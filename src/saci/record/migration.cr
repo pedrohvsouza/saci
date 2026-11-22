@@ -1092,14 +1092,11 @@ module Saci
         migrations.each do |mklass|
           name = mklass.name
           next if applied.includes?(name)
-          # NOTE: the runner deliberately does not wrap migrations in a
-          # transaction. `disable_ddl_transaction!` is exposed as metadata
-          # for app runners (and for PostgreSQL concurrent index safety);
-          # wrapping here would hide the adapter from `Record.adapter_of`
-          # (it only knows Saci-registered connections) and break
-          # SQLite's per-connection `PRAGMA foreign_keys`.
-          mklass.new(db).up
-          Record.exec_compat(db, "INSERT INTO #{tbl} (#{Record.quote("name", ad)}) VALUES (?)", [name] of Value)
+          run_one(db, mklass) do |conn|
+            mklass.new(conn).up
+            Record.exec_compat(conn, "INSERT INTO #{tbl} (#{Record.quote("name", ad)}) VALUES (?)", [name] of Value)
+            nil
+          end
           ran << name
         end
         ran
@@ -1113,11 +1110,78 @@ module Saci
         todo = migrations.reverse.select { |m| applied.includes?(m.name) }.first(steps)
         undone = [] of String
         todo.each do |mklass|
-          mklass.new(db).down
-          Record.exec_compat(db, "DELETE FROM #{tbl} WHERE #{Record.quote("name", ad)} = ?", [mklass.name] of Value)
+          run_one(db, mklass) do |conn|
+            mklass.new(conn).down
+            Record.exec_compat(conn, "DELETE FROM #{tbl} WHERE #{Record.quote("name", ad)} = ?", [mklass.name] of Value)
+            nil
+          end
           undone << mklass.name
         end
         undone
+      end
+
+      # Runs one SQLite migration (and its `schema_migrations` bookkeeping)
+      # in a transaction unless it is `disable_ddl_transaction!`, so a
+      # failure leaves neither half-applied DDL nor a stale version row
+      # (PostgreSQL/MySQL runners keep `disable_ddl_transaction!` as
+      # metadata). `Record.transaction_on` registers the connection, so
+      # `Record.adapter_of` still resolves it. A `DB::Connection`, or a
+      # database with a transaction already open in this fiber, is used as
+      # given (its owner controls the transaction); foreign key checks are
+      # then deferred to its commit, since `DROP TABLE` deletes rows one by
+      # one and a self-referencing `RESTRICT` table would fail on the first
+      # parent row.
+      private def self.run_one(db : DB::Database | DB::Connection, mklass : Migration.class, &block : DB::Database | DB::Connection -> Nil) : Nil
+        current = db.is_a?(DB::Database) ? Record.tx_for_database(db) : db
+        if current
+          defer_foreign_keys(current)
+          block.call(current)
+        elsif Record.adapter_of(db) == :sqlite && !mklass.ddl_transaction_disabled?
+          run_sqlite(db.as(DB::Database), &block)
+        else
+          block.call(db)
+        end
+      end
+
+      # Follows SQLite's documented schema-change procedure: foreign keys
+      # are switched off on the migration's connection (the pragma is a
+      # no-op inside a transaction) and checked once with
+      # `PRAGMA foreign_key_check` before commit. Deferring them is not
+      # enough here: the implicit delete of `DROP TABLE` still fires
+      # `ON DELETE CASCADE`/`SET NULL`, so rebuilding a referenced table
+      # (`change_column_null`, …) would wipe or orphan its children.
+      private def self.run_sqlite(db : DB::Database, &block : DB::Database | DB::Connection -> Nil) : Nil
+        db.using_connection do |checkout|
+          enforced = checkout.scalar("PRAGMA foreign_keys") == 1
+          checkout.exec("PRAGMA foreign_keys = OFF") if enforced
+          begin
+            Record.transaction_on(db, checkout) do |conn|
+              block.call(conn)
+              check_foreign_keys(conn) if enforced
+            end
+          ensure
+            checkout.exec("PRAGMA foreign_keys = ON") if enforced
+          end
+        end
+      end
+
+      private def self.defer_foreign_keys(db : DB::Database | DB::Connection) : Nil
+        # Only lasts until the current transaction ends.
+        db.exec("PRAGMA defer_foreign_keys = ON") if Record.adapter_of(db) == :sqlite
+      end
+
+      private def self.check_foreign_keys(conn : DB::Connection) : Nil
+        violations = [] of String
+        conn.query("PRAGMA foreign_key_check") do |rs|
+          rs.each do
+            table = rs.read(String)
+            rowid = rs.read(Int64?)
+            parent = rs.read(String)
+            violations << "#{table} row #{rowid || "?"} -> #{parent}"
+          end
+        end
+        return if violations.empty?
+        raise "Migration left foreign key violations: #{violations.first(5).join(", ")}#{violations.size > 5 ? ", …" : ""}"
       end
 
       def self.applied_names(db : DB::Database | DB::Connection) : Array(String)
