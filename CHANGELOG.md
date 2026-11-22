@@ -1,6 +1,22 @@
 # Changelog
 
-## Unreleased
+## 0.10.0 — 2026-11-21
+
+SQLite gets stricter and multi-database apps get real separation: each
+database has its own migration set, SQLite foreign keys are enforced by
+default, migrations run in a transaction with a foreign-key check, and
+`create_table strict: true` opts into STRICT tables. Full-text search gains
+FTS5 tokenizers, external content and a migration helper; `schema:check`
+stops flagging virtual and join tables; CLI runners read
+`config/database.yml` and load base classes first. Also in this release:
+same-host Cable push, a tokenizing `views:check`, browser-driven system
+tests with uploads and dialogs, and a generated API reference.
+
+**Behavior change:** SQLite connections now run `PRAGMA foreign_keys=ON`
+(opt out with `Saci::Record.sqlite_foreign_keys = false` or
+`?foreign_keys=off` in the URL). A data migration that relied on cascades
+to delete child rows now fails the foreign-key check instead. Existing
+apps should run `saci app:update` to get the per-database `db/migrate.cr`.
 
 - **Quieter `schema:check`.** SQLite virtual tables (FTS5, FTS3/4,
   R*Tree) and their shadow tables (`*_data`, `*_idx`, `*_config`,
