@@ -503,10 +503,16 @@ Post.transaction(isolation: :serializable) { post.lock!; ... }
   `reversible` for those. Also available: `change_table`, `revert`,
   `execute`, `if_not_exists:`, `disable_ddl_transaction!` and
   `algorithm: :concurrently`.
-- **Full-text search**: `Record::FTS.setup(Post, [:title, :body])`
-  creates an FTS5 virtual table with triggers.
+- **Full-text search**: in a migration, `create_fts_table :posts,
+  [:title, :body]` creates an FTS5 virtual table with sync triggers and
+  backfills it; rollback drops both. `tokenize: "unicode61
+  remove_diacritics 2"` (or `"porter unicode61"`, `"trigram"`) picks the
+  tokenizer and `external_content: true` reads text from `posts` instead
+  of storing a copy. `fts_search [:title, :body]` in the model only
+  registers the columns (no DDL, no rebuild), and
   `Post.search_fts("crystal")` returns a ranked, chainable query (SQLite
-  only).
+  only). `Record::FTS.setup(Post, [...])` still does it all at runtime,
+  rebuilding the index on every call.
 
 ## Databases
 

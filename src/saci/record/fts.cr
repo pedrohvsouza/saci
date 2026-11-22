@@ -3,15 +3,24 @@ module Saci
     # SQLite FTS5 full-text search (Lobsters `Story.search` equivalent).
     #
     # ```
-    # Saci::Record::FTS.setup(Story, [:title, :description, :tags])
+    # # migration (reversible: rollback drops the triggers + table)
+    # create_fts_table :stories, [:title, :description],
+    #   tokenize: "unicode61 remove_diacritics 2", external_content: true
+    #
+    # class Story < Saci::Record::Base
+    #   fts_search [:title, :description] # registration only, no DDL
+    # end
+    #
     # Story.search_fts("crystal").where(story_type: "link").limit(10).to_a
     # Story.where(is_deleted: false).search_fts("crystal").to_a
     # ```
     #
-    # `setup` creates a `<table>_fts` virtual table plus AFTER INSERT / UPDATE
-    # / DELETE triggers, so the index stays in sync with normal saves (no
-    # model-callback changes needed) and backfills existing rows. `search_fts`
-    # returns a chainable `Query` (JOIN + `MATCH ?` bind + `ORDER BY rank`, so
+    # `FTS.setup(Story, [...])` still does both at runtime (DDL plus a full
+    # rebuild on every call). Either way the index is a `<table>_fts`
+    # virtual table plus AFTER INSERT / UPDATE / DELETE triggers, so it
+    # stays in sync with normal saves (no model-callback changes needed);
+    # existing rows are backfilled. `search_fts` returns a chainable
+    # `Query` (JOIN + `MATCH ?` bind + `ORDER BY rank`, so
     # further `where`/`limit`/`order` chaining works).
     #
     # SQLite-only: FTS5 is a SQLite extension. `setup` and `search_fts` raise
@@ -43,15 +52,26 @@ module Saci
         @@mutex.synchronize { @@indexed[model.name]?.try(&.dup) }
       end
 
-      def self.setup(model, columns : Array) : Nil
-        setup_columns(model, columns.to_a.map(&.to_s))
+      # Runtime registration only (no DDL, no rebuild): enables
+      # `search_fts` for a model whose `<table>_fts` index was created by
+      # the `create_fts_table` migration helper. Cheap enough for boot.
+      def self.register(model, columns : Array) : Nil
+        cols = validate_columns!(model, columns.to_a.map(&.to_s))
+        @@mutex.synchronize { @@indexed[model.name] = cols }
       end
 
-      def self.setup(model, *columns) : Nil
-        setup_columns(model, columns.to_a.map(&.to_s))
+      # Runtime DDL + backfill (kept for compatibility). Prefer the
+      # `create_fts_table` migration helper plus `fts_search` on the model:
+      # `setup` reindexes the whole table on every call.
+      def self.setup(model, columns : Array, tokenize : String? = nil, external_content : Bool = false) : Nil
+        setup_columns(model, columns.to_a.map(&.to_s), tokenize, external_content)
       end
 
-      private def self.setup_columns(model, columns : Array(String)) : Nil
+      def self.setup(model, *columns, tokenize : String? = nil, external_content : Bool = false) : Nil
+        setup_columns(model, columns.to_a.map(&.to_s), tokenize, external_content)
+      end
+
+      private def self.validate_columns!(model, columns : Array(String)) : Array(String)
         raise ArgumentError.new("FTS.setup requires at least one column") if columns.empty?
         known = model.__saci_column_names.map(&.[0])
         columns.each do |col|
@@ -59,39 +79,83 @@ module Saci
             raise ArgumentError.new("FTS.setup: unknown column #{col.inspect} for #{model.name} (known: #{known.inspect})")
           end
         end
+        columns
+      end
+
+      private def self.setup_columns(model, columns : Array(String), tokenize : String?, external_content : Bool) : Nil
+        validate_columns!(model, columns)
         conn = model.connection
         ad = Record.adapter_of(conn)
         ensure_sqlite!(ad)
-        table = model.table_name
-        pk = model.__saci_primary_key
-        fts = fts_table_name(model)
-        q = ->(name : String) { Record.quote(name, ad) }
-        cols_sql = columns.map { |c| q.call(c) }.join(", ")
-        Record.exec_compat(conn, "CREATE VIRTUAL TABLE IF NOT EXISTS #{q.call(fts)} USING fts5(#{cols_sql})")
-        ["ai", "ad", "au"].each do |suffix|
-          Record.exec_compat(conn, "DROP TRIGGER IF EXISTS #{q.call("#{table}_fts_#{suffix}")}")
-        end
-        new_vals = columns.map { |c| "new.#{q.call(c)}" }.join(", ")
-        # Plain `DELETE ... WHERE rowid =` (not the 'delete' magic command):
-        # this index stores its own content, so row deletes apply directly.
-        Record.exec_compat(conn, <<-SQL)
-          CREATE TRIGGER #{q.call("#{table}_fts_ai")} AFTER INSERT ON #{q.call(table)} BEGIN
-            INSERT INTO #{q.call(fts)}(rowid, #{cols_sql}) VALUES (new.#{q.call(pk)}, #{new_vals});
-          END
-          SQL
-        Record.exec_compat(conn, <<-SQL)
-          CREATE TRIGGER #{q.call("#{table}_fts_ad")} AFTER DELETE ON #{q.call(table)} BEGIN
-            DELETE FROM #{q.call(fts)} WHERE rowid = old.#{q.call(pk)};
-          END
-          SQL
-        Record.exec_compat(conn, <<-SQL)
-          CREATE TRIGGER #{q.call("#{table}_fts_au")} AFTER UPDATE ON #{q.call(table)} BEGIN
-            DELETE FROM #{q.call(fts)} WHERE rowid = old.#{q.call(pk)};
-            INSERT INTO #{q.call(fts)}(rowid, #{cols_sql}) VALUES (new.#{q.call(pk)}, #{new_vals});
-          END
-          SQL
+        create_sql(ad, model.table_name, columns, model.__saci_primary_key, tokenize, external_content, if_not_exists: true)
+          .each { |sql| Record.exec_compat(conn, sql) }
         @@mutex.synchronize { @@indexed[model.name] = columns.dup }
         rebuild!(model)
+      end
+
+      # DDL for `<table>_fts` plus the AFTER INSERT / DELETE / UPDATE sync
+      # triggers. `tokenize:` is the FTS5 tokenizer spec (e.g.
+      # `"unicode61 remove_diacritics 2"`, `"porter unicode61"`,
+      # `"trigram"`). `external_content: true` makes the index read text
+      # from the base table (`content=`/`content_rowid=`) instead of
+      # storing its own copy; its triggers then use the FTS5 `'delete'`
+      # command with the old values.
+      def self.create_sql(ad : Adapter, table : String, columns : Array(String), pk : String = "id", tokenize : String? = nil, external_content : Bool = false, if_not_exists : Bool = false) : Array(String)
+        raise ArgumentError.new("FTS: at least one column is required") if columns.empty?
+        q = ->(name : String) { Record.quote(name, ad) }
+        lit = ->(v : String) { "'#{v.gsub("'", "''")}'" }
+        fts = "#{table}_fts"
+        cols_sql = columns.map { |c| q.call(c) }.join(", ")
+        opts = columns.map { |c| q.call(c) }
+        opts << "tokenize=#{lit.call(tokenize)}" if tokenize
+        if external_content
+          opts << "content=#{lit.call(table)}"
+          opts << "content_rowid=#{lit.call(pk)}"
+        end
+        new_vals = columns.map { |c| "new.#{q.call(c)}" }.join(", ")
+        old_vals = columns.map { |c| "old.#{q.call(c)}" }.join(", ")
+        insert_new = "INSERT INTO #{q.call(fts)}(rowid, #{cols_sql}) VALUES (new.#{q.call(pk)}, #{new_vals});"
+        # External content: the index cannot read the old text back from
+        # the (already changed) base row, so deletes go through the
+        # 'delete' command with the old values. Own-content indexes apply
+        # a plain row delete.
+        remove_old = if external_content
+                       "INSERT INTO #{q.call(fts)}(#{q.call(fts)}, rowid, #{cols_sql}) VALUES ('delete', old.#{q.call(pk)}, #{old_vals});"
+                     else
+                       "DELETE FROM #{q.call(fts)} WHERE rowid = old.#{q.call(pk)};"
+                     end
+        stmts = ["CREATE VIRTUAL TABLE #{if_not_exists ? "IF NOT EXISTS " : ""}#{q.call(fts)} USING fts5(#{opts.join(", ")})"]
+        stmts.concat(drop_triggers_sql(ad, table))
+        stmts << "CREATE TRIGGER #{q.call("#{table}_fts_ai")} AFTER INSERT ON #{q.call(table)} BEGIN #{insert_new} END"
+        stmts << "CREATE TRIGGER #{q.call("#{table}_fts_ad")} AFTER DELETE ON #{q.call(table)} BEGIN #{remove_old} END"
+        stmts << "CREATE TRIGGER #{q.call("#{table}_fts_au")} AFTER UPDATE ON #{q.call(table)} BEGIN #{remove_old} #{insert_new} END"
+        stmts
+      end
+
+      # Triggers + virtual table, in drop order.
+      def self.drop_sql(ad : Adapter, table : String) : Array(String)
+        drop_triggers_sql(ad, table) + ["DROP TABLE IF EXISTS #{Record.quote("#{table}_fts", ad)}"]
+      end
+
+      private def self.drop_triggers_sql(ad : Adapter, table : String) : Array(String)
+        ["ai", "ad", "au"].map { |suffix| "DROP TRIGGER IF EXISTS #{Record.quote("#{table}_fts_#{suffix}", ad)}" }
+      end
+
+      # Backfill statements: FTS5 `'rebuild'` for external content (reads
+      # the base table itself), DELETE + INSERT ... SELECT otherwise.
+      def self.rebuild_sql(ad : Adapter, table : String, columns : Array(String), pk : String, external_content : Bool) : Array(String)
+        q = ->(name : String) { Record.quote(name, ad) }
+        fts = q.call("#{table}_fts")
+        return ["INSERT INTO #{fts}(#{fts}) VALUES ('rebuild')"] if external_content
+        cols_sql = columns.map { |c| q.call(c) }.join(", ")
+        base_cols = ([pk] + columns).map { |c| "#{q.call(table)}.#{q.call(c)}" }.join(", ")
+        ["DELETE FROM #{fts}", "INSERT INTO #{fts}(rowid, #{cols_sql}) SELECT #{base_cols} FROM #{q.call(table)}"]
+      end
+
+      # True when `<table>_fts` was declared with `content='...'`.
+      def self.external_content?(conn : DB::Database | DB::Connection, table : String) : Bool
+        sql = conn.query_one?("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", "#{table}_fts", as: String)
+        !!sql.try(&.matches?(/\bcontent\s*=\s*'[^']/i))
       end
 
       # Re-reads every base-table row into the FTS index (also used by
@@ -101,12 +165,9 @@ module Saci
         conn = model.connection
         ad = Record.adapter_of(conn)
         ensure_sqlite!(ad)
-        q = ->(name : String) { Record.quote(name, ad) }
-        fts = fts_table_name(model)
-        cols_sql = cols.map { |c| q.call(c) }.join(", ")
-        base_cols = ([model.__saci_primary_key] + cols).map { |c| "#{q.call(model.table_name)}.#{q.call(c)}" }.join(", ")
-        Record.exec_compat(conn, "DELETE FROM #{q.call(fts)}")
-        Record.exec_compat(conn, "INSERT INTO #{q.call(fts)}(rowid, #{cols_sql}) SELECT #{base_cols} FROM #{q.call(model.table_name)}")
+        table = model.table_name
+        rebuild_sql(ad, table, cols, model.__saci_primary_key, external_content?(conn, table))
+          .each { |sql| Record.exec_compat(conn, sql) }
       end
 
       # Drops the triggers + virtual table and unregisters the model (spec
@@ -115,12 +176,7 @@ module Saci
         conn = model.connection
         ad = Record.adapter_of(conn)
         ensure_sqlite!(ad)
-        q = ->(name : String) { Record.quote(name, ad) }
-        table = model.table_name
-        ["ai", "ad", "au"].each do |suffix|
-          Record.exec_compat(conn, "DROP TRIGGER IF EXISTS #{q.call("#{table}_fts_#{suffix}")}")
-        end
-        Record.exec_compat(conn, "DROP TABLE IF EXISTS #{q.call(fts_table_name(model))}")
+        drop_sql(ad, model.table_name).each { |sql| Record.exec_compat(conn, sql) }
         @@mutex.synchronize { @@indexed.delete(model.name) }
       end
 
@@ -147,6 +203,12 @@ module Saci
     # `Model.search_fts("query")` — ranked, chainable; blank queries match
     # nothing (empty MATCH syntax would raise in SQLite).
     class Base
+      # `fts_search [:title, :body]` in the model body: registers the
+      # columns of an index created by `create_fts_table` (no DDL).
+      def self.fts_search(columns : Array) : Nil
+        FTS.register(self, columns)
+      end
+
       def self.search_fts(query : String) : Query(self)
         FTS.apply_scope(all, self, query)
       end

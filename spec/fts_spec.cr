@@ -12,6 +12,44 @@ class CreateFtsArticles < Saci::Record::Migration
   end
 end
 
+class CreateFtsPosts < Saci::Record::Migration
+  def change
+    create_table :fts_posts do |t|
+      t.string :title, null: false
+      t.text :body
+    end
+    create_fts_table :fts_posts, [:title, :body],
+      tokenize: "unicode61 remove_diacritics 2", external_content: true
+  end
+end
+
+class CreateFtsNotes < Saci::Record::Migration
+  def change
+    create_table :fts_notes do |t|
+      t.string :title, null: false
+    end
+  end
+end
+
+class CreateFtsNotesIndex < Saci::Record::Migration
+  def change
+    create_fts_table :fts_notes, [:title]
+  end
+end
+
+class FtsPost < Saci::Record::Base
+  column id : Int64, primary: true
+  column title : String
+  column body : String
+
+  fts_search [:title, :body]
+end
+
+class FtsNote < Saci::Record::Base
+  column id : Int64, primary: true
+  column title : String
+end
+
 class FtsArticle < Saci::Record::Base
   column id : Int64, primary: true
   column title : String
@@ -31,11 +69,12 @@ FTS_DB_PATH = "/tmp/opencode/saci_fts_test.db"
 
 describe "Saci::Record::FTS" do
   before_all do
+    Dir.mkdir_p(File.dirname(FTS_DB_PATH))
     File.delete(FTS_DB_PATH) if File.exists?(FTS_DB_PATH)
     Saci::Record::Base.connection = DB.open("sqlite3://#{FTS_DB_PATH}")
     Saci::Record::Migrator.migrate(
       Saci::Record::Base.connection.as(DB::Database),
-      [CreateFtsArticles] of Saci::Record::Migration.class
+      [CreateFtsArticles, CreateFtsPosts, CreateFtsNotes] of Saci::Record::Migration.class
     )
     Saci::Record::FTS.setup(FtsArticle, [:title, :body])
   end
@@ -47,6 +86,7 @@ describe "Saci::Record::FTS" do
   before_each do
     # DELETE fires the sync triggers, so base + FTS stay consistent.
     FtsArticle.delete_all
+    FtsPost.delete_all
   end
 
   it "finds rows by indexed terms" do
@@ -113,6 +153,85 @@ describe "Saci::Record::FTS" do
     end
     expect_raises(ArgumentError, /SQLite-only/) do
       Saci::Record::FTS.ensure_sqlite!(:mysql)
+    end
+  end
+
+  describe "migration helper + fts_search" do
+    it "matches accent-insensitively with remove_diacritics" do
+      FtsPost.create!(title: "Ação rápida", body: "café com pão")
+      FtsPost.search_fts("acao").map(&.title).should eq(["Ação rápida"])
+      FtsPost.search_fts("RAPIDA").count.should eq(1)
+      FtsPost.search_fts("cafe pao").count.should eq(1)
+      FtsPost.search_fts("pão").count.should eq(1)
+    end
+
+    it "keeps an external content index correct on insert/update/delete" do
+      db = Saci::Record::Base.connection.as(DB::Database)
+      Saci::Record::FTS.external_content?(db, "fts_posts").should be_true
+      Saci::Record::FTS.external_content?(db, "fts_articles").should be_false
+      integrity = -> { db.exec(%(INSERT INTO "fts_posts_fts"("fts_posts_fts", rank) VALUES ('integrity-check', 1))) }
+
+      a = FtsPost.create!(title: "crystal language", body: "v1")
+      FtsPost.create!(title: "ruby language", body: "v1")
+      FtsPost.search_fts("crystal").map(&.title).should eq(["crystal language"])
+      integrity.call
+
+      a.update!(title: "elixir language")
+      FtsPost.search_fts("crystal").to_a.should be_empty
+      FtsPost.search_fts("elixir").map(&.title).should eq(["elixir language"])
+      FtsPost.search_fts("language").count.should eq(2)
+      integrity.call
+
+      a.destroy.should be_true
+      FtsPost.search_fts("elixir").to_a.should be_empty
+      FtsPost.search_fts("language").count.should eq(1)
+      integrity.call
+
+      Saci::Record::FTS.rebuild!(FtsPost)
+      FtsPost.search_fts("language").map(&.title).should eq(["ruby language"])
+      integrity.call
+    end
+
+    it "creates, backfills and reverts the index" do
+      db = Saci::Record::Base.connection.as(DB::Database)
+      objects = -> {
+        db.query_all("SELECT name FROM sqlite_master WHERE name LIKE 'fts_notes_fts%' ORDER BY name", as: String)
+      }
+      FtsNote.create!(title: "before the index")
+      objects.call.should be_empty
+
+      CreateFtsNotesIndex.new(db).up
+      objects.call.should contain("fts_notes_fts")
+      ["ai", "ad", "au"].each do |sfx|
+        db.query_one("SELECT count(*) FROM sqlite_master WHERE type = 'trigger' AND name = ?", "fts_notes_fts_#{sfx}", as: Int64).should eq(1)
+      end
+      Saci::Record::FTS.register(FtsNote, [:title])
+      FtsNote.search_fts("before").count.should eq(1)
+      FtsNote.create!(title: "after the index")
+      FtsNote.search_fts("after").count.should eq(1)
+
+      CreateFtsNotesIndex.new(db).down
+      objects.call.should be_empty
+      db.query_one("SELECT count(*) FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'fts_notes_fts_%'", as: Int64).should eq(0)
+      FtsNote.create!(title: "no index, no trigger") # would fail if a trigger survived
+      FtsNote.count.should eq(3)
+    end
+
+    it "registers at runtime without DDL or a rebuild" do
+      db = Saci::Record::Base.connection.as(DB::Database)
+      FtsArticle.create!(title: "registered only", body: "x")
+      db.exec(%(DELETE FROM "fts_articles_fts"))
+      FtsArticle.fts_search [:title, :body]
+      FtsArticle.search_fts("registered").to_a.should be_empty # no rebuild
+      Saci::Record::FTS.rebuild!(FtsArticle)
+      FtsArticle.search_fts("registered").count.should eq(1)
+      expect_raises(ArgumentError, /unknown column/) { FtsPost.fts_search [:nope] }
+    end
+
+    it "renders tokenize and escapes quotes" do
+      sql = Saci::Record::FTS.create_sql(:sqlite, "t", ["a"], tokenize: "porter 'x'").first
+      sql.should contain("tokenize='porter ''x'''")
+      sql.should_not contain("content=")
     end
   end
 end

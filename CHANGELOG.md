@@ -7,6 +7,18 @@
   `*_docsize`, `*_content`, ...) no longer warn about a missing model, and
   neither do `has_and_belongs_to_many` join tables (explicit `join_table:`
   or the default derived name) declared on a checked model.
+- **FTS5 tokenizers, external content and a migration helper.**
+  `create_fts_table :posts, [:title, :body], tokenize: "...",
+  external_content: true` creates `posts_fts` and its triggers in a
+  migration, backfills existing rows once, and drops both on rollback
+  (`drop_fts_table` for `up`/`down`). `tokenize:` passes an FTS5
+  tokenizer such as `unicode61 remove_diacritics 2` for accent-insensitive
+  search. With `external_content: true` the index reads text from the base
+  table (`content=`/`content_rowid=`); its triggers use the FTS5
+  `'delete'` command and `FTS.rebuild!` uses `'rebuild'`. `fts_search
+  [:title, :body]` on the model enables `search_fts` without DDL or a
+  rebuild, so booting no longer reindexes the table. `FTS.setup` keeps
+  working and accepts the same `tokenize:`/`external_content:` options.
 - **Same-host Cable push for SQLite and MySQL.** `Cable::DbServer` sends
   one loopback UDP wake datagram after each broadcast, so pollers in other
   processes on the same host fetch it immediately instead of waiting for
