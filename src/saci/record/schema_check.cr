@@ -40,19 +40,16 @@ module Saci
 
     # Shadow-table suffixes SQLite creates for each virtual table module
     # (FTS5, FTS3/4, R*Tree).
-    VIRTUAL_SHADOW_SUFFIXES = ["_data", "_idx", "_config", "_docsize", "_content", "_segments", "_segdir", "_stat", "_node", "_parent", "_rowid"]
+    VIRTUAL_SHADOW_SUFFIXES = Introspection::SQLITE_SHADOW_SUFFIXES
 
-    # SQLite virtual tables plus their shadow tables (empty on other
-    # adapters). They are internal to the module that owns them, so they
-    # need no model.
+    # SQLite virtual tables plus those of their shadow tables listed in
+    # `tables` (empty on other adapters). They are internal to the module
+    # that owns them, so they need no model.
     def self.virtual_tables(db : DB::Database | DB::Connection, tables : Enumerable(String)) : Array(String)
       return [] of String unless adapter_of(db) == :sqlite
-      virtual = [] of String
-      query_compat(db, "SELECT name FROM sqlite_master WHERE type = 'table' AND sql LIKE 'CREATE VIRTUAL TABLE%'") do |rs|
-        rs.each { virtual << rs.read(String) }
-      end
-      shadows = tables.select { |t| virtual.any? { |v| VIRTUAL_SHADOW_SUFFIXES.any? { |s| t == v + s } } }
-      virtual + shadows
+      virtual = Introspection.sqlite_virtual_tables(db)
+      shadows = virtual.flat_map(&.shadow_tables).to_set
+      virtual.map(&.name) + tables.select { |t| shadows.includes?(t) }
     end
 
     # Tables the drift check never reports (no models by design: migration

@@ -10,6 +10,7 @@ require "./record/base"
 require "./record/migration"
 require "./record/schema"
 require "./record/fts"
+require "./record/clean"
 require "./record/secure_token"
 require "./record/encryption"
 
@@ -745,23 +746,6 @@ module Saci
       when :serial       then adapter == :postgres ? "BIGSERIAL" : (adapter == :mysql ? "BIGINT" : "INTEGER")
       else                    raise ArgumentError.new("Unknown column type #{logical}")
       end
-    end
-
-    # Deletes every row from every table except `schema_migrations`.
-    # Test helper — call in `before_each` for a clean slate.
-    def self.clean_database! : Nil
-      db = connection
-      adapter = adapter_of(db)
-      list_sql = case adapter
-                 when :postgres then "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename != 'schema_migrations'"
-                 when :mysql    then "SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name != 'schema_migrations'"
-                 else                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name != 'schema_migrations'"
-                 end
-      tables = [] of String
-      query_compat(db, list_sql) do |rs|
-        rs.each { tables << rs.read(String) }
-      end
-      tables.each { |t| exec_compat(db, "DELETE FROM #{quote(t, adapter)}") }
     end
 
     # Atomically adjusts an integer counter column (`counter_cache`).

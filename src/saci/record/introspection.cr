@@ -126,6 +126,82 @@ module Saci
         strict
       end
 
+      # Shadow-table suffixes SQLite creates for each virtual table module
+      # (FTS5, FTS3/4, R*Tree).
+      SQLITE_SHADOW_SUFFIXES = ["_data", "_idx", "_config", "_docsize", "_content", "_segments", "_segdir", "_stat", "_node", "_parent", "_rowid"]
+
+      # One SQLite virtual table: its module (`"fts5"`, `"rtree"`, …,
+      # lowercased), the module arguments of its CREATE VIRTUAL TABLE
+      # statement and the shadow tables that exist for it.
+      struct VirtualTableInfo
+        getter name : String
+        getter module_name : String
+        getter arguments : Array(String)
+        getter shadow_tables : Array(String)
+
+        def initialize(@name : String, @module_name : String, @arguments : Array(String), @shadow_tables : Array(String))
+        end
+
+        def fts? : Bool
+          module_name.in?("fts3", "fts4", "fts5")
+        end
+
+        # Value of the FTS `content=` option: nil when absent (the index
+        # stores its own copy of the text), `""` for a contentless index,
+        # otherwise the external content table.
+        def fts_content : String?
+          arguments.each do |arg|
+            if m = arg.match(/\Acontent\s*=\s*(.*)\z/im)
+              return Introspection.unquote_sql_value(m[1].strip)
+            end
+          end
+          nil
+        end
+      end
+
+      # Virtual tables of a SQLite database (with their shadow tables), in
+      # `sqlite_master` order. SQLite only: callers check the adapter.
+      def self.sqlite_virtual_tables(db : DB::Database | DB::Connection) : Array(VirtualTableInfo)
+        rows = [] of Tuple(String, String)
+        Record.query_compat(db, "SELECT name, COALESCE(sql, '') FROM sqlite_master WHERE type = 'table' ORDER BY rowid") do |rs|
+          rs.each { rows << {rs.read(String), rs.read(String)} }
+        end
+        names = rows.map(&.[0]).to_set
+        rows.compact_map do |(name, sql)|
+          m = sql.match(/\ACREATE\s+VIRTUAL\s+TABLE\s.*?\bUSING\s+["`\[]?(\w+)/im)
+          next unless m
+          args = [] of String
+          if (open = sql.index('(', m.end(0))) && (close = sql.rindex(')')) && close > open
+            args = split_top_level(sql[(open + 1)...close]).map(&.strip).reject(&.empty?)
+          end
+          shadows = SQLITE_SHADOW_SUFFIXES.map { |s| name + s }.select { |t| names.includes?(t) }
+          VirtualTableInfo.new(name, m[1].downcase, args, shadows)
+        end
+      end
+
+      # Names of the SQLite virtual tables plus their shadow tables (empty
+      # on other adapters): internal to the module that owns them, so no
+      # model maps them and `clean_database!` never deletes from them
+      # directly.
+      def self.virtual_and_shadow_tables(db : DB::Database | DB::Connection) : Array(String)
+        return [] of String unless Record.adapter_of(db) == :sqlite
+        sqlite_virtual_tables(db).flat_map { |v| [v.name] + v.shadow_tables }
+      end
+
+      # `'x'` / `"x"` / `` `x` `` / `[x]` → `x` (doubled quotes collapsed);
+      # bare values are returned as is.
+      def self.unquote_sql_value(raw : String) : String
+        return raw if raw.size < 2
+        first, last = raw[0], raw[-1]
+        if first.in?('\'', '"', '`') && last == first
+          raw[1...-1].gsub("#{first}#{first}", first.to_s)
+        elsif first == '[' && last == ']'
+          raw[1...-1]
+        else
+          raw
+        end
+      end
+
       def self.column_exists?(db : DB::Database | DB::Connection, table : String | Symbol, column : String | Symbol) : Bool
         columns(db, table).any? { |c| c.name == column.to_s }
       end
