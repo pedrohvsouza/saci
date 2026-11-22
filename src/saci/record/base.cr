@@ -93,7 +93,18 @@ module Saci
           def self.connection : DB::Database | DB::Connection
             Saci::Record.connection_for({{database}}.to_s)
           end
+
+          def self.__saci_database_name : String
+            {{database}}.to_s
+          end
         {% end %}
+      end
+
+      # Name of the database this model lives in: the `connects_to` name
+      # (inherited from an abstract base), `"primary"` otherwise. Used by
+      # `Saci::Record.check_schema!` to check each model in its own database.
+      def self.__saci_database_name : String
+        "primary"
       end
 
       macro inherited

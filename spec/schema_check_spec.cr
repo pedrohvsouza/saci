@@ -37,6 +37,25 @@ class SchemaCheckPost < Saci::Record::Base
   has_and_belongs_to_many :labels, class_name: SchemaCheckTag, join_table: "sc_post_labels"
 end
 
+# Multi-database: an abstract base pinned to a named database (the
+# `PlatformRecord` pattern); its subclasses inherit the database.
+abstract class SchemaCheckPlatformRecord < Saci::Record::Base
+  connects_to database: "sc_platform"
+end
+
+class SchemaCheckAccount < SchemaCheckPlatformRecord
+  table "sc_accounts"
+
+  column id : Int64, primary: true
+  has_and_belongs_to_many :schema_check_roles, class_name: SchemaCheckRole
+end
+
+class SchemaCheckRole < SchemaCheckPlatformRecord
+  table "sc_roles"
+
+  column id : Int64, primary: true
+end
+
 SC_WIDGET_TABLE = "CREATE TABLE \"sc_widgets\" (\"id\" INTEGER PRIMARY KEY AUTOINCREMENT, \"name\" VARCHAR(255), \"created_at\" TEXT NOT NULL, \"updated_at\" TEXT NOT NULL)"
 SC_GADGET_TABLE = "CREATE TABLE \"sc_gadgets\" (\"id\" INTEGER PRIMARY KEY AUTOINCREMENT, \"code\" VARCHAR(255))"
 
@@ -199,6 +218,51 @@ describe "Saci::Record.check_schema!" do
       Saci::Record.check_schema!(db, sc_models(SchemaCheckPost, SchemaCheckTag)).should be_empty
       # Only join tables of the checked models count as known.
       Saci::Record.check_schema!(db, sc_models(SchemaCheckTag)).size.should eq(3)
+    end
+  end
+
+  it "checks each model only against its own database (connects_to)" do
+    models = sc_models(SchemaCheckWidget, SchemaCheckPlatformRecord, SchemaCheckAccount, SchemaCheckRole, SchemaCheckPost, SchemaCheckTag)
+    SchemaCheckWidget.__saci_database_name.should eq("primary")
+    SchemaCheckAccount.__saci_database_name.should eq("sc_platform")
+    with_sc_db([
+      SC_WIDGET_TABLE,
+      "CREATE TABLE \"sc_tags\" (\"id\" INTEGER PRIMARY KEY AUTOINCREMENT)",
+      "CREATE TABLE \"sc_posts\" (\"id\" INTEGER PRIMARY KEY AUTOINCREMENT)",
+      "CREATE TABLE \"sc_posts_sc_tags\" (\"sc_post_id\" INTEGER, \"sc_tag_id\" INTEGER)",
+    ]) do |primary|
+      path = "/tmp/opencode/saci_schema_check_platform_#{Random.rand(1_000_000_000)}.db"
+      platform = Saci::Record.establish_connection("sc_platform", "sqlite3://#{path}")
+      begin
+        platform.exec("CREATE TABLE \"sc_accounts\" (\"id\" INTEGER PRIMARY KEY AUTOINCREMENT)")
+        platform.exec("CREATE TABLE \"sc_accounts_sc_roles\" (\"sc_account_id\" INTEGER, \"sc_role_id\" INTEGER)")
+
+        # An unregistered database counts as primary; a registered one is
+        # resolved by name. Neither reports the other database's models.
+        Saci::Record.check_schema!(primary, models).should be_empty
+        Saci::Record.check_schema!(platform, models).should eq([
+          "Model SchemaCheckRole (table \"sc_roles\") has no matching table in the database (missing migration?)",
+        ])
+        platform.exec("CREATE TABLE \"sc_roles\" (\"id\" INTEGER PRIMARY KEY AUTOINCREMENT)")
+        Saci::Record.check_schema!(platform, models).should be_empty
+
+        # A join table is known only in its owner's database.
+        primary.exec("CREATE TABLE \"sc_accounts_sc_roles\" (\"sc_account_id\" INTEGER, \"sc_role_id\" INTEGER)")
+        Saci::Record.check_schema!(primary, models).should eq([
+          "Table \"sc_accounts_sc_roles\" exists in the database but has no registered model (missing model?)",
+        ])
+        platform.exec("CREATE TABLE \"sc_posts_sc_tags\" (\"sc_post_id\" INTEGER, \"sc_tag_id\" INTEGER)")
+        Saci::Record.check_schema!(platform, models).should eq([
+          "Table \"sc_posts_sc_tags\" exists in the database but has no registered model (missing model?)",
+        ])
+
+        # An explicit database name wins over the registry lookup.
+        Saci::Record.check_schema!(primary, models, database_name: "sc_platform").should contain(
+          "Model SchemaCheckRole (table \"sc_roles\") has no matching table in the database (missing migration?)")
+      ensure
+        Saci::Record.remove_connection("sc_platform")
+        File.delete(path) if File.exists?(path)
+      end
     end
   end
 end

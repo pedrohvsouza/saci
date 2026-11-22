@@ -87,10 +87,18 @@ module Saci
     # without a model belong to framework features, so neither shows up as
     # drift in an app that never enabled the feature.
     #
+    # Only the models living in the checked database are compared (their
+    # `connects_to` name, `"primary"` without one), so a multi-database app
+    # gets no cross-database noise. `database_name` defaults to the name `db`
+    # is registered under (`"primary"` when it is not registered).
+    #
     # ```
     # Saci::Record.check_schema!.each { |w| STDERR.puts "warning: #{w}" }
+    # Saci::Record.check_schema!(Saci::Record.database("platform"))
     # ```
-    def self.check_schema!(db : DB::Database | DB::Connection = connection, models : Array(Base.class) = models) : Array(String)
+    def self.check_schema!(db : DB::Database | DB::Connection = connection, models : Array(Base.class) = models, database_name : String? = nil) : Array(String)
+      database_name ||= database_name_of(db) || "primary"
+      models = models.select { |m| m.__saci_database_name == database_name }
       warnings = [] of String
       db_tables = db_tables(db)
       by_table = {} of String => Base.class
@@ -121,6 +129,12 @@ module Saci
         end
       end
       warnings.sort
+    end
+
+    # Name a database is registered under (`establish_connection`/`connect`),
+    # nil for an unregistered database or a transaction connection.
+    def self.database_name_of(db : DB::Database | DB::Connection) : String?
+      @@databases_mutex.synchronize { @@databases.find { |_, d| d.same?(db) }.try(&.[0]) }
     end
 
     # Every table in the database mapped to its column NAMES (types are not

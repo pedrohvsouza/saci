@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **`schema:check` respects `connects_to`.** `Saci::Record.check_schema!`
+  only compares the models that live in the checked database (their
+  `connects_to database:` name, inherited from an abstract base such as
+  `PlatformRecord`; `"primary"` without one), so a multi-database app no
+  longer reports every model as missing in the other databases.
+  `has_and_belongs_to_many` join tables are known only in their owner's
+  database. The database name is resolved from the registered connection;
+  pass `database_name:` to override it.
+
 ## 0.10.0 — 2026-11-21
 
 SQLite gets stricter and multi-database apps get real separation: each
