@@ -34,6 +34,15 @@ module Saci
       {% sing = n.ends_with?("ies") ? n[0...-3] + "y" : (n.ends_with?("s") ? n[0...-1] : n) %}
       {% k = (class_name ? class_name.id.stringify : sing.camelcase).id %}
 
+      # Known to `Saci::Record.check_schema!` (the join table has no model).
+      Saci::Record.register_habtm_join_table({{@type}}) do
+        {% if join_table %}
+          {{join_table.id.stringify}}
+        {% else %}
+          Saci::Record.habtm_join_table({{@type}}.table_name, {{k}}.table_name)
+        {% end %}
+      end
+
       def __saci_habtm_{{name.id}}_table : String
         {% if join_table %}
           {{join_table.id.stringify}}

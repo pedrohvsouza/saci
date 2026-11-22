@@ -22,6 +22,39 @@ module Saci
       @@models_mutex.synchronize { @@models.dup }
     end
 
+    # `has_and_belongs_to_many` join tables, registered by the macro as
+    # `{owner, name}` (the name is resolved lazily: `table` may come later).
+    @@habtm_join_tables = [] of {Base.class, Proc(String)}
+
+    # Records a HABTM join table declared on `owner`. Called from
+    # `has_and_belongs_to_many`.
+    def self.register_habtm_join_table(owner : Base.class, &name : -> String) : Nil
+      @@models_mutex.synchronize { @@habtm_join_tables << {owner, name} }
+    end
+
+    # Join tables declared via `has_and_belongs_to_many` on `models`.
+    def self.habtm_join_tables(models : Array(Base.class) = models) : Array(String)
+      entries = @@models_mutex.synchronize { @@habtm_join_tables.dup }
+      entries.select { |(owner, _)| models.includes?(owner) }.map(&.[1].call).uniq
+    end
+
+    # Shadow-table suffixes SQLite creates for each virtual table module
+    # (FTS5, FTS3/4, R*Tree).
+    VIRTUAL_SHADOW_SUFFIXES = ["_data", "_idx", "_config", "_docsize", "_content", "_segments", "_segdir", "_stat", "_node", "_parent", "_rowid"]
+
+    # SQLite virtual tables plus their shadow tables (empty on other
+    # adapters). They are internal to the module that owns them, so they
+    # need no model.
+    def self.virtual_tables(db : DB::Database | DB::Connection, tables : Enumerable(String)) : Array(String)
+      return [] of String unless adapter_of(db) == :sqlite
+      virtual = [] of String
+      query_compat(db, "SELECT name FROM sqlite_master WHERE type = 'table' AND sql LIKE 'CREATE VIRTUAL TABLE%'") do |rs|
+        rs.each { virtual << rs.read(String) }
+      end
+      shadows = tables.select { |t| virtual.any? { |v| VIRTUAL_SHADOW_SUFFIXES.any? { |s| t == v + s } } }
+      virtual + shadows
+    end
+
     # Tables the drift check never reports (no models by design: migration
     # bookkeeping and the durable job queue).
     SCHEMA_CHECK_SKIP_TABLES = ["schema_migrations", "saci_jobs", "saci_dead_jobs"]
@@ -41,7 +74,8 @@ module Saci
     # Compares the database against the registered models and returns one
     # warning string per mismatch (never raises on drift):
     #
-    # * table in the DB with no registered model,
+    # * table in the DB with no registered model (SQLite virtual tables,
+    #   their shadow tables and HABTM join tables are known),
     # * model whose table is missing from the DB,
     # * DB column with no mapping in the model,
     # * model column missing from the DB table.
@@ -64,8 +98,9 @@ module Saci
         next if m.__saci_column_names.empty?
         by_table[m.table_name] ||= m
       end
+      known = habtm_join_tables(models) + virtual_tables(db, db_tables.keys)
       db_tables.each_key do |t|
-        next if SCHEMA_CHECK_SKIP_TABLES.includes?(t)
+        next if SCHEMA_CHECK_SKIP_TABLES.includes?(t) || known.includes?(t)
         unless by_table.has_key?(t) || t.starts_with?(FRAMEWORK_TABLE_PREFIX)
           warnings << "Table #{t.inspect} exists in the database but has no registered model (missing model?)"
         end

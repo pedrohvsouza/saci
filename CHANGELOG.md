@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Quieter `schema:check`.** SQLite virtual tables (FTS5, FTS3/4,
+  R*Tree) and their shadow tables (`*_data`, `*_idx`, `*_config`,
+  `*_docsize`, `*_content`, ...) no longer warn about a missing model, and
+  neither do `has_and_belongs_to_many` join tables (explicit `join_table:`
+  or the default derived name) declared on a checked model.
 - **Same-host Cable push for SQLite and MySQL.** `Cable::DbServer` sends
   one loopback UDP wake datagram after each broadcast, so pollers in other
   processes on the same host fetch it immediately instead of waiting for

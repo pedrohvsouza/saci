@@ -23,6 +23,20 @@ end
 class SchemaCheckAbstract < Saci::Record::Base
 end
 
+class SchemaCheckTag < Saci::Record::Base
+  table "sc_tags"
+
+  column id : Int64, primary: true
+end
+
+class SchemaCheckPost < Saci::Record::Base
+  table "sc_posts"
+
+  column id : Int64, primary: true
+  has_and_belongs_to_many :schema_check_tags, class_name: SchemaCheckTag
+  has_and_belongs_to_many :labels, class_name: SchemaCheckTag, join_table: "sc_post_labels"
+end
+
 SC_WIDGET_TABLE = "CREATE TABLE \"sc_widgets\" (\"id\" INTEGER PRIMARY KEY AUTOINCREMENT, \"name\" VARCHAR(255), \"created_at\" TEXT NOT NULL, \"updated_at\" TEXT NOT NULL)"
 SC_GADGET_TABLE = "CREATE TABLE \"sc_gadgets\" (\"id\" INTEGER PRIMARY KEY AUTOINCREMENT, \"code\" VARCHAR(255))"
 
@@ -149,6 +163,42 @@ describe "Saci::Record.check_schema!" do
       warnings.any?(&.includes?("sc_gadgets")).should be_true
       warnings.any?(&.includes?("stray")).should be_true
       warnings.any? { |w| w.includes?("\"name\"") }.should be_true
+    end
+  end
+
+  it "ignores SQLite virtual tables and their shadow tables" do
+    with_sc_db([
+      SC_WIDGET_TABLE,
+      "CREATE VIRTUAL TABLE \"sc_search\" USING fts5(body)",
+      "CREATE VIRTUAL TABLE \"sc_legacy\" USING fts4(body)",
+      "CREATE VIRTUAL TABLE \"sc_boxes\" USING rtree(id, min_x, max_x)",
+    ]) do |db|
+      Saci::Record.check_schema!(db, sc_models(SchemaCheckWidget)).should be_empty
+    end
+  end
+
+  it "still warns about a plain table named like a shadow table" do
+    with_sc_db([
+      SC_WIDGET_TABLE,
+      "CREATE VIRTUAL TABLE \"sc_search\" USING fts5(body)",
+      "CREATE TABLE \"sc_widgets_data\" (\"id\" INTEGER PRIMARY KEY AUTOINCREMENT)",
+    ]) do |db|
+      warnings = Saci::Record.check_schema!(db, sc_models(SchemaCheckWidget))
+      warnings.size.should eq(1)
+      warnings.first.should contain("sc_widgets_data")
+    end
+  end
+
+  it "treats has_and_belongs_to_many join tables as known" do
+    with_sc_db([
+      "CREATE TABLE \"sc_tags\" (\"id\" INTEGER PRIMARY KEY AUTOINCREMENT)",
+      "CREATE TABLE \"sc_posts\" (\"id\" INTEGER PRIMARY KEY AUTOINCREMENT)",
+      "CREATE TABLE \"sc_posts_sc_tags\" (\"sc_post_id\" INTEGER, \"sc_tag_id\" INTEGER)",
+      "CREATE TABLE \"sc_post_labels\" (\"sc_post_id\" INTEGER, \"sc_tag_id\" INTEGER)",
+    ]) do |db|
+      Saci::Record.check_schema!(db, sc_models(SchemaCheckPost, SchemaCheckTag)).should be_empty
+      # Only join tables of the checked models count as known.
+      Saci::Record.check_schema!(db, sc_models(SchemaCheckTag)).size.should eq(3)
     end
   end
 end
