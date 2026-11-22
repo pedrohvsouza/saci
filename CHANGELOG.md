@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **SQLite foreign keys are enforced by default.** Saci-managed SQLite
+  connections now run `PRAGMA foreign_keys=ON` on every pooled
+  connection, so `foreign_key: true` constraints actually hold. Opt out
+  with `Saci::Record.sqlite_foreign_keys = false` before connecting; an
+  explicit `?foreign_keys=` in the URL always wins. SQLite migrations now
+  run in a transaction (unless `disable_ddl_transaction!`) with foreign
+  keys switched off on that connection and checked with
+  `PRAGMA foreign_key_check` before commit, so rolling back a
+  self-referencing `RESTRICT` table, or rebuilding a referenced table
+  (`change_column_null`/`change_column_default`), no longer fails or
+  cascades into child rows.
 - **Same-host Cable push for SQLite and MySQL.** `Cable::DbServer` sends
   one loopback UDP wake datagram after each broadcast, so pollers in other
   processes on the same host fetch it immediately instead of waiting for

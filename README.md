@@ -531,6 +531,13 @@ Record.connected_to("analytics") { Event.count }
 - SQLite connections are tuned for web workloads (WAL and
   `busy_timeout`). Transactions are scoped per fiber and per database;
   there is no atomicity across databases.
+- SQLite foreign keys are enforced (`PRAGMA foreign_keys=ON` on every
+  pooled connection). Opt out with `Record.sqlite_foreign_keys = false`
+  before connecting, or per database with `?foreign_keys=off` in the URL
+  (an explicit URL param always wins). Each SQLite migration runs in a
+  transaction with foreign keys checked once before commit
+  (`PRAGMA foreign_key_check`), so table rebuilds and rollbacks of
+  self-referencing tables work with data in place.
 - On OpenSSL ≥ 3.2, `crystal-pg` needs a two-symbol link shim (see
   [`live/README.md`](live/README.md)). `crystal-mysql` requires the server
   to accept `mysql_native_password`.

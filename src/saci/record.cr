@@ -260,7 +260,7 @@ module Saci
     def self.establish_connection(name : String, url : String) : DB::Database
       adapter = adapter_for_url(url) # fail fast on unknown schemes
       db = DB.open(url)
-      apply_sqlite_tuning(db) if adapter == :sqlite
+      apply_sqlite_tuning(db, url) if adapter == :sqlite
       @@databases_mutex.synchronize { @@databases[name] = db }
       @@database_urls_mutex.synchronize { @@database_urls[name] = url }
       db
@@ -291,7 +291,9 @@ module Saci
 
     def self.connection=(db : DB::Database) : Nil
       @@connection = db
-      apply_sqlite_tuning(db) if adapter_for_name("primary") == :sqlite
+      if adapter_for_name("primary") == :sqlite
+        apply_sqlite_tuning(db, @@database_urls_mutex.synchronize { @@database_urls["primary"]? })
+      end
       @@databases_mutex.synchronize { @@databases["primary"] = db }
     end
 
@@ -355,13 +357,23 @@ module Saci
       tx_for_database(db) || db
     end
 
-    private def self.apply_sqlite_tuning(db : DB::Database) : Nil
+    # Enforce foreign keys on Saci-managed SQLite connections (SQLite
+    # leaves `PRAGMA foreign_keys` off by default, silently ignoring
+    # `foreign_key: true`). Set to false before connecting to opt out; an
+    # explicit `?foreign_keys=` URL param (`connect`/`establish_connection`)
+    # always wins.
+    class_property sqlite_foreign_keys : Bool = true
+
+    private def self.apply_sqlite_tuning(db : DB::Database, url : String?) : Nil
       # SQLite tuning for web workloads, applied to every pooled connection
       # (existing and future): WAL lets readers proceed during writes,
       # busy_timeout makes concurrent writers wait instead of failing.
+      explicit_fks = url.try { |u| URI.parse(u).query_params.has_key?("foreign_keys") }
+      enforce_fks = sqlite_foreign_keys && !explicit_fks
       db.setup_connection do |conn|
         conn.exec("PRAGMA journal_mode=WAL")
         conn.exec("PRAGMA busy_timeout=5000")
+        conn.exec("PRAGMA foreign_keys=ON") if enforce_fks
       end
     end
 
@@ -376,7 +388,10 @@ module Saci
       transaction_on(connection, &block)
     end
 
-    def self.transaction_on(db : DB::Database | DB::Connection, &block : DB::Connection -> T) : T? forall T
+    # `checkout` pins the transaction to a connection already checked out
+    # of `db` (for per-connection setup that must run outside a
+    # transaction, like SQLite `PRAGMA foreign_keys`).
+    def self.transaction_on(db : DB::Database | DB::Connection, checkout : DB::Connection? = nil, &block : DB::Connection -> T) : T? forall T
       if db.is_a?(DB::Connection)
         block.call(db)
       elsif current = tx_for_database(db)
@@ -385,7 +400,7 @@ module Saci
         committed = false
         result : T? = nil
         begin
-          result = db.transaction do |t|
+          result = (checkout || db).transaction do |t|
             tx_push(db, t.connection)
             begin
               r = block.call(t.connection)
@@ -408,7 +423,8 @@ module Saci
       end
     end
 
-    private def self.tx_for_database(db : DB::Database?) : DB::Connection?
+    # Connection of this fiber's open transaction on `db` (`nil` when none).
+    def self.tx_for_database(db : DB::Database?) : DB::Connection?
       @@tx_mutex.synchronize do
         if stack = @@tx_stacks[Fiber.current.object_id]?
           found = nil
