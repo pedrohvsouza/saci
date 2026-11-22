@@ -17,7 +17,7 @@ module Saci
           kind = Util.db_kind(name)
           env = ENV.fetch("APP_ENV", "development")
           puts "App: #{name} (#{env}, #{kind})"
-          url = ENV["DATABASE_URL"]? || New.db_url_default(name, kind, env)
+          url = Db.url_for(name, kind, env)
           puts "Database: #{url}"
         else
           puts "App: (not a Saci app directory)"
@@ -158,7 +158,7 @@ module Saci
           end
           io << "\nFileUtils.mkdir_p(\"db\")\n"
           io << "env_name = ENV.fetch(\"APP_ENV\", \"development\")\n"
-          io << "db_url = ENV.fetch(\"DATABASE_URL\", \"#{Inspect::Runner.db_default(name)}\")\n"
+          io << Inspect::Runner.db_url_line(Inspect::Runner.db_default(name))
           io << "Saci::Record.connect(db_url)\n"
           io << "Saci::I18n.reload!\n"
           selected.each do |path|
@@ -186,7 +186,7 @@ module Saci
         name = Util.shard_name(Dir.current)
         kind = Util.db_kind(name)
         env = ENV.fetch("APP_ENV", "development")
-        urls = [{"primary", ENV["DATABASE_URL"]? || New.db_url_default(name, kind, env)}]
+        urls = [{"primary", Db.url_for(name, kind, env)}]
         if all
           ENV.each do |key, value|
             next unless key.starts_with?("DATABASE_URL_") && !key.ends_with?("_TEST")

@@ -99,7 +99,7 @@ module Saci
 
         FileUtils.mkdir_p("db")
         env_name = ENV.fetch("APP_ENV", "development")
-        db_url = ENV.fetch("DATABASE_URL", "#{url_template}")
+        db_url = Saci::ConfigFile.database_url(env_name) || ENV.fetch("DATABASE_URL", "#{url_template}")
         Saci::Record.connect(db_url)
         ENV.each do |key, value|
           if key.starts_with?("DATABASE_URL_") && key != "DATABASE_URL"

@@ -332,7 +332,7 @@ module Saci
             io << "require \"../lib/tasks/*\"\n" if tasks_present
             io << "\nFileUtils.mkdir_p(\"db\")\n"
             io << "env_name = ENV.fetch(\"APP_ENV\", \"development\")\n"
-            io << "db_url = ENV.fetch(\"DATABASE_URL\", \"#{db_default(name)}\")\n"
+            io << db_url_line(db_default(name))
             io << "Saci::Record.connect(db_url)\n"
             io << "Saci::I18n.reload!\n"
             if rf = require_file
@@ -367,6 +367,13 @@ module Saci
           # Literal `#{env_name}` in the OUTPUT (same trick as
           # New.migrate_runner): the wrapper resolves it at runtime.
           New.db_url_default(name, db_kind(name), "\#{env_name}")
+        end
+
+        # `db_url = ...` line for generated runners: resolves exactly like
+        # db/migrate.cr (config/database.yml, then DATABASE_URL, then the
+        # convention default). Expects `env_name` defined before it.
+        def self.db_url_line(default_url : String) : String
+          "db_url = Saci::ConfigFile.database_url(env_name) || ENV.fetch(\"DATABASE_URL\", \"#{default_url}\")\n"
         end
 
         def self.driver_require_line(name : String) : String

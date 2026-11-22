@@ -187,7 +187,7 @@ module Saci
           io << "\n"
           io << "FileUtils.mkdir_p(\"db\")\n"
           io << "env_name = ENV.fetch(\"APP_ENV\", \"development\")\n"
-          io << "db_url = ENV.fetch(\"DATABASE_URL\", \"" << url_default << "\")\n"
+          io << "db_url = Saci::ConfigFile.database_url(env_name) || ENV.fetch(\"DATABASE_URL\", \"" << url_default << "\")\n"
           io << "Saci::Record.connect(db_url)\n"
           io << "db = Saci::Record.database(\"primary\")\n"
           io << "\n"
