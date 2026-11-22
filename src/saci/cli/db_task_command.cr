@@ -231,7 +231,7 @@ module Saci
           io << "targets = ARGV.includes?(\"--all\") ? Saci::Record.configuration_names : [\"primary\"]\n"
           io << "targets.each do |db_name|\n"
           io << "  db = Saci::Record.database(db_name)\n"
-          io << "  ran = Saci::Record::Migrator.migrate(db, SACI_MIGRATIONS)\n"
+          io << "  ran = Saci::Record::Migrator.migrate(db, SACI_MIGRATION_SETS[db_name]? || [] of Saci::Record::Migration.class)\n"
           io << "  puts \"Migrated \#{db_name}: \#{ran.inspect}\"\n"
           io << "end\n"
           if seed && seed_path

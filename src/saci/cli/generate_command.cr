@@ -24,6 +24,9 @@ module Saci
       @@force : Bool = false
       @@overwrite_all : Bool = false
       @@skips : Set(String) = Set(String).new
+      # `--database=NAME`: migrations go to `db/<name>_migrate/` instead of
+      # `db/migrate/` (nil = primary).
+      @@database : String? = nil
       @@input : IO = STDIN
       @@output : IO = STDOUT
       @@error : IO = STDERR
@@ -54,6 +57,15 @@ module Saci
         @@force = false
         @@overwrite_all = false
         @@skips.clear
+        @@database = nil
+      end
+
+      def self.database : String?
+        @@database
+      end
+
+      def self.database=(value : String?) : Nil
+        @@database = value.nil? || value == "primary" ? nil : validate_database_name!(value)
       end
 
       # `--no-spec`, `--no-migration`, `--no-views`, ... are stored as
@@ -279,18 +291,29 @@ module Saci
 
       def self.run(args : Array(String)) : Int32
         rest = [] of String
+        expect_database = false
         args.each do |a|
+          if expect_database
+            self.database = a
+            expect_database = false
+            next
+          end
           case a
           when "--pretend"
             @@pretend = true
           when "--force"
             @@force = true
+          when "--database"
+            expect_database = true
+          when .starts_with?("--database=")
+            self.database = a.lchop("--database=")
           when .starts_with?("--no-")
             @@skips << a[5..].gsub('-', '_')
           else
             rest << a
           end
         end
+        raise Error.new("--database needs a name (e.g. --database=analytics)") if expect_database
         kind = rest.shift? || raise Error.new("Usage: saci generate KIND NAME [fields...]\nKinds: #{GENERATOR_KINDS.join(", ")}")
         case kind.downcase
         when "model"                  then model(rest)
@@ -632,13 +655,15 @@ module Saci
       end
 
       def self.create_migration_file(class_name : String, source : String) : String
+        dir = migrations_dir(@@database)
         version = Util.timestamp_version
-        # Bump within the same second to keep filenames unique.
-        while Dir.glob("db/migrate/#{version}_*.cr").any?
+        # Bump within the same second to keep filenames unique (across every
+        # database: the manifest orders all sets by filename).
+        while Dir.glob("db/migrate/#{version}_*.cr", "db/*_migrate/#{version}_*.cr").any?
           version = (version.to_i64 + 1).to_s
         end
         file = "#{Util.file_name(class_name)}"
-        path = "db/migrate/#{version}_#{file}.cr"
+        path = "#{dir}/#{version}_#{file}.cr"
         write_file(path, source)
         if @@pretend
           puts "  skip db/migrations.cr (pretend: manifest rebuild skipped)"
@@ -648,38 +673,91 @@ module Saci
         path
       end
 
-      # Rebuilds db/migrations.cr from the files on disk (sorted = order).
-      # Fails fast when a file's migration class doesn't match its filename
-      # (otherwise the manifest references an undefined constant) or when
-      # two files declare the same class.
+      DATABASE_NAME_RE = /\A[a-z][a-z0-9_]*\z/
+
+      def self.validate_database_name!(name : String) : String
+        unless DATABASE_NAME_RE.matches?(name)
+          raise Error.new("Bad database name '#{name}'. Use lowercase snake_case (e.g. analytics).")
+        end
+        name
+      end
+
+      # Migration directory per database (Rails' `migrations_paths`):
+      # `db/migrate/` for primary, `db/<name>_migrate/` for named ones.
+      def self.migrations_dir(database : String? = nil) : String
+        database.nil? || database == "primary" ? "db/migrate" : "db/#{database}_migrate"
+      end
+
+      # Manifest constant per database: `SACI_MIGRATIONS` (primary, kept for
+      # backward compatibility) and `SACI_<NAME>_MIGRATIONS`.
+      def self.manifest_constant(database : String) : String
+        database == "primary" ? "SACI_MIGRATIONS" : "SACI_#{database.upcase}_MIGRATIONS"
+      end
+
+      # True for a migration file of any database (`db/migrate/x.cr`,
+      # `db/<name>_migrate/x.cr`).
+      def self.migration_path?(path : String) : Bool
+        /\Adb\/(?:[a-z][a-z0-9_]*_)?migrate\/[^\/]+\.cr\z/.matches?(path)
+      end
+
+      # Databases with a migration set on disk: primary always, plus one per
+      # `db/<name>_migrate/` directory.
+      def self.migration_databases : Array(String)
+        named = Dir.glob("db/*_migrate").select { |d| Dir.exists?(d) }.map do |d|
+          validate_database_name!(File.basename(d).rchop("_migrate"))
+        end
+        ["primary"] + named.sort
+      end
+
+      # Rebuilds db/migrations.cr from the files on disk (sorted = order),
+      # one constant per database plus `SACI_MIGRATION_SETS` (name => list)
+      # for `db/migrate.cr`. Fails fast when a file's migration class doesn't
+      # match its filename (otherwise the manifest references an undefined
+      # constant) or when two files declare the same class (classes are
+      # global, so this holds across databases too).
       def self.regenerate_manifest! : Nil
-        files = Dir.glob("db/migrate/*.cr").sort
-        names = files.map do |f|
-          expected = Util.class_name(File.basename(f, ".cr").sub(/\A\d+_/, ""))
-          declared = File.read(f).scan(/^\s*class\s+([A-Z][A-Za-z0-9_]*)/).map(&.[1]).first?
-          if declared && declared != expected
-            raise Error.new("Migration #{f} declares class #{declared} but the filename implies #{expected}. Rename the file or the class so they match.")
+        sets = migration_databases.map do |database|
+          dir = migrations_dir(database)
+          files = Dir.glob("#{dir}/*.cr").sort
+          names = files.map do |f|
+            expected = Util.class_name(File.basename(f, ".cr").sub(/\A\d+_/, ""))
+            declared = File.read(f).scan(/^\s*class\s+([A-Z][A-Za-z0-9_]*)/).map(&.[1]).first?
+            if declared && declared != expected
+              raise Error.new("Migration #{f} declares class #{declared} but the filename implies #{expected}. Rename the file or the class so they match.")
+            end
+            expected
           end
-          expected
+          {database, files, names}
         end
-        dupes = names.tally.select { |_, count| count > 1 }.keys
+        all_names = sets.flat_map(&.[2])
+        dupes = all_names.tally.select { |_, count| count > 1 }.keys
         unless dupes.empty?
-          raise Error.new("Duplicate migration class(es) #{dupes.join(", ")} in db/migrate/. Keep one file per class.")
+          raise Error.new("Duplicate migration class(es) #{dupes.join(", ")} in db/migrate/ or db/*_migrate/. Keep one file per class (class names are global across databases).")
         end
-        result = write_file("db/migrations.cr", manifest_source(files, names), prompt: false)
+        result = write_file("db/migrations.cr", manifest_source(sets), prompt: false)
         if result == :created || result == :overwritten
-          puts "  update db/migrations.cr (#{names.size} migration#{names.size == 1 ? "" : "s"})"
+          puts "  update db/migrations.cr (#{all_names.size} migration#{all_names.size == 1 ? "" : "s"})"
         end
       end
 
       def self.manifest_source(files : Array(String), names : Array(String)) : String
-        requires = files.map { |f| "require \"./migrate/#{File.basename(f, ".cr")}\"" }.join("\n")
-        list = names.join(", ")
-        <<-CRYSTAL
-        # Auto-generated by `saci generate migration` — do not edit by hand.
-        #{requires}
-        SACI_MIGRATIONS = [#{list}] of Saci::Record::Migration.class
-        CRYSTAL
+        manifest_source([{"primary", files, names}])
+      end
+
+      def self.manifest_source(sets : Array(Tuple(String, Array(String), Array(String)))) : String
+        requires = sets.flat_map do |(database, files, _)|
+          dir = File.basename(migrations_dir(database))
+          files.map { |f| "require \"./#{dir}/#{File.basename(f, ".cr")}\"" }
+        end
+        # Aligned like `crystal tool format` aligns consecutive constants.
+        width = sets.max_of { |(database, _, _)| manifest_constant(database).size }
+        lists = sets.map do |(database, _, names)|
+          "#{manifest_constant(database).ljust(width)} = [#{names.join(", ")}] of Saci::Record::Migration.class"
+        end
+        index = sets.map { |(database, _, _)| "\"#{database}\" => #{manifest_constant(database)}" }.join(", ")
+        (["# Auto-generated by `saci generate migration` — do not edit by hand."] + requires + lists +
+          ["", "# Per-database lists for db/migrate.cr (`--all`, `--database=NAME`).",
+           "SACI_MIGRATION_SETS = {#{index}}"]).join("\n") + "\n"
       end
 
       # Creates the app-wide parent (ApplicationJob, ...) for apps made before

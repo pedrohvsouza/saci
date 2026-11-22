@@ -8,7 +8,7 @@ module Saci
     #   now triggers `remove <path>? [y/n/a/q]` (use `--force` to skip);
     # * `--pretend` prints planned removals and changes nothing;
     # * empty component directories (e.g. `src/views/posts`) are pruned,
-    #   but shared roots (`src/models`, `spec`, `db/migrate`, ...) and
+    #   but shared roots (`src/models`, `spec`, `db/migrate`, `db/<name>_migrate`, ...) and
     #   directories containing unrelated files are never removed;
     # * removing a migration rebuilds `db/migrations.cr`.
     module Destroy
@@ -130,7 +130,7 @@ module Saci
       def self.destroy_migration(raw : String) : Nil
         class_name = Util.class_name(Util.file_name(raw))
         file = Util.file_name(class_name)
-        paths = Dir.glob("db/migrate/*_#{file}.cr")
+        paths = Dir.glob("db/migrate/*_#{file}.cr", "db/*_migrate/*_#{file}.cr")
         if paths.empty?
           Generate.log "  skip db/migrate/*_#{file}.cr (not found)"
         else
@@ -141,7 +141,7 @@ module Saci
       # Removes migrations by their generated class/file suffix. Used by
       # model/scaffold/resource destroy; matches only our naming pattern.
       def self.destroy_migrations(class_name : String, suffix : String) : Nil
-        paths = Dir.glob("db/migrate/*_#{suffix}.cr")
+        paths = Dir.glob("db/migrate/*_#{suffix}.cr", "db/*_migrate/*_#{suffix}.cr")
         if paths.empty?
           Generate.log "  skip db/migrate/*_#{suffix}.cr (not found)"
         else
@@ -342,7 +342,7 @@ module Saci
         end
         if Generate.pretend?
           Generate.log "  remove #{path}"
-          @@migration_changed = true if path.starts_with?("db/migrate/") && path.ends_with?(".cr")
+          @@migration_changed = true if Generate.migration_path?(path)
           return
         end
 
@@ -371,7 +371,7 @@ module Saci
         File.delete(path)
         @@removed += 1
         @@removed_dirs << File.dirname(path)
-        @@migration_changed = true if path.starts_with?("db/migrate/") && path.ends_with?(".cr")
+        @@migration_changed = true if Generate.migration_path?(path)
         Generate.log "  remove #{path}"
       end
 
@@ -397,6 +397,7 @@ module Saci
           changed = false
           dirs.sort_by { |dir| -dir.count("/") }.each do |dir|
             next if ROOT_DIRS.includes?(dir)
+            next if /\Adb\/[a-z][a-z0-9_]*_migrate\z/.matches?(dir) # a named DB's migration root
             next unless Dir.exists?(dir)
             next unless Dir.empty?(dir)
             Dir.delete(dir)

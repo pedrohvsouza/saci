@@ -32,6 +32,14 @@
   before `src/<dir>/**`, like the boot file and `db/migrate.cr`, so a model
   sorting before it (`answer.cr`) no longer fails with
   `undefined constant ApplicationRecord`. Subdirectories load too.
+- **Per-database migrations.** Named databases get their own migration
+  set in `db/<name>_migrate/` (primary stays in `db/migrate/`). `saci
+  generate migration X --database=NAME` writes there, `db/migrations.cr`
+  gains a `SACI_<NAME>_MIGRATIONS` constant per database plus
+  `SACI_MIGRATION_SETS`, and `db:migrate`/`db:rollback` take
+  `--database=NAME`. `--all` now runs each database's own list instead of
+  `SACI_MIGRATIONS` everywhere (regenerate `db/migrate.cr` with `saci
+  app:update`). Single-database apps are unchanged.
 - **Same-host Cable push for SQLite and MySQL.** `Cable::DbServer` sends
   one loopback UDP wake datagram after each broadcast, so pollers in other
   processes on the same host fetch it immediately instead of waiting for

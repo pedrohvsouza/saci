@@ -180,7 +180,7 @@ saci routes [--grep PATTERN] [--boot [-- crystal flags]]
 saci views:check [PATH]
 saci runner -e CODE | saci runner FILE [args]
 saci console [-e CODE]
-saci db:migrate [--all] | db:rollback [STEPS] [--all] | db:seed
+saci db:migrate [--all|--database=NAME] | db:rollback [STEPS] [--all|--database=NAME] | db:seed
 saci db:prepare | db:setup | db:reset | db:create | db:drop | db:version | db:migrate:status
 saci db:schema:dump [--all] | db:schema:load | db:schema:check [--all]
 saci credentials:show | credentials:edit | credentials:keygen
@@ -212,8 +212,8 @@ Generators: `model`, `controller`, `migration`, `scaffold`,
 - `db:migrate` and `db:rollback` run the standalone `db/migrate.cr`
   runner, which loads the models but never boots the web server. `--all`
   also covers every named database registered through
-  `DATABASE_URL_<NAME>`. After each run the runner prints schema drift
-  warnings.
+  `DATABASE_URL_<NAME>`, and `--database=NAME` targets one named
+  database. After each run the runner prints schema drift warnings.
 - `routes` parses the route DSL statically, with no compilation, and
   prints `VERB PATH -> Controller#action`. Routes drawn in loops or
   helper methods are invisible to that parse; `routes --boot` compiles
@@ -537,6 +537,14 @@ end
 Record.connected_to("analytics") { Event.count }
 ```
 
+- **Each database has its own migrations** (Rails' `migrations_paths`):
+  `db/migrate/` for primary, `db/<name>_migrate/` for a named database.
+  `saci generate migration CreateEvents --database=analytics` (also
+  `model`/`scaffold`) writes to `db/analytics_migrate/`, and
+  `db/migrations.cr` gets one constant per database (`SACI_MIGRATIONS`,
+  `SACI_ANALYTICS_MIGRATIONS`) plus `SACI_MIGRATION_SETS`. `db:migrate
+  --all` runs each database's own list; a named database without a
+  directory gets none. Class names stay unique across databases.
 - Write `?` placeholders and double-quoted identifiers everywhere. Saci
   rewrites placeholders, quoting, auto-increment keys, `RETURNING` inserts
   and DDL for each adapter.
