@@ -482,7 +482,11 @@ Post.transaction(isolation: :serializable) { post.lock!; ... }
   values. Migrations also cover UUIDs, binary, generated and virtual
   columns, check constraints, views, and PostgreSQL native types
   (`hstore`, `inet`, `cidr`, ranges, `interval`, `money`, ...).
-- **Queries**: `select`, `distinct`, `group` with aggregates, `having`,
+- **Queries**: hash conditions take arrays (`where(id: [1, 2])` builds
+  `IN (...)`, `nil` elements add `IS NULL`, `[]` matches nothing; `not`
+  negates them), scoped `find_by`/`find_by!`/`exists?`
+  (`User.active.find_by(email: x)`), nil-returning `find?(id)`,
+  `select`, `distinct`, `group` with aggregates, `having`,
   `joins` (symbol or SQL), `left_joins`, `includes`/`preload` (batched,
   including through and polymorphic), `merge`, `rewhere`, `unscope`,
   `none`, `in_order_of`, `sole`, `pick`, `ids`, `explain`, `in_batches`,

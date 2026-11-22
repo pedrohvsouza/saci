@@ -35,6 +35,8 @@ class QxItem < Saci::Record::Base
 
   belongs_to :qx_group
   define_finders :sku, :name
+
+  scope :published_items, -> { where(published: true) }
 end
 
 class QxCode < Saci::Record::Base
@@ -396,6 +398,94 @@ describe "Saci::Record query/bulk extras" do
       out.should contain("qx_items")
       out.should contain(" | ")
       QxItem.explain.should contain("EXPLAIN QUERY PLAN")
+    end
+  end
+
+  describe "array conditions (IN)" do
+    before_each do
+      QxItem.insert_all([
+        {name: "one", sku: "s1", category: "red", qty: 1, published: true},
+        {name: "two", sku: "s2", category: "blue", qty: 2, published: false},
+        {name: "three", sku: "s3", category: nil, qty: 3, published: true},
+      ])
+    end
+
+    it "builds IN for integer and string arrays" do
+      ids = QxItem.order(:id).pluck(:id).map(&.as(Int64))
+      QxItem.where(id: [ids[0], ids[2]]).order(:id).pluck(:sku).map(&.to_s).should eq(["s1", "s3"])
+      QxItem.where(qty: [1, 2]).count.should eq(2_i64)
+      QxItem.where(sku: ["s2", "s3", "missing"]).order(:id).pluck(:sku).map(&.to_s).should eq(["s2", "s3"])
+      QxItem.where(published: [true]).count.should eq(2_i64)
+      QxItem.where(qty: [2]).to_sql.should contain(%("qty" IN (?)))
+      QxItem.where(qty: [1, 2, 3]).to_sql.should contain(%("qty" IN (?, ?, ?)))
+    end
+
+    it "matches nothing for an empty array" do
+      QxItem.where(id: [] of Int64).count.should eq(0_i64)
+      QxItem.where(id: [] of Int64).to_sql.should contain("1 = 0")
+      QxItem.all.not(id: [] of Int64).count.should eq(3_i64)
+    end
+
+    it "adds IS NULL for nil elements" do
+      QxItem.where(category: ["red", nil]).order(:id).pluck(:sku).map(&.to_s).should eq(["s1", "s3"])
+      QxItem.where(category: [nil]).pluck(:sku).map(&.to_s).should eq(["s3"])
+      QxItem.where(category: ["red", nil]).to_sql.should contain(%(("category" IS NULL OR "category" IN (?))))
+      # The OR is parenthesized, so later conditions still AND correctly.
+      QxItem.where(category: ["red", nil], qty: 3).pluck(:sku).map(&.to_s).should eq(["s3"])
+    end
+
+    it "negates arrays in not" do
+      QxItem.all.not(sku: ["s1", "s2"]).pluck(:sku).map(&.to_s).should eq(["s3"])
+      QxItem.all.not(category: ["red"]).pluck(:sku).map(&.to_s).should eq(["s2"])
+      QxItem.all.not(category: ["red", nil]).pluck(:sku).map(&.to_s).should eq(["s2"])
+      QxItem.all.not(category: [nil]).order(:id).pluck(:sku).map(&.to_s).should eq(["s1", "s2"])
+    end
+
+    it "works through or, rewhere and class-level exists?/delete_all/update_all" do
+      QxItem.where(sku: ["s1"]).or(QxItem.where(qty: [3])).count.should eq(2_i64)
+      QxItem.where(sku: "s1").rewhere(sku: ["s2", "s3"]).count.should eq(2_i64)
+      QxItem.exists?(sku: ["s2", "zz"]).should be_true
+      QxItem.exists?(sku: ["zz"]).should be_false
+      QxItem.exists?(sku: [] of String).should be_false
+      QxItem.published_items.exists?(sku: ["s2"]).should be_false
+      QxItem.published_items.exists?.should be_true
+      QxItem.where(sku: ["s1", "s2"]).update_all(qty: 9).should eq(2_i64)
+      QxItem.where(qty: 9).count.should eq(2_i64)
+      QxItem.where(sku: ["s1", "s3"]).delete_all.should eq(2_i64)
+      QxItem.pluck(:sku).map(&.to_s).should eq(["s2"])
+    end
+
+    it "supports arrays in grouped where and having" do
+      QxItem.group(:category).where(qty: [1, 2]).count.size.should eq(2)
+      QxItem.select("category", "COUNT(*) AS n").group(:category).having(category: ["red", "blue"]).to_a.size.should eq(2)
+    end
+  end
+
+  describe "chained find_by / find_by! and find?" do
+    before_each do
+      QxItem.insert_all([
+        {name: "pub", sku: "p1", published: true},
+        {name: "draft", sku: "d1", published: false},
+      ])
+    end
+
+    it "finds within a scope" do
+      QxItem.published_items.find_by(sku: "p1").not_nil!.name.should eq("pub")
+      QxItem.published_items.find_by(sku: "d1").should be_nil
+      QxItem.where(name: "draft").find_by({sku: "d1"}).not_nil!.name.should eq("draft")
+      QxItem.published_items.find_by!(sku: "p1").name.should eq("pub")
+      expect_raises(Saci::Record::RecordNotFound) { QxItem.published_items.find_by!(sku: "d1") }
+      QxItem.all.find_by(sku: ["d1", "p1"]).should_not be_nil
+    end
+
+    it "find? returns the record or nil" do
+      item = QxItem.find_by!(sku: "p1")
+      QxItem.find?(item.id).not_nil!.sku.should eq("p1")
+      QxItem.find?(-1_i64).should be_nil
+      expect_raises(Saci::Record::RecordNotFound) { QxItem.find(-1_i64) }
+      QxCode.create!(code: "k1", label: "key")
+      QxCode.find?("k1").not_nil!.label.should eq("key")
+      QxCode.find?("nope").should be_nil
     end
   end
 

@@ -102,6 +102,8 @@ describe "Saci::Record encrypts" do
     EncUser.find_by(email: "ana@example.com").not_nil!.id.should eq(user.id)
     EncUser.find_by(email: "ANA@EXAMPLE.COM").not_nil!.id.should eq(user.id)
     EncUser.where(email: "ana@example.com").count.should eq(1)
+    EncUser.where(email: ["nobody@example.com", "ANA@example.com"]).count.should eq(1)
+    EncUser.all.not(email: ["ana@example.com"]).count.should eq(0)
     EncUser.find(user.id.not_nil!).email.should eq("ana@example.com")
   end
 

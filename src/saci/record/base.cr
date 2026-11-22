@@ -1683,6 +1683,13 @@ module Saci
           raise RecordNotFound.new("Couldn't find #{self.name} with '#{pk}'=#{id}")
       end
 
+      # Like `find`, but returns nil instead of raising `RecordNotFound`.
+      def self.find?(id : Value) : self?
+        pk = __saci_primary_key
+        ad = Record.adapter_of(connection)
+        where("#{Record.quote(pk, ad)} = ?", Record.to_db(id, ad)).first
+      end
+
       def self.find_by(**conds : Object) : self?
         where(**conds).first
       end

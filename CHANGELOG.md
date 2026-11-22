@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **Array hash conditions build `IN`.** `where(id: [1, 2, 3])` binds one
+  `?` per element (`col IN (?, ?, ?)`) instead of raising in `to_db`;
+  `nil` elements add `col IS NULL` (`(col IS NULL OR col IN (...))`), an
+  empty array matches nothing (`1 = 0`), and `not(...)` negates the same
+  way (`NOT IN`, `IS NOT NULL`). Elements convert like scalar values
+  (including deterministic encryption). Applies to `where`, `rewhere`,
+  `not`, `having`, grouped `where`, `exists?(**)`, `find_by` and scoped
+  `update_all`/`delete_all`. `Array(String)` string-array columns still
+  compare the whole array. Lists are not chunked, so very large arrays
+  are bound by the adapter's bind-parameter limit. `not(**)` now also
+  encrypts values for deterministic columns.
+- **Scoped finders.** `Query#find_by` / `find_by!` and
+  `Query#exists?(**conds)` chain on relations
+  (`User.active.find_by(email: x)`), and `Model.find?(id)` returns nil
+  instead of raising `RecordNotFound`.
 - **`schema:check` respects `connects_to`.** `Saci::Record.check_schema!`
   only compares the models that live in the checked database (their
   `connects_to database:` name, inherited from an abstract base such as

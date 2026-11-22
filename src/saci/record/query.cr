@@ -80,7 +80,9 @@ module Saci
 
       # `where(title: "x", published: true)` — nil becomes `IS NULL`, a
       # `Range` becomes a bounded comparison (`>=`/`<=`, `<` for exclusive
-      # ends; open ends emit a single bound).
+      # ends; open ends emit a single bound), an `Array` becomes
+      # `IN (?, ...)` (see `array_condition`). An `Array(String)` compared
+      # against an `Array(String)` (string-array) column stays an equality.
       def where(**conds : Object) : Query(T)
         ad = adapter
         new_conds = @conditions.dup
@@ -89,6 +91,10 @@ module Saci
           col = Record.quote(key, ad)
           if value.nil?
             new_conds << "#{col} IS NULL"
+          elsif value.is_a?(Array) && !string_array_column?(key)
+            sql, binds = array_condition(key, value, ad, negate: false)
+            new_conds << sql
+            new_params.concat(binds)
           elsif value.is_a?(Range)
             b = value.begin
             e = value.end
@@ -134,7 +140,8 @@ module Saci
         spawn(@conditions.dup + ["(#{sql})"], @params.dup)
       end
 
-      # `where.not(title: "x")` — hash negation (`nil` becomes `IS NOT NULL`).
+      # `where.not(title: "x")` — hash negation (`nil` becomes `IS NOT NULL`,
+      # an `Array` becomes `NOT IN (?, ...)`; see `array_condition`).
       def not(**conds : Object) : Query(T)
         ad = adapter
         new_conds = @conditions.dup
@@ -143,14 +150,61 @@ module Saci
           col = Record.quote(key, ad)
           if value.nil?
             new_conds << "#{col} IS NOT NULL"
+          elsif value.is_a?(Array) && !string_array_column?(key)
+            sql, binds = array_condition(key, value, ad, negate: true)
+            new_conds << sql
+            new_params.concat(binds)
           elsif value.is_a?(Range)
             raise ArgumentError.new("where.not does not support Range values (#{key}); use explicit SQL")
           else
             new_conds << "#{col} != ?"
-            new_params << Record.to_db(value, ad)
+            new_params << Record.to_db(@klass.__saci_query_value(key.to_s, value), ad)
           end
         end
         spawn(new_conds, new_params)
+      end
+
+      # Hash-condition SQL for an `Array` value (Rails semantics):
+      #
+      # - `[1, 2]`      → `col IN (?, ?)` (negated: `col NOT IN (?, ?)`)
+      # - `[]`          → `1 = 0` (negated: `1 = 1`)
+      # - `[nil, 1]`    → `(col IS NULL OR col IN (?))`
+      #   (negated: `(col IS NOT NULL AND col NOT IN (?))`)
+      # - `[nil]`       → `col IS NULL` (negated: `col IS NOT NULL`)
+      #
+      # Each element is converted like a scalar `where` value (`to_db`,
+      # deterministic encryption). Lists are bound as-is with one `?` per
+      # element — no chunking, so very large arrays are subject to the
+      # adapter's bind-parameter limit.
+      private def array_condition(key, values : Array, ad : Adapter, negate : Bool) : {String, Array(Value)}
+        col = Record.quote(key, ad)
+        has_nil = false
+        binds = [] of Value
+        values.each do |v|
+          if v.nil?
+            has_nil = true
+          else
+            binds << Record.to_db(@klass.__saci_query_value(key.to_s, v), ad)
+          end
+        end
+        in_sql = binds.empty? ? nil : "#{col} #{negate ? "NOT IN" : "IN"} (#{Array.new(binds.size, "?").join(", ")})"
+        sql = if in_sql && has_nil
+                negate ? "(#{col} IS NOT NULL AND #{in_sql})" : "(#{col} IS NULL OR #{in_sql})"
+              elsif in_sql
+                in_sql
+              elsif has_nil
+                negate ? "#{col} IS NOT NULL" : "#{col} IS NULL"
+              else
+                negate ? "1 = 1" : "1 = 0"
+              end
+        {sql, binds}
+      end
+
+      # True when *key* names an `Array(String)` (string-array) column, whose
+      # hash conditions compare the whole array instead of building `IN`.
+      private def string_array_column?(key) : Bool
+        name = key.to_s
+        @klass.__saci_column_names.any? { |(n, t)| n == name && t == "Array(String)" }
       end
 
       # `Post.where(a: 1).or(Post.where(b: 2))` — ORs another query's
@@ -493,7 +547,8 @@ module Saci
         spawn(having: @having + ["(#{sql})"], having_params: @having_params + converted)
       end
 
-      # `having(count: 2)` — hash form (`NULL` becomes `IS NULL`).
+      # `having(count: 2)` — hash form (`NULL` becomes `IS NULL`, an `Array`
+      # becomes `IN (?, ...)`).
       def having(**conds : Object) : Query(T)
         ad = adapter
         new_conds = @having.dup
@@ -502,6 +557,10 @@ module Saci
           col = Record.quote(key, ad)
           if value.nil?
             new_conds << "#{col} IS NULL"
+          elsif value.is_a?(Array)
+            sql, binds = array_condition(key, value, ad, negate: false)
+            new_conds << sql
+            new_params.concat(binds)
           else
             new_conds << "#{col} = ?"
             new_params << Record.to_db(value, ad)
@@ -965,6 +1024,25 @@ module Saci
         where(**conds).sole
       end
 
+      # `User.active.find_by(email: x)` — first matching record within this
+      # scope, or nil.
+      def find_by(**conds : Object) : T?
+        where(**conds).first
+      end
+
+      def find_by(conds : NamedTuple) : T?
+        find_by(**conds)
+      end
+
+      # Like `find_by`, but raises `RecordNotFound` when nothing matches.
+      def find_by!(**conds : Object) : T
+        where(**conds).first || raise RecordNotFound.new("Couldn't find #{@klass.name}")
+      end
+
+      def find_by!(conds : NamedTuple) : T
+        find_by!(**conds)
+      end
+
       def find_sole_by(conds : NamedTuple) : T
         find_sole_by(**conds)
       end
@@ -1024,6 +1102,12 @@ module Saci
         end
         conn = @klass.connection
         Record.scalar_compat(conn, count_sql(adapter), @params + @having_params).as(Int64)
+      end
+
+      # `User.active.exists?(email: x)` — `where(**conds).exists?`.
+      def exists?(**conds : Object) : Bool
+        return exists? if conds.empty?
+        where(**conds).exists?
       end
 
       def exists? : Bool

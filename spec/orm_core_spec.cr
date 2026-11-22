@@ -194,6 +194,9 @@ describe "Saci::Record ORM core gaps" do
       p.released_on.not_nil!.year.should eq(2024)
       p.meta_json.not_nil!["a"][1].should eq(2)
       p.tags.should eq(["one", "two"])
+      # A string-array column compares the whole array (no IN expansion).
+      CoreProduct.where(tags: ["one", "two"]).count.should eq(1_i64)
+      CoreProduct.where(tags: ["one"]).count.should eq(0_i64)
     end
   end
 
