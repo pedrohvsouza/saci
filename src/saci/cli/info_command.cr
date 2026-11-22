@@ -153,9 +153,7 @@ module Saci
           io << "require \"file_utils\"\n"
           io << Inspect::Runner.driver_require_line(name)
           io << "require \"../config/environments/*\"\n" if Dir.exists?("config/environments")
-          ["models", "controllers", "channels", "jobs", "mailers"].each do |dir|
-            io << "require \"../src/#{dir}/*\"\n" if Dir.exists?(File.join("src", dir))
-          end
+          io << Util.app_requires("../src", ["models", "controllers", "channels", "jobs", "mailers"])
           io << "\nFileUtils.mkdir_p(\"db\")\n"
           io << "env_name = ENV.fetch(\"APP_ENV\", \"development\")\n"
           io << "db_url = ENV.fetch(\"DATABASE_URL\", \"#{Inspect::Runner.db_default(name)}\")\n"

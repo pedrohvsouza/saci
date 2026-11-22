@@ -699,6 +699,30 @@ describe "saci routes" do
   end
 end
 
+describe "generated model requires" do
+  it "loads ApplicationRecord before the models glob in every boot and runner file" do
+    with_tmp_app(name: "cli_require_order") do |dir|
+      Dir.cd(dir) do
+        File.write("src/models/answer.cr", "class Answer < ApplicationRecord\nend\n")
+        sources = {
+          "src/cli_require_order.cr" => {File.read("src/cli_require_order.cr"), "./models"},
+          "db/migrate.cr"            => {File.read("db/migrate.cr"), "../src/models"},
+          "spec/spec_helper.cr"      => {File.read("spec/spec_helper.cr"), "../src/models"},
+          "runner"                   => {Saci::CLI::Inspect::Runner.wrapper_source(code_body: "1"), "../src/models"},
+          "task"                     => {Saci::CLI::TaskCommand.runner_source("x"), "../src/models"},
+          "db runner"                => {Saci::CLI::Util.models_require("../src"), "../src/models"},
+        }
+        sources.each do |file, (src, models)|
+          base = src.index(%(require "#{models}/application_record")) || fail "#{file} does not require application_record"
+          glob = src.index(%(require "#{models}/**")) || fail "#{file} does not require the models glob"
+          base.should be < glob
+          src.should_not contain(%(require "#{models}/*"\n))
+        end
+      end
+    end
+  end
+end
+
 describe "saci runner" do
   it "builds wrappers with app context and verbatim code" do
     with_tmp_app(name: "cli_runner_src") do |dir|
@@ -709,10 +733,12 @@ describe "saci runner" do
         File.write("config/initializers/x.cr", "X = 1\n")
         src = Saci::CLI::Inspect::Runner.wrapper_source(code_body: "puts \"#{40 + 2} \#{x}\"")
         src.should contain("Saci::Record.connect")
-        src.should contain("require \"../src/models/*\"")
-        src.should contain("require \"../src/services/*\"")
+        src.should contain("require \"../src/models/**\"")
+        src.should contain("require \"../src/services/**\"")
         src.should contain("require \"../config/initializers/*\"")
-        src.index("../src/services/*").not_nil!.should be < src.index("../src/models/*").not_nil!
+        src.index("../src/services/**").not_nil!.should be < src.index("../src/models/**").not_nil!
+        src.index("../src/models/application_record").not_nil!.should be < src.index("../src/models/**").not_nil!
+        src.index("../src/controllers/application_controller").not_nil!.should be < src.index("../src/controllers/**").not_nil!
         src.should contain("puts \"#{40 + 2} \#{x}\"")
       end
     end

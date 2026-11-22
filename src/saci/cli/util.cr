@@ -91,9 +91,30 @@ module Saci
       # first (globs load alphabetically, so `account.cr` would precede
       # `application_record.cr`), then every model, subdirectories included.
       def self.models_require(src : String) : String
+        app_requires(src, ["models"])
+      end
+
+      # Base class of each app directory a runner loads (`saci runner`,
+      # tasks, initializer checks).
+      APP_BASES = {
+        "models"      => "application_record",
+        "controllers" => "application_controller",
+        "channels"    => "application_channel",
+        "jobs"        => "application_job",
+        "mailers"     => "application_mailer",
+      }
+
+      # Requires for the app's `src/` dirs from a generated runner, in the
+      # boot file's order: every existing base class first, then each dir
+      # with `**` (subdirectories included).
+      def self.app_requires(src : String, dirs : Array(String)) : String
+        present = dirs.select { |dir| Dir.exists?(File.join("src", dir)) }
         String.build do |io|
-          io << "require \"" << src << "/models/application_record\"\n" if File.exists?("src/models/application_record.cr")
-          io << "require \"" << src << "/models/**\"\n"
+          present.each do |dir|
+            next unless base = APP_BASES[dir]?
+            io << "require \"" << src << "/" << dir << "/" << base << "\"\n" if File.exists?(File.join("src", dir, "#{base}.cr"))
+          end
+          present.each { |dir| io << "require \"" << src << "/" << dir << "/**\"\n" }
         end
       end
 
