@@ -1122,3 +1122,130 @@ describe "saci new staging environment" do
     end
   end
 end
+
+describe "per-database migrations" do
+  it "writes --database migrations to db/<name>_migrate/ with their own manifest constant" do
+    with_tmp_app(name: "cli_multidb_gen") do |dir|
+      Dir.cd(dir) do
+        Saci::CLI::Generate.run(["migration", "AddBioToUsers", "bio:text"])
+        Saci::CLI::Generate.run(["migration", "CreateEvents", "--database=analytics"])
+        Saci::CLI::Generate.run(["model", "Metric", "name:string", "--database", "analytics"])
+        Saci::CLI::Generate.database.should be_nil
+
+        Dir.glob("db/migrate/*.cr").map { |f| File.basename(f) }.join(" ").should_not contain("create_events")
+        Dir.glob("db/analytics_migrate/*_create_events.cr").size.should eq(1)
+        Dir.glob("db/analytics_migrate/*_create_metrics.cr").size.should eq(1)
+        Dir.glob("db/migrate/*_create_metrics.cr").should be_empty
+
+        manifest = File.read("db/migrations.cr")
+        manifest.should contain("require \"./migrate/")
+        manifest.should match(/require "\.\/analytics_migrate\/\d+_create_events"/)
+        manifest.should contain("SACI_MIGRATIONS           = [AddBioToUsers] of Saci::Record::Migration.class")
+        manifest.should contain("SACI_ANALYTICS_MIGRATIONS = [CreateEvents, CreateMetrics] of Saci::Record::Migration.class")
+        manifest.should contain("SACI_MIGRATION_SETS = {\"primary\" => SACI_MIGRATIONS, \"analytics\" => SACI_ANALYTICS_MIGRATIONS}")
+        Process.run("crystal", ["tool", "format", "--check", "db"]).success?.should be_true
+
+        # `--database=primary` is the default set.
+        Saci::CLI::Generate.run(["migration", "AddAgeToUsers", "age:integer", "--database=primary"])
+        Dir.glob("db/migrate/*_add_age_to_users.cr").size.should eq(1)
+
+        expect_raises(Saci::CLI::Error, /Bad database name/) do
+          Saci::CLI::Generate.run(["migration", "CreateThings", "--database=Bad-Name"])
+        end
+        expect_raises(Saci::CLI::Error, /needs a name/) do
+          Saci::CLI::Generate.run(["migration", "CreateThings", "--database"])
+        end
+      end
+    end
+  end
+
+  it "keeps single-database manifests backward compatible" do
+    with_tmp_app(name: "cli_multidb_single") do |dir|
+      Dir.cd(dir) do
+        File.read("db/migrations.cr").should contain("SACI_MIGRATIONS = [] of Saci::Record::Migration.class")
+        Saci::CLI::Generate.run(["migration", "AddBioToUsers", "bio:text"])
+        manifest = File.read("db/migrations.cr")
+        manifest.should contain("SACI_MIGRATIONS = [AddBioToUsers] of Saci::Record::Migration.class")
+        manifest.should contain("SACI_MIGRATION_SETS = {\"primary\" => SACI_MIGRATIONS}")
+        manifest.should_not contain("_migrate/")
+      end
+    end
+  end
+
+  it "rejects the same migration class in two databases and rebuilds after destroy" do
+    with_tmp_app(name: "cli_multidb_dupe") do |dir|
+      Dir.cd(dir) do
+        Saci::CLI::Generate.run(["migration", "CreateEvents"])
+        expect_raises(Saci::CLI::Error, /uplicate.*CreateEvents/) do
+          Saci::CLI::Generate.run(["migration", "CreateEvents", "--database=analytics"])
+        end
+        Dir.glob("db/migrate/*_create_events.cr").each { |f| File.delete(f) }
+        Saci::CLI::Generate.regenerate_manifest!
+        File.read("db/migrations.cr").should contain("SACI_ANALYTICS_MIGRATIONS = [CreateEvents]")
+
+        Saci::CLI::Destroy.run(["migration", "CreateEvents"]).should eq(0)
+        Dir.exists?("db/analytics_migrate").should be_true
+        File.read("db/migrations.cr").should contain("SACI_ANALYTICS_MIGRATIONS = [] of Saci::Record::Migration.class")
+      end
+    end
+  end
+
+  it "parses db:migrate --database without running crystal" do
+    Saci::CLI::Db.parse(["--database", "analytics"])[:script_args].should eq(["--database=analytics"])
+    parsed = Saci::CLI::Db.parse(["2", "--database=analytics"])
+    parsed[:all].should be_false
+    parsed[:script_args].should eq(["2", "--database=analytics"])
+    expect_raises(Saci::CLI::Error, /needs a name/) { Saci::CLI::Db.parse(["--database"]) }
+    expect_raises(Saci::CLI::Error, /Bad database name/) { Saci::CLI::Db.parse(["--database=a-b"]) }
+  end
+
+  it "runs each database's own migrations from db/migrate.cr" do
+    with_tmp_app(name: "cli_multidb_run") do |dir|
+      Dir.cd(dir) do
+        link_framework_lib!
+        File.delete("config/database.yml") if File.exists?("config/database.yml")
+        rel = Saci::CLI::Inspect::Runner.relativize(File.join(dir, "db"), File.join(Saci::CLI::New::SACI_ROOT, "src", "saci"))
+        register = "Saci::Record.establish_connection(\"analytics\", \"sqlite3://./db/analytics.db\")"
+        runner = File.read("db/migrate.cr").sub("require \"saci\"", "require \"#{rel}\"").lines.map do |line|
+          line.starts_with?("# Saci::Record.establish_connection(\"analytics\"") ? register : line
+        end.join("\n") + "\n"
+        runner.should contain("Saci::Record.establish_connection(\"analytics\", \"sqlite3://./db/analytics.db\")\n")
+        File.write("db/migrate.cr", runner)
+        Saci::CLI::Generate.run(["migration", "CreatePosts"])
+        Saci::CLI::Generate.run(["migration", "CreateEvents", "--database=analytics"])
+        [{"CreatePosts", "posts"}, {"CreateEvents", "events"}].each do |(klass, table)|
+          path = Dir.glob("db/migrate/*_create_posts.cr", "db/analytics_migrate/*_create_events.cr").find!(&.includes?(table))
+          File.write(path, "class #{klass} < Saci::Record::Migration\n  def change\n    create_table :#{table} do |t|\n      t.string :name\n    end\n  end\nend\n")
+        end
+
+        env = {"DATABASE_URL" => "sqlite3://./db/primary.db", "APP_ENV" => "development"}
+        migrate = ->(args : Array(String)) do
+          buf = IO::Memory.new
+          status = Saci::CLI::Compile.run_status("db/migrate.cr", args: args, env: env, output: buf)
+          status.should_not be_nil
+          status.not_nil!.success?.should be_true
+          buf.to_s
+        end
+        tables = ->(file : String) do
+          DB.open("sqlite3://./db/#{file}") do |db|
+            db.query_all("SELECT name FROM sqlite_master WHERE type = 'table'", as: String)
+          end
+        end
+
+        out = migrate.call(["up", "--all"])
+        out.should contain("Migrated primary: [\"CreatePosts\"]")
+        out.should contain("Migrated analytics: [\"CreateEvents\"]")
+        tables.call("primary.db").should contain("posts")
+        tables.call("primary.db").should_not contain("events")
+        tables.call("analytics.db").should contain("events")
+        tables.call("analytics.db").should_not contain("posts")
+
+        migrate.call(["down", "--database=analytics"]).should contain("Rolled back analytics: [\"CreateEvents\"]")
+        tables.call("analytics.db").should_not contain("events")
+        tables.call("primary.db").should contain("posts")
+        migrate.call(["up", "--database=analytics"]).should contain("Migrated analytics: [\"CreateEvents\"]")
+        migrate.call(["up"]).should contain("Migrated primary: []")
+      end
+    end
+  end
+end

@@ -204,6 +204,7 @@ module Saci
         Flags: --pretend prints would-be writes; --force overwrites without prompting;
         --no-spec/--no-test, --no-migration, --no-model, --no-controller, --no-views,
         --no-route, --no-mailer skip those artifacts.
+        --database=NAME writes migrations to db/<name>_migrate/ (a named DB's own set).
         Examples:
           saci g model Post title:string views:integer published:boolean
           saci g scaffold Post title:string
@@ -214,9 +215,9 @@ module Saci
       when "serve", "server", "s"
         "Usage: saci serve [--port N] [--host [H]] [--release] [--watch] [--watch-interval SECS] [--mt] [--workers N] [-- extra crystal args]\n\nRuns src/<app>.cr with crystal run (PORT/HOST env are set for the app). --host alone binds every interface (0.0.0.0) and prints the Network URLs other devices on the local network can open. With --watch, rebuilds and restarts on file changes. With --mt, compiles with multithreading (-Dexecution_context) and enables it at boot via SACI_MT."
       when "db:migrate"
-        "Usage: saci db:migrate [--all]\n\nRuns pending migrations in db/migrate/ (keeps db/migrations.cr in sync first). With --all, migrates primary + all named DBs."
+        "Usage: saci db:migrate [--all|--database=NAME]\n\nRuns pending migrations in db/migrate/ (keeps db/migrations.cr in sync first). With --database=NAME, migrates only that named DB from db/<name>_migrate/. With --all, migrates primary + all named DBs, each with its own migrations."
       when "db:rollback"
-        "Usage: saci db:rollback [STEPS] [--all]\n\nRolls back the last STEPS migrations (default 1). With --all, rolls back on all databases."
+        "Usage: saci db:rollback [STEPS] [--all|--database=NAME]\n\nRolls back the last STEPS migrations (default 1). With --database=NAME, rolls back only that named DB. With --all, rolls back on all databases."
       when "db:schema:dump"
         "Usage: saci db:schema:dump [--all] [-- crystal flags]\n\nDumps the schema to db/schema.cr (standalone runnable, portable across SQLite/PostgreSQL/MySQL). With --all, dumps primary + named DBs (registered via DATABASE_URL_<NAME> env vars) into per-database sections."
       when "db:schema:load"

@@ -458,7 +458,7 @@ module Saci
           the Crystal equivalent of Rails' `test/` tree (`crystal spec` runs
           it). `spec/system/` holds browser-driven tests; Chrome/Chromium is
           required only when they run.
-        - `db/migrate/` + `db/migrations.cr` — migrations and their manifest.
+        - `db/migrate/` + `db/migrations.cr` — migrations and their manifest (`db/<name>_migrate/` for a named database).
         - `storage/`, `log/`, `tmp/pids/`, `vendor/`, `script/` — runtime and
           auxiliary directories. `.gitkeep` keeps empty ones in Git.
         - `bin/` — project binstubs (executable).
@@ -763,8 +763,10 @@ module Saci
         url_default = db_url_default(name, ndb, "\#{env_name}")
         driver = db_driver_require(ndb)
         <<-CRYSTAL
-        # Run with: saci db:migrate [--all] | saci db:rollback [STEPS] [--all] | saci db:schema:check [--all]
-        # (`--all` migrates primary + all named DBs; without it only primary.)
+        # Run with: saci db:migrate [--all|--database=NAME] | saci db:rollback [STEPS] [--all|--database=NAME] | saci db:schema:check [--all]
+        # (`--all` migrates primary + all named DBs, each with its own list:
+        # db/migrate/ for primary, db/<name>_migrate/ for a named DB.
+        # Without it only primary, or the one given with --database.)
         # (Do not edit by hand — `saci generate migration` keeps db/migrations.cr in sync.)
         #{driver}require "saci"
         require "file_utils"
@@ -789,23 +791,39 @@ module Saci
           end
         end
 
+        # Each database runs its own manifest list (none for a named DB
+        # without a db/<name>_migrate/ directory).
+        def migrations_for(db_name : String) : Array(Saci::Record::Migration.class)
+          SACI_MIGRATION_SETS[db_name]? || [] of Saci::Record::Migration.class
+        end
+
         action = ARGV[0]? || "up"
         rest = (ARGV[1..]? || [] of String)
         migrate_all = rest.includes?("--all") || ARGV.includes?("--all")
-        steps = (rest.reject { |a| a == "--all" }.first? || "1").to_i
-        targets = migrate_all ? Saci::Record.configuration_names : ["primary"]
+        database = rest.find(&.starts_with?("--database=")).try(&.lchop("--database="))
+        steps = (rest.reject(&.starts_with?("--")).first? || "1").to_i
+        targets = if database
+                    unless Saci::Record.configuration_names.includes?(database)
+                      abort "Unknown database \#{database} (registered: \#{Saci::Record.configuration_names.join(", ")})"
+                    end
+                    [database]
+                  elsif migrate_all
+                    Saci::Record.configuration_names
+                  else
+                    ["primary"]
+                  end
         case action
         when "up"
           targets.each do |db_name|
             db = Saci::Record.database(db_name)
-            ran = Saci::Record::Migrator.migrate(db, SACI_MIGRATIONS)
+            ran = Saci::Record::Migrator.migrate(db, migrations_for(db_name))
             puts "Migrated \#{db_name}: \#{ran.inspect}"
           end
           targets.each { |db_name| print_schema_drift!(db_name) }
         when "down"
           targets.reverse.each do |db_name|
             db = Saci::Record.database(db_name)
-            undone = Saci::Record::Migrator.rollback(db, SACI_MIGRATIONS, steps)
+            undone = Saci::Record::Migrator.rollback(db, migrations_for(db_name), steps)
             puts "Rolled back \#{db_name}: \#{undone.inspect}"
           end
           targets.each { |db_name| print_schema_drift!(db_name) }
@@ -876,7 +894,8 @@ module Saci
         require "../db/migrations"
 
         # Isolated test database (never touch development data).
-        # Multidb apps: establish named DBs here too and use
+        # Multidb apps: establish named DBs here too, migrate each with its
+        # own list (`SACI_<NAME>_MIGRATIONS`, from db/<name>_migrate/) and use
         # `Saci::Record.clean_all!` in specs to truncate all connections.
         FileUtils.mkdir_p("db")
         db_url = Saci::ConfigFile.database_url("test") || ENV.fetch("DATABASE_URL", "#{url_default}")

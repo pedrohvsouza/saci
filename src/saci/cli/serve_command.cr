@@ -145,15 +145,18 @@ module Saci
 
     # `saci db:migrate` / `saci db:rollback [STEPS]`.
     # Extra args before `--` are forwarded to the migrate script (e.g. STEPS,
-    # `--all` to migrate primary + all named DBs); everything after `--` is
-    # forwarded to `crystal` as compiler flags.
+    # `--all` to migrate primary + all named DBs, `--database=NAME` for one
+    # named DB); everything after `--` is forwarded to `crystal` as compiler
+    # flags. `--database NAME` is normalized to `--database=NAME`.
     module Db
       def self.parse(args : Array(String)) : NamedTuple(all: Bool, script_args: Array(String), crystal_flags: Array(String))
         script_args = [] of String
         crystal_flags = [] of String
         forward = false
         all = false
-        args.each do |a|
+        i = 0
+        while i < args.size
+          a = args[i]
           if forward
             crystal_flags << a
           elsif a == "--"
@@ -161,9 +164,14 @@ module Saci
           elsif a == "--all"
             all = true
             script_args << a
+          elsif a == "--database" || a.starts_with?("--database=")
+            name = a == "--database" ? (i += 1; args[i]?) : a.lchop("--database=")
+            raise Error.new("--database needs a name (e.g. --database=analytics)") if name.nil? || name.empty?
+            script_args << "--database=#{Generate.validate_database_name!(name)}"
           else
             script_args << a
           end
+          i += 1
         end
         {all: all, script_args: script_args, crystal_flags: crystal_flags}
       end
@@ -177,7 +185,11 @@ module Saci
         script_args = parsed[:script_args]
         crystal_flags = parsed[:crystal_flags]
 
-        puts "Running db:#{action} on all databases" if parsed[:all]
+        if parsed[:all]
+          puts "Running db:#{action} on all databases"
+        elsif database = script_args.find(&.starts_with?("--database="))
+          puts "Running db:#{action} on #{database.lchop("--database=")}"
+        end
         Compile.run("db/migrate.cr", crystal_flags, [action] + script_args, name: "migrations")
       end
     end
