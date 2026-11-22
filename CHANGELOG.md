@@ -17,6 +17,24 @@
   `Query#exists?(**conds)` chain on relations
   (`User.active.find_by(email: x)`), and `Model.find?(id)` returns nil
   instead of raising `RecordNotFound`.
+- **`clean_database!` handles FTS5/virtual tables and foreign keys.**
+  `Saci::Record.clean_database!` (and `clean_all!`, `db:clean`,
+  `Saci::Testing.clean_database!`) no longer runs `DELETE` on SQLite
+  virtual tables' shadow tables (`<fts>_data`, `<fts>_config`, …): wiping
+  them destroyed the index, so every new connection failed with `vtable
+  constructor failed: questions_fts` (a generated app with an FTS index
+  failed its own `spec/app_spec.cr`). Base tables are emptied first (FTS
+  sync triggers keep their indexes in step), then each virtual table
+  through its module: `DELETE` for own-content FTS and R*Tree,
+  `'rebuild'` for external-content FTS, `'delete-all'` for contentless
+  FTS5. SQLite foreign keys are switched off on the cleaning connection
+  and restored afterwards (deferred, deleting children first, inside an
+  open transaction), so `RESTRICT` parents and self-references no longer
+  fail. PostgreSQL uses one `TRUNCATE ... CASCADE` (sequences are not
+  restarted, as before); MySQL deletes with `FOREIGN_KEY_CHECKS` off.
+  `AUTOINCREMENT`/`AUTO_INCREMENT` counters are kept, as before. The
+  virtual/shadow table detection is shared through
+  `Introspection.sqlite_virtual_tables`.
 - **`schema:check` respects `connects_to`.** `Saci::Record.check_schema!`
   only compares the models that live in the checked database (their
   `connects_to database:` name, inherited from an abstract base such as

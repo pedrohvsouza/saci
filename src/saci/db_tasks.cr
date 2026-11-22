@@ -212,17 +212,10 @@ module Saci
       total
     end
 
+    # See `Saci::Record.clean_database!` (virtual tables, foreign keys and
+    # per-adapter behavior).
     def self.clean_database!(db : DB::Database | DB::Connection) : Int32
-      adapter = Saci::Record.adapter_of(db)
-      list_sql = case adapter
-                 when :postgres then "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename != 'schema_migrations'"
-                 when :mysql    then "SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name != 'schema_migrations'"
-                 else                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name != 'schema_migrations'"
-                 end
-      tables = [] of String
-      Saci::Record.query_compat(db, list_sql) { |rs| rs.each { tables << rs.read(String) } }
-      tables.each { |table| Saci::Record.exec_compat(db, "DELETE FROM #{Saci::Record.quote(table, adapter)}") }
-      tables.size
+      Saci::Record.clean_database!(db)
     end
 
     # Path behind a `sqlite3://` URL (query parameters stripped).
