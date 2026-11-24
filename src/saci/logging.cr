@@ -61,10 +61,11 @@ module Saci
 
   # Parameter keys filtered from request logs (substring match). Defaults
   # match Rails' 12 keys (`passw` covers password/password_confirmation).
-  @@filter_parameters : Array(String) = [
+  DEFAULT_FILTER_PARAMETERS = [
     "passw", "email", "secret", "token", "_key", "crypt",
     "salt", "certificate", "otp", "ssn", "cvv", "cvc",
   ]
+  @@filter_parameters : Array(String) = DEFAULT_FILTER_PARAMETERS.dup
   @@filter_mutex = Mutex.new
 
   def self.filter_parameters : Array(String)

@@ -629,9 +629,13 @@ describe "framework instrumentation" do
 end
 
 describe "structured logging and filter parameters" do
+  # Global filter state may have been changed by an earlier spec file;
+  # start every example from the framework defaults, not from leftovers.
+  before_each { Saci.filter_parameters = Saci::DEFAULT_FILTER_PARAMETERS.dup }
+
   after_each do
     ENV.delete("SACI_LOG_FORMAT")
-    Saci.filter_parameters = ["passw", "email", "secret", "token", "_key", "crypt", "salt", "certificate", "otp", "ssn", "cvv", "cvc"]
+    Saci.filter_parameters = Saci::DEFAULT_FILTER_PARAMETERS.dup
     Saci.filter_redirect = [] of String
     Saci.log_tags = [:request_id, :remote_ip, :method, :path] of String | Symbol
     Saci.logger = ::Log.for("saci")
@@ -640,6 +644,7 @@ describe "structured logging and filter parameters" do
   end
 
   it "filters Rails' default sensitive keys by substring" do
+    Saci::DEFAULT_FILTER_PARAMETERS.should eq(["passw", "email", "secret", "token", "_key", "crypt", "salt", "certificate", "otp", "ssn", "cvv", "cvc"])
     Saci.filter_params({
       "user"            => "ada",
       "password"        => "x",
