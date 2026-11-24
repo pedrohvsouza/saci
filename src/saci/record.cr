@@ -1,5 +1,6 @@
 require "db"
 require "./record/pool_fix"
+require "./record/database_uri"
 require "sqlite3"
 require "json"
 require "big"
@@ -361,15 +362,19 @@ module Saci
     # Enforce foreign keys on Saci-managed SQLite connections (SQLite
     # leaves `PRAGMA foreign_keys` off by default, silently ignoring
     # `foreign_key: true`). Set to false before connecting to opt out; an
-    # explicit `?foreign_keys=` URL param (`connect`/`establish_connection`)
-    # always wins.
+    # explicit `?foreign_keys=` URL param always wins, whether the URL went
+    # through `connect`/`establish_connection` or `DB.open` before
+    # `connection=` (the database's own URI is recorded when it is opened).
     class_property sqlite_foreign_keys : Bool = true
 
     private def self.apply_sqlite_tuning(db : DB::Database, url : String?) : Nil
       # SQLite tuning for web workloads, applied to every pooled connection
       # (existing and future): WAL lets readers proceed during writes,
       # busy_timeout makes concurrent writers wait instead of failing.
-      explicit_fks = url.try { |u| URI.parse(u).query_params.has_key?("foreign_keys") }
+      # The database's own URI wins over a URL recorded for its name (a
+      # stale one from an earlier `connect`, when `connection=` replaces it).
+      uri = db.saci_uri || url.try { |u| URI.parse(u) }
+      explicit_fks = uri.try(&.query_params.has_key?("foreign_keys")) || false
       enforce_fks = sqlite_foreign_keys && !explicit_fks
       db.setup_connection do |conn|
         conn.exec("PRAGMA journal_mode=WAL")

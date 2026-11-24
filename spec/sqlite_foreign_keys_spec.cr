@@ -107,6 +107,40 @@ describe "SQLite foreign keys" do
     end
   end
 
+  it "respects foreign_keys=off on a bare DB.open assigned through connection=" do
+    path = "#{SQLITE_FK_DIR}/saci_fk_bare.db"
+    Dir.mkdir_p(SQLITE_FK_DIR)
+    File.delete(path) if File.exists?(path)
+    previous = Saci::Record.database("primary") rescue nil
+    db = DB.open("sqlite3://#{path}?foreign_keys=off&initial_pool_size=1&max_pool_size=3")
+    begin
+      db.saci_uri.try(&.query_params["foreign_keys"]?).should eq("off")
+      Saci::Record.connection = db
+      # Existing and newly pooled connections keep the URL's opt-out.
+      conns = Array.new(3) { db.pool.checkout }
+      conns.each { |c| fk_pragma(c).should eq(0) }
+      conns.each(&.release)
+      # WAL tuning still applies.
+      db.scalar("PRAGMA journal_mode").should eq("wal")
+    ensure
+      previous.try { |p| Saci::Record.assign_primary(p) }
+      db.close
+      File.delete(path) if File.exists?(path)
+    end
+  end
+
+  it "still enforces foreign keys on a bare DB.open without the param" do
+    previous = Saci::Record.database("primary") rescue nil
+    db = DB.open("sqlite3:%3Amemory%3A")
+    begin
+      Saci::Record.connection = db
+      fk_pragma(db).should eq(1)
+    ensure
+      previous.try { |p| Saci::Record.assign_primary(p) }
+      db.close
+    end
+  end
+
   it "rolls back a self-referencing RESTRICT table that holds data" do
     db = sqlite_fk_open("selfref")
     begin

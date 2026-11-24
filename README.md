@@ -562,7 +562,8 @@ Record.connected_to("analytics") { Event.count }
 - SQLite foreign keys are enforced (`PRAGMA foreign_keys=ON` on every
   pooled connection). Opt out with `Record.sqlite_foreign_keys = false`
   before connecting, or per database with `?foreign_keys=off` in the URL
-  (an explicit URL param always wins). Each SQLite migration runs in a
+  (an explicit URL param always wins, also on a `DB.open(url)` handed to
+  `Record.connection=`). Each SQLite migration runs in a
   transaction with foreign keys checked once before commit
   (`PRAGMA foreign_key_check`), so table rebuilds and rollbacks of
   self-referencing tables work with data in place.
