@@ -14,6 +14,13 @@ module Saci
     # ARE included so a schema-loaded database boots queue workers
     # without extra steps.
     #
+    # SQLite virtual tables (FTS5 indexes from `create_fts_table`, R*Tree,
+    # ...) are not ordinary tables: their shadow tables (`<name>_data`,
+    # `<name>_idx`, ...) are skipped, and each virtual table is dumped as
+    # its verbatim `CREATE VIRTUAL TABLE` statement plus the triggers that
+    # write to it (the FTS sync triggers), recreated by
+    # `load_virtual_tables` after the base tables. SQLite only.
+    #
     # SQLite normalization (documented, byte-stable): SQLite shares one
     # storage type across several logical types, so BOOLEAN/DATE/
     # DATETIME/JSON map back to :integer/:text, DECIMAL/BIGINT to
@@ -71,6 +78,19 @@ module Saci
         getter sql : String
 
         def initialize(@name : String, @sql : String)
+        end
+      end
+
+      # A SQLite virtual table snapshot: its `CREATE VIRTUAL TABLE`
+      # statement and the `CREATE TRIGGER` statements whose body writes
+      # to it (FTS sync triggers on the base table), both verbatim from
+      # `sqlite_master`.
+      struct VirtualTableInfo
+        getter name : String
+        getter sql : String
+        getter triggers : Array(String)
+
+        def initialize(@name : String, @sql : String, @triggers : Array(String) = [] of String)
         end
       end
 
@@ -146,6 +166,68 @@ module Saci
         end
       end
 
+      # Snapshot of the SQLite virtual tables (empty on other adapters),
+      # sorted by name, each with the triggers that write to it.
+      def self.virtual_tables(db : DB::Database | DB::Connection) : Array(VirtualTableInfo)
+        return [] of VirtualTableInfo unless Record.adapter_of(db) == :sqlite
+        vts = Introspection.sqlite_virtual_tables(db)
+        return [] of VirtualTableInfo if vts.empty?
+        sqls = {} of String => String
+        Record.query_compat(db, "SELECT name, COALESCE(sql, '') FROM sqlite_master WHERE type = 'table'") do |rs|
+          rs.each { sqls[rs.read(String)] = rs.read(String) }
+        end
+        triggers = [] of Tuple(String, String)
+        Record.query_compat(db, "SELECT name, COALESCE(sql, '') FROM sqlite_master WHERE type = 'trigger' ORDER BY name") do |rs|
+          rs.each { triggers << {rs.read(String), rs.read(String)} }
+        end
+        claimed = Set(String).new
+        vts.sort_by(&.name).map do |v|
+          own = triggers.select do |(name, sql)|
+            next false if claimed.includes?(name) || !trigger_writes_to?(sql, v.name)
+            claimed << name
+            true
+          end
+          VirtualTableInfo.new(v.name, sqls[v.name]? || "", own.map(&.[1]))
+        end
+      end
+
+      # True when the trigger body (after `BEGIN`) names `table` as an
+      # identifier (quoted or bare; `<table>_data` etc. do not match).
+      private def self.trigger_writes_to?(sql : String, table : String) : Bool
+        body = (idx = sql =~ /\bBEGIN\b/i) ? sql[idx..] : sql
+        name = Regex.escape(table)
+        body.matches?(/(?:"#{name}"|`#{name}`|\[#{name}\]|(?<![\w"`\[])#{name}(?![\w"`\]]))/i)
+      end
+
+      # Recreates virtual table snapshots: drops each table and its
+      # triggers if present, then runs the dumped `CREATE VIRTUAL TABLE`
+      # and `CREATE TRIGGER` statements. Run after `load` (triggers and
+      # external-content indexes reference the base tables). Skipped with
+      # a warning on PostgreSQL/MySQL (SQLite modules do not exist there).
+      def self.load_virtual_tables(db : DB::Database | DB::Connection, vtables : Array(VirtualTableInfo)) : Nil
+        return if vtables.empty?
+        ad = Record.adapter_of(db)
+        unless ad == :sqlite
+          STDERR.puts "saci: skipping SQLite virtual tables on #{ad}: #{vtables.map(&.name).join(", ")}"
+          return
+        end
+        vtables.each do |v|
+          v.triggers.each do |t|
+            if name = trigger_name(t)
+              Record.exec_compat(db, "DROP TRIGGER IF EXISTS #{Record.quote(name, ad)}")
+            end
+          end
+          Record.exec_compat(db, "DROP TABLE IF EXISTS #{Record.quote(v.name, ad)}")
+          Record.exec_compat(db, v.sql)
+          v.triggers.each { |t| Record.exec_compat(db, t) }
+        end
+      end
+
+      private def self.trigger_name(sql : String) : String?
+        m = sql.match(/\ACREATE\s+(?:TEMP(?:ORARY)?\s+)?TRIGGER\s+(?:IF\s+NOT\s+EXISTS\s+)?("(?:[^"]|"")+"|`[^`]+`|\[[^\]]+\]|[^\s(]+)/i)
+        m.try { |mm| Introspection.unquote_sql_value(mm[1]) }
+      end
+
       # Renders a standalone runnable `db/schema.cr`: connects via
       # `DATABASE_URL`-or-default (same convention as the migrate
       # runner), then calls `load` with the embedded snapshot.
@@ -154,9 +236,10 @@ module Saci
       def self.dump(db : DB::Database | DB::Connection, url_default : String = "sqlite3://./db/development.db", others : Array(DatabaseDump) = [] of DatabaseDump) : String
         primary_tables, notes = introspect_with_notes(db)
         primary_views = views(db)
+        primary_vtables = virtual_tables(db)
         rest = others.map do |o|
           other_tables, other_notes = introspect_with_notes(o.db)
-          {o, other_tables, other_notes, views(o.db)}
+          {o, other_tables, other_notes, views(o.db), virtual_tables(o.db)}
         end
         String.build do |io|
           io << "# db/schema.cr — auto-generated by `saci db:schema:dump` (stable output).\n"
@@ -177,12 +260,14 @@ module Saci
           io << "# (created_at + updated_at, both NOT NULL without defaults) is detected\n"
           io << "# and re-emitted. Re-dumping a loaded database is byte-stable; defaults\n"
           io << "# that cannot round-trip exactly are normalized to no default (noted below).\n"
+          io << "# SQLite virtual tables (FTS5 indexes) are kept as their CREATE VIRTUAL\n"
+          io << "# TABLE statement plus sync triggers; their shadow tables are skipped.\n"
           notes.each { |n| io << "# NOTE: " << n << "\n" }
-          rest.each do |o, _, other_notes, _|
+          rest.each do |o, _, other_notes, _, _|
             other_notes.each { |n| io << "# NOTE: [" << o.name << "] " << n << "\n" }
           end
-          pg = url_default.includes?("postgres") || rest.any? { |o, _, _, _| o.url_default.includes?("postgres") }
-          mysql = url_default.includes?("mysql") || rest.any? { |o, _, _, _| o.url_default.includes?("mysql") }
+          pg = url_default.includes?("postgres") || rest.any? { |o, _, _, _, _| o.url_default.includes?("postgres") }
+          mysql = url_default.includes?("mysql") || rest.any? { |o, _, _, _, _| o.url_default.includes?("mysql") }
           io << "require \"pg\"\n" if pg
           io << "require \"mysql\"\n" if mysql
           io << "require \"saci\"\n"
@@ -206,8 +291,9 @@ module Saci
           end
           io << "\n"
           io << "Saci::Record::Schema.load(db, SCHEMA_TABLES)\n"
+          emit_virtual_tables(io, "SCHEMA_VIRTUAL_TABLES", "db", primary_vtables)
           io << "Saci::Record::Schema.load_views(db, SCHEMA_VIEWS)\n" unless primary_views.empty?
-          rest.each do |o, other_tables, _, other_views|
+          rest.each do |o, other_tables, _, other_views, other_vtables|
             const = "SCHEMA_TABLES_" + o.name.upcase.gsub(/[^A-Z0-9_]/, "_")
             views_const = "SCHEMA_VIEWS_" + o.name.upcase.gsub(/[^A-Z0-9_]/, "_")
             db_expr = "Saci::Record.database(" + o.name.inspect + ")"
@@ -224,6 +310,7 @@ module Saci
             end
             io << "\n"
             io << "Saci::Record::Schema.load(" << db_expr << ", " << const << ")\n"
+            emit_virtual_tables(io, "SCHEMA_VIRTUAL_TABLES_" + o.name.upcase.gsub(/[^A-Z0-9_]/, "_"), db_expr, other_vtables)
             io << "Saci::Record::Schema.load_views(" << db_expr << ", " << views_const << ")\n" unless other_views.empty?
           end
         end
@@ -260,6 +347,23 @@ module Saci
         end
         io << "    strict: true, # SQLite STRICT table\n" if t.strict
         io << "  ),\n"
+      end
+
+      # Constant + `load_virtual_tables` call (nothing when there are none).
+      private def self.emit_virtual_tables(io : IO, const : String, db_expr : String, vtables : Array(VirtualTableInfo)) : Nil
+        return if vtables.empty?
+        io << const << " = [\n"
+        vtables.each do |v|
+          io << "  Saci::Record::Schema::VirtualTableInfo.new(\n"
+          io << "    " << v.name.inspect << ",\n"
+          io << "    " << v.sql.inspect << ",\n"
+          io << "    [\n"
+          v.triggers.each { |t| io << "      " << t.inspect << ",\n" }
+          io << "    ] of String,\n"
+          io << "  ),\n"
+        end
+        io << "] of Saci::Record::Schema::VirtualTableInfo\n"
+        io << "Saci::Record::Schema.load_virtual_tables(" << db_expr << ", " << const << ")\n"
       end
 
       private def self.emit_view(io : IO, v : ViewInfo) : Nil
@@ -357,7 +461,10 @@ module Saci
         Record.query_compat(db, "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name != 'schema_migrations' ORDER BY name") do |rs|
           rs.each { names << rs.read(String) }
         end
-        names.select { |n| keep_table?(n) }.map { |n| introspect_sqlite_table(db, n, notes) }
+        # Virtual tables and their shadow tables are dumped through
+        # `virtual_tables` (their DDL is module-specific, not columns).
+        virtual = Introspection.virtual_and_shadow_tables(db).to_set
+        names.select { |n| keep_table?(n) && !virtual.includes?(n) }.map { |n| introspect_sqlite_table(db, n, notes) }
       end
 
       private def self.introspect_sqlite_table(db : DB::Database | DB::Connection, table : String, notes : Array(String)) : TableInfo

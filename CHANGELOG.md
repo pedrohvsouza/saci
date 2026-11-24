@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Schema dump/load round-trips FTS5 virtual tables.** `Schema.dump` /
+  `Schema.introspect` no longer treat SQLite virtual tables and their
+  shadow tables (`<fts>_data`, `<fts>_idx`, …) as ordinary tables; loading
+  a dump used to recreate `questions_fts` as a plain table and then abort
+  on `questions_fts_idx` ("more than one primary key"). Shadow tables are
+  skipped and each virtual table is dumped verbatim as its `CREATE
+  VIRTUAL TABLE` statement plus the triggers that write to it (the FTS
+  sync triggers) in a `SCHEMA_VIRTUAL_TABLES` constant, recreated by
+  `Schema.load_virtual_tables` after the base tables (also for `--all`
+  sections). New `Schema.virtual_tables(db)`; detection reuses
+  `Introspection.sqlite_virtual_tables`. SQLite only: loading such a dump
+  into PostgreSQL/MySQL skips the virtual tables with a warning.
 - **`FTS.setup` no longer rebuilds on every call (and is deprecated).**
   When `<table>_fts` already exists with the same definition (columns,
   `tokenize:`, `external_content:`), its three sync triggers match and
