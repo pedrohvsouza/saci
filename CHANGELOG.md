@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **`FTS.setup` no longer rebuilds on every call (and is deprecated).**
+  When `<table>_fts` already exists with the same definition (columns,
+  `tokenize:`, `external_content:`), its three sync triggers match and
+  the index is in sync with the base table (same primary keys for an
+  own-content index, a passing FTS5 `integrity-check` for external
+  content), `Record::FTS.setup` only registers the columns: no DDL and no
+  rebuild. Missing or changed triggers are recreated and the index
+  rebuilt; a changed definition drops and recreates the index.
+  `force: true` always rebuilds. `FTS.setup` is deprecated in the docs:
+  use the `create_fts_table` migration helper plus `fts_search` instead.
 - **Array hash conditions build `IN`.** `where(id: [1, 2, 3])` binds one
   `?` per element (`col IN (?, ?, ?)`) instead of raising in `to_db`;
   `nil` elements add `col IS NULL` (`(col IS NULL OR col IN (...))`), an

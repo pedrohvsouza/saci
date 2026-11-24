@@ -525,8 +525,10 @@ Post.transaction(isolation: :serializable) { post.lock!; ... }
   of storing a copy. `fts_search [:title, :body]` in the model only
   registers the columns (no DDL, no rebuild), and
   `Post.search_fts("crystal")` returns a ranked, chainable query (SQLite
-  only). `Record::FTS.setup(Post, [...])` still does it all at runtime,
-  rebuilding the index on every call.
+  only). `Record::FTS.setup(Post, [...])` is deprecated in favor of
+  `create_fts_table` + `fts_search`; it still does it all at runtime, but
+  only creates and rebuilds what is missing, changed or out of sync
+  (`force: true` always rebuilds).
 
 ## Databases
 
