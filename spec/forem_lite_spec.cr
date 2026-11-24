@@ -89,8 +89,15 @@ def lite_login!(client : LiteClient, username : String = "alice") : HTTP::Client
   resp
 end
 
+# ForemLite.setup narrows the global filter list and turns request
+# logging on; restore what was there so later spec files see defaults.
+lite_previous_filter_parameters = Saci.filter_parameters
+lite_previous_log_requests = Saci.log_requests
+
 describe "forem-lite validation app" do
   before_all do
+    lite_previous_filter_parameters = Saci.filter_parameters
+    lite_previous_log_requests = Saci.log_requests
     ENV["SECRET_KEY_BASE"] = "forem-lite-spec-secret"
     [LITE_SPEC_DB, LITE_SPEC_ANALYTICS_DB].each do |path|
       File.delete(path) if File.exists?(path)
@@ -106,7 +113,8 @@ describe "forem-lite validation app" do
     Saci::Mailer.delivery_adapter = :file
     Saci::Job.queue_adapter = :async
     Saci::Record.bcrypt_min_cost = false
-    Saci.filter_parameters = ["password", "password_confirmation", "token", "secret"]
+    Saci.filter_parameters = lite_previous_filter_parameters
+    Saci.log_requests = lite_previous_log_requests
     Saci::Throttle.reset!
     Saci::Record.database("primary").close
     Saci::Record.database("analytics").close
