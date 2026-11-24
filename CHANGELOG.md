@@ -39,6 +39,24 @@
   rebuilt; a changed definition drops and recreates the index.
   `force: true` always rebuilds. `FTS.setup` is deprecated in the docs:
   use the `create_fts_table` migration helper plus `fts_search` instead.
+- **`clean_database!` inside a transaction: self-references covered.**
+  Specs now clean nullable and `NOT NULL` self-referencing
+  `ON DELETE RESTRICT` rows inside an open SQLite transaction, with no
+  nulling first: `PRAGMA defer_foreign_keys`, which `clean_database!`
+  switches on there, also suspends SQLite's immediate `RESTRICT` check
+  until commit. The docs no longer say such rows can fail. The caller's
+  own `defer_foreign_keys` setting is kept.
+
+- **`?foreign_keys=off` honored through `Record.connection=`.**
+  `Saci::Record.connection = DB.open("sqlite3://...?foreign_keys=off")`
+  no longer re-enables SQLite foreign keys: crystal-db's `DB::Database`
+  does not keep its URL, so Saci now records it when the database is
+  opened (`DB::Database#saci_uri`, set by every `DB.open`) and the
+  default `PRAGMA foreign_keys=ON` skips databases whose own URL sets
+  `foreign_keys` explicitly. A database built directly with
+  `DB::Database.new` has no URI; opt out there with
+  `Record.sqlite_foreign_keys = false`.
+
 - **Array hash conditions build `IN`.** `where(id: [1, 2, 3])` binds one
   `?` per element (`col IN (?, ?, ?)`) instead of raising in `to_db`;
   `nil` elements add `col IS NULL` (`(col IS NULL OR col IN (...))`), an
