@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **`clean_database!` inside a transaction: self-references covered.**
+  Specs now clean nullable and `NOT NULL` self-referencing
+  `ON DELETE RESTRICT` rows inside an open SQLite transaction, with no
+  nulling first: `PRAGMA defer_foreign_keys`, which `clean_database!`
+  switches on there, also suspends SQLite's immediate `RESTRICT` check
+  until commit. The docs no longer say such rows can fail. The caller's
+  own `defer_foreign_keys` setting is kept.
+
 - **`?foreign_keys=off` honored through `Record.connection=`.**
   `Saci::Record.connection = DB.open("sqlite3://...?foreign_keys=off")`
   no longer re-enables SQLite foreign keys: crystal-db's `DB::Database`

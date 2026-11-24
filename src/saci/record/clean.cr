@@ -17,8 +17,13 @@ module Saci
     #   with `'delete-all'`. Foreign keys are switched off on the cleaning
     #   connection (outside any transaction, the pragma is a no-op inside
     #   one) and restored afterwards, so table order and `RESTRICT` /
-    #   self-references do not matter. Inside an open transaction they are
-    #   deferred instead and tables are deleted children first.
+    #   self-references do not matter. Inside an open transaction (where
+    #   that pragma is a no-op) `PRAGMA defer_foreign_keys` is switched on
+    #   for the clean instead: it also suspends `ON DELETE RESTRICT`
+    #   (normally checked immediately, even for `DEFERRABLE` keys), so
+    #   self-references, nullable or `NOT NULL`, and `RESTRICT` parents
+    #   delete without nulling anything; tables are still deleted children
+    #   first, and the remaining checks run when the transaction commits.
     #   `AUTOINCREMENT` counters (`sqlite_sequence`) are kept.
     # * PostgreSQL — one `TRUNCATE ... CASCADE` over every `public` table.
     #   Identity/serial sequences are not restarted (like the previous
@@ -92,7 +97,9 @@ module Saci
       exec_compat(conn, "PRAGMA foreign_keys = OFF") if enforced
       # Still on: a transaction is open on this connection (the pragma is
       # a no-op there), so defer the checks to its commit and delete
-      # children before parents.
+      # children before parents. `defer_foreign_keys` also turns off the
+      # immediate `RESTRICT` check, so self-referencing RESTRICT rows need
+      # no nulling first.
       deferred = enforced && sqlite_pragma_on?(conn, "foreign_keys")
       was_deferred = deferred && sqlite_pragma_on?(conn, "defer_foreign_keys")
       begin

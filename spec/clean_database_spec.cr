@@ -145,9 +145,6 @@ describe "Saci::Record.clean_database! (SQLite)" do
 
   it "defers foreign keys and deletes children first inside a transaction" do
     with_clean_db do |db, _|
-      # Self-referencing RESTRICT rows cannot be deleted with FKs on.
-      db.exec "UPDATE nodes SET parent_id = NULL"
-      db.exec "DELETE FROM nodes"
       Saci::Record.transaction do |conn|
         Saci::Record.clean_database!
         conn.scalar("PRAGMA defer_foreign_keys").should eq(0)
@@ -156,6 +153,46 @@ describe "Saci::Record.clean_database! (SQLite)" do
       clean_db_count(db, "parents").should eq(0)
       clean_db_count(db, "children").should eq(0)
       clean_db_integrity!(db, "questions_fts")
+    end
+  end
+
+  it "cleans self-referencing RESTRICT rows inside a transaction" do
+    with_clean_db do |db, _|
+      # nodes: 1 <- 2 <- 3 (nullable, RESTRICT) plus a NOT NULL one with a
+      # row pointing at itself, declared parent-first. Neither can be
+      # deleted with a plain DELETE while foreign keys are enforced.
+      db.exec "CREATE TABLE strict_nodes (id INTEGER PRIMARY KEY, parent_id INTEGER NOT NULL REFERENCES strict_nodes(id) ON DELETE RESTRICT)"
+      db.exec "INSERT INTO strict_nodes (id, parent_id) VALUES (1, 1), (2, 1), (3, 2)"
+      expect_raises(Exception, /FOREIGN KEY/) { db.exec "DELETE FROM nodes" }
+      expect_raises(Exception, /FOREIGN KEY/) { db.exec "DELETE FROM strict_nodes" }
+
+      Saci::Record.transaction do |conn|
+        conn.scalar("PRAGMA foreign_keys").should eq(1)
+        Saci::Record.clean_database!
+        # Rows are gone without being nulled first, still inside the
+        # transaction, and the pragmas are back to their defaults.
+        conn.scalar("SELECT COUNT(*) FROM nodes").should eq(0)
+        conn.scalar("SELECT COUNT(*) FROM strict_nodes").should eq(0)
+        conn.scalar("PRAGMA defer_foreign_keys").should eq(0)
+        conn.scalar("PRAGMA foreign_keys").should eq(1)
+      end
+      clean_db_assert_clean(db)
+      clean_db_count(db, "strict_nodes").should eq(0)
+      db.scalar("SELECT COUNT(*) FROM pragma_foreign_key_check").should eq(0)
+      expect_raises(Exception, /FOREIGN KEY/) do
+        db.exec "INSERT INTO strict_nodes (id, parent_id) VALUES (1, 99)"
+      end
+    end
+  end
+
+  it "keeps the caller's defer_foreign_keys setting" do
+    with_clean_db do |db, _|
+      Saci::Record.transaction do |conn|
+        conn.exec "PRAGMA defer_foreign_keys = ON"
+        Saci::Record.clean_database!
+        conn.scalar("PRAGMA defer_foreign_keys").should eq(1)
+      end
+      clean_db_assert_clean(db)
     end
   end
 
