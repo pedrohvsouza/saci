@@ -123,6 +123,10 @@ module Saci
           super
         end
 
+        def self.__saci_enums : Hash(String, Hash(String, Saci::Record::Value))
+          super
+        end
+
         def self.__saci_column_names : Array(Tuple(String, String))
           super
         end
@@ -634,6 +638,19 @@ module Saci
           %mapping
         end
 
+        # Registers the mapping so hash conditions (`where(status: :live)`,
+        # `where(status: [:draft, :live])`, `not`, `find_by`, `exists?`)
+        # translate labels into stored values.
+        def self.__saci_enums? : Bool
+          true
+        end
+
+        def self.__saci_enums : Hash(String, Hash(String, Saci::Record::Value))
+          %enums = previous_def
+          %enums[{{attr.id.stringify}}] = {{plural.id}}
+          %enums
+        end
+
         def __saci_run_validations(errors : Saci::Record::Errors) : Nil
           previous_def
           %enum_value = self.{{attr.id}}
@@ -773,9 +790,53 @@ module Saci
         value
       end
 
-      # The bind value for `where(name: value)`: deterministic columns
-      # compare ciphertexts, so the value is encrypted the same way.
-      def self.__saci_query_value(name : String, value)
+      # `model_enum` attributes: attribute name => {label => stored value}.
+      def self.__saci_enums : Hash(String, Hash(String, Saci::Record::Value))
+        {} of String => Hash(String, Saci::Record::Value)
+      end
+
+      # Fast path: false until a model (or a parent) calls `model_enum`.
+      def self.__saci_enums? : Bool
+        false
+      end
+
+      # Maps a `model_enum` label in a hash condition to its stored value
+      # (`where(status: :live)` binds `1`). Symbols must name a label;
+      # Strings may be a label or a stored value (string-backed enums),
+      # labels winning; other values (raw integers) pass through unchanged.
+      # An unknown label raises `ArgumentError` instead of silently
+      # matching nothing. Non-enum attributes are returned as-is.
+      def self.__saci_enum_query_value(name : String, value)
+        return value unless __saci_enums?
+        mapping = __saci_enums[name]?
+        return value unless mapping
+        case value
+        when Symbol
+          mapping.fetch(value.to_s) { raise __saci_invalid_enum_label(name, value, mapping) }
+        when String
+          if mapping.has_key?(value)
+            mapping[value]
+          elsif mapping.values.includes?(value)
+            value
+          else
+            raise __saci_invalid_enum_label(name, value, mapping)
+          end
+        else
+          value
+        end
+      end
+
+      private def self.__saci_invalid_enum_label(name : String, value, mapping : Hash(String, Saci::Record::Value)) : ArgumentError
+        ArgumentError.new("#{value.inspect} is not a valid #{name} for #{self.name} (valid: #{mapping.keys.join(", ")})")
+      end
+
+      # The bind value for `where(name: value)`: `model_enum` labels map to
+      # their stored values, and deterministic columns compare ciphertexts,
+      # so the value is encrypted the same way. Pass `enum_labels: false`
+      # for values that are already stored values (e.g. a record's own
+      # attribute in the uniqueness check).
+      def self.__saci_query_value(name : String, value, enum_labels : Bool = true)
+        value = __saci_enum_query_value(name, value) if enum_labels
         return value unless value.is_a?(String) && __saci_encrypts?
         __saci_encrypted_columns.each do |(col, deterministic, downcase)|
           if col == name && deterministic
@@ -2104,7 +2165,7 @@ module Saci
                   self.class.__saci_table_query.where("LOWER(" + %uq_col{{col.id}} + ") = LOWER(?)", Saci::Record.to_db(%uniq{{col.id}}, %uad{{col.id}}))
                 end
               {% else %}
-                %uscope{{col.id}} = self.class.__saci_table_query.where(Saci::Record.quote({{col.id.stringify}}, %uad{{col.id}}) + " = ?", Saci::Record.to_db(self.class.__saci_query_value({{col.id.stringify}}, %uniq{{col.id}}), %uad{{col.id}}))
+                %uscope{{col.id}} = self.class.__saci_table_query.where(Saci::Record.quote({{col.id.stringify}}, %uad{{col.id}}) + " = ?", Saci::Record.to_db(self.class.__saci_query_value({{col.id.stringify}}, %uniq{{col.id}}, enum_labels: false), %uad{{col.id}}))
               {% end %}
               {% for s in u_scopes %}
                 %scv{{col.id}}{{s.id}} = __saci_get_attr({{s.id.stringify}})

@@ -57,6 +57,18 @@
   `DB::Database.new` has no URI; opt out there with
   `Record.sqlite_foreign_keys = false`.
 
+- **`model_enum` labels in hash conditions.** `where(status: :live)`,
+  `where(status: "live")` and `where(status: [:draft, :live, 0])` map
+  enum labels to their stored values (scalar `=` and array `IN`, mixed
+  with raw values and `nil`). Applies everywhere hash conditions go
+  through the query value mapping: `where`, `not`, `rewhere`,
+  `find_by`/`find_by!` (model and scoped), `exists?(**)`, `count` on the
+  resulting relation. Symbols must name a label; Strings may be a label or
+  a stored value of a string-backed enum (labels win); other values pass
+  through unchanged. An unknown label raises `ArgumentError`
+  (`:archived is not a valid status for Post (valid: draft, live)`)
+  instead of silently matching nothing. Labels are mapped before
+  deterministic encryption.
 - **Array hash conditions build `IN`.** `where(id: [1, 2, 3])` binds one
   `?` per element (`col IN (?, ?, ?)`) instead of raising in `to_db`;
   `nil` elements add `col IS NULL` (`(col IS NULL OR col IN (...))`), an

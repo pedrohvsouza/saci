@@ -53,6 +53,18 @@ class CoreProduct < Saci::Record::Base
   before_save { @__saci_callback_count += 1 }
 end
 
+# String-backed enum over the same table (labels differ from stored values).
+class CoreProductKind < Saci::Record::Base
+  table "core_products"
+  column id : Int64, primary: true
+  column name : String
+  column status : Int32, default: 0
+  timestamps
+
+  model_enum name: {widget: "W", gadget: "G"}
+  validates :name, uniqueness: true
+end
+
 ORM_CORE_DB_PATH = "/tmp/opencode/saci_orm_core_test.db"
 
 def core_db : DB::Database
@@ -452,6 +464,89 @@ describe "Saci::Record ORM core gaps" do
       live.errors["status"].should contain("is not included in the list")
       live.status = 1
       live.valid?.should be_true
+    end
+
+    it "maps labels to stored values in hash conditions" do
+      CoreProduct.where(name: ["EnumQ live", "EnumQ draft"]).delete_all
+      live = CoreProduct.create!(name: "EnumQ live", status: 1)
+      draft = CoreProduct.create!(name: "EnumQ draft", status: 0)
+      scope = CoreProduct.where(name: ["EnumQ live", "EnumQ draft"])
+
+      # Scalar: Symbol and String labels, raw values unchanged.
+      scope.where(status: :live).to_a.map(&.id).should eq([live.id])
+      scope.where(status: "live").to_a.map(&.id).should eq([live.id])
+      scope.where(status: 1).to_a.map(&.id).should eq([live.id])
+      scope.where(status: :draft).to_a.map(&.id).should eq([draft.id])
+
+      # Arrays build IN with mapped labels, mixed with raw values and nil.
+      scope.where(status: [:draft, :live]).count.should eq(2)
+      scope.where(status: ["live"]).to_a.map(&.id).should eq([live.id])
+      scope.where(status: [:live, 0]).count.should eq(2)
+      scope.where(status: [nil, :live]).to_a.map(&.id).should eq([live.id])
+
+      # Negation.
+      scope.not(status: :live).to_a.map(&.id).should eq([draft.id])
+      scope.not(status: [:draft]).to_a.map(&.id).should eq([live.id])
+      scope.not(status: [:draft, :live]).count.should eq(0)
+
+      # Finders, exists?, count, rewhere.
+      scope.find_by(status: :live).try(&.id).should eq(live.id)
+      scope.find_by!(status: "draft").id.should eq(draft.id)
+      CoreProduct.find_by(name: "EnumQ live", status: :live).try(&.id).should eq(live.id)
+      CoreProduct.find_by!(name: "EnumQ draft", status: :draft).id.should eq(draft.id)
+      CoreProduct.exists?(name: "EnumQ live", status: :live).should be_true
+      CoreProduct.exists?(name: "EnumQ live", status: :draft).should be_false
+      scope.exists?(status: [:live]).should be_true
+      scope.where(status: :live).count.should eq(1)
+      CoreProduct.where(status: :draft).rewhere(status: :live).where(name: "EnumQ live").to_a.map(&.id).should eq([live.id])
+    end
+
+    it "raises ArgumentError for unknown labels" do
+      expect_raises(ArgumentError, /:archived is not a valid status for CoreProduct \(valid: draft, live\)/) do
+        CoreProduct.where(status: :archived)
+      end
+      expect_raises(ArgumentError, /"archived" is not a valid status/) do
+        CoreProduct.where(status: "archived")
+      end
+      expect_raises(ArgumentError, /:archived is not a valid status/) do
+        CoreProduct.where(status: [:live, :archived])
+      end
+      expect_raises(ArgumentError, /:archived is not a valid status/) do
+        CoreProduct.all.not(status: :archived)
+      end
+      expect_raises(ArgumentError, /:archived is not a valid status/) do
+        CoreProduct.find_by(status: :archived)
+      end
+      expect_raises(ArgumentError, /:archived is not a valid status/) do
+        CoreProduct.exists?(status: [:archived])
+      end
+    end
+
+    it "maps labels of string-backed enums and accepts stored strings" do
+      CoreProductKind.where(name: ["W", "G"]).delete_all
+      widget = CoreProductKind.create!(name: "W")
+      gadget = CoreProductKind.create!(name: "G")
+
+      CoreProductKind.where(name: :widget).to_a.map(&.id).should eq([widget.id])
+      CoreProductKind.where(name: "gadget").to_a.map(&.id).should eq([gadget.id])
+      CoreProductKind.where(name: "W").to_a.map(&.id).should eq([widget.id])
+      CoreProductKind.where(name: [:widget, "G"]).count.should eq(2)
+      CoreProductKind.where(name: [:widget, :gadget]).not(name: :gadget).to_a.map(&.id).should eq([widget.id])
+      expect_raises(ArgumentError, /"X" is not a valid name for CoreProductKind/) do
+        CoreProductKind.where(name: "X")
+      end
+
+      # The uniqueness check compares stored values (no label mapping), so
+      # an invalid stored value is a validation error, not an ArgumentError.
+      bad = CoreProductKind.new(name: "X")
+      bad.valid?.should be_false
+      bad.errors["name"].should contain("is not included in the list")
+    end
+
+    it "leaves non-enum attributes untouched" do
+      CoreProduct.where(name: "no-such-product").count.should eq(0)
+      CoreProduct.__saci_enums.should eq({"status" => CoreProduct.statuses})
+      CoreLedger.__saci_enums?.should be_false
     end
   end
 end
