@@ -5,6 +5,7 @@ require "../src/saci/tasks"
 require "../src/saci/ci"
 require "../src/saci/db_tasks"
 require "../src/saci/cli"
+require "./support/framework_lib"
 
 def with_extras_app(name : String = "cli_extras_app", & : String ->) : Nil
   dir = File.join("/tmp/opencode", "saci-cli-extras-#{name}-#{Random.rand(1_000_000)}")
@@ -13,20 +14,6 @@ def with_extras_app(name : String = "cli_extras_app", & : String ->) : Nil
     yield dir
   ensure
     FileUtils.rm_rf(dir)
-  end
-end
-
-# Symlink the framework's lib into a fixture app so bare `db`/`sqlite3`
-# requires resolve without `shards install` (fixtures skip shards).
-# Each shard is linked on its own, so `lib/tasks/` written by a spec
-# stays in the fixture instead of landing in the framework's lib.
-def link_extras_framework_lib! : Nil
-  framework_lib = File.join(Saci::CLI::New::SACI_ROOT, "lib")
-  Dir.mkdir_p("lib")
-  Dir.each_child(framework_lib) do |entry|
-    next if entry == "tasks"
-    target = File.join("lib", entry)
-    File.symlink(File.join(framework_lib, entry), target) unless File.exists?(target) || File.symlink?(target)
   end
 end
 
@@ -525,7 +512,7 @@ describe "saci task" do
   it "lists task files statically and runs one end-to-end in app context" do
     with_extras_app(name: "task_run") do |dir|
       Dir.cd(dir) do
-        link_extras_framework_lib!
+        link_framework_lib!
         Dir.mkdir_p("lib/tasks")
         File.write("lib/tasks/marker.cr", <<-CRYSTAL)
           task "spec:marker", "Write a marker" do
@@ -562,7 +549,7 @@ describe "saci db:* surface" do
   it "prepares, reports status/version, loads fixtures, dumps the schema cache and resets" do
     with_extras_app(name: "db_surface") do |dir|
       Dir.cd(dir) do
-        link_extras_framework_lib!
+        link_framework_lib!
         Saci::CLI::Generate.run(["model", "Post", "title:string"])
         File.write("db/seed.cr", <<-CRYSTAL)
           File.open("seed_runs.txt", "a") { |f| f.puts "seed" }
@@ -660,7 +647,7 @@ describe "saci db:* surface" do
   it "runs tasks against the config/database.yml database" do
     with_extras_app(name: "db_yml_task") do |dir|
       Dir.cd(dir) do
-        link_extras_framework_lib!
+        link_framework_lib!
         File.write("config/database.yml", "development:\n  adapter: sqlite3\n  database: ./db/other.db\n")
         DB.open("sqlite3://./db/other.db") { |db| db.exec("CREATE TABLE markers (id INTEGER PRIMARY KEY)") }
         Dir.mkdir_p("lib/tasks")
@@ -754,7 +741,7 @@ describe "saci ci" do
   it "executes config/ci.cr end-to-end" do
     with_extras_app(name: "ci_run") do |dir|
       Dir.cd(dir) do
-        link_extras_framework_lib!
+        link_framework_lib!
         File.write("config/ci.cr", <<-CRYSTAL)
           Saci::CI.step "Marker" do
             File.write("ci_marker.txt", "ok")
@@ -846,7 +833,7 @@ describe "saci info commands" do
   it "lists and runs initializers in app context" do
     with_extras_app(name: "info_initializers") do |dir|
       Dir.cd(dir) do
-        link_extras_framework_lib!
+        link_framework_lib!
         Dir.mkdir_p("config/initializers")
         File.write("config/initializers/marker.cr", "File.write(\"init_marker.txt\", \"ran\")\n")
         Saci::CLI::Info.initializer_files.should contain("config/initializers/marker.cr")

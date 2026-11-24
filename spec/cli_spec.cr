@@ -13,6 +13,7 @@ require "../src/saci/cli/secret_command"
 require "../src/saci/cli/credentials_command"
 require "../src/saci/cli/inspect_command"
 require "../src/saci/cli"
+require "./support/framework_lib"
 
 def with_tmp_app(name : String = "cli_test_app", & : String ->) : Nil
   dir = File.join("/tmp/opencode", "saci-cli-#{name}-#{Random.rand(1_000_000)}")
@@ -22,14 +23,6 @@ def with_tmp_app(name : String = "cli_test_app", & : String ->) : Nil
   ensure
     FileUtils.rm_rf(dir)
   end
-end
-
-# Symlink the framework's lib into a fixture app so bare `db`/`sqlite3`
-# requires resolve without a `shards install` (fixtures skip shards).
-# The runner wrapper itself requires the framework via a file-relative path.
-def link_framework_lib! : Nil
-  framework_lib = File.join(Saci::CLI::New::SACI_ROOT, "lib")
-  File.symlink(framework_lib, "lib") unless File.exists?("lib")
 end
 
 describe "Saci::CLI::Util" do
@@ -760,9 +753,8 @@ describe "saci runner" do
     end
   end
 
-  # Symlink the framework's lib so bare `db`/`sqlite3` requires resolve
-  # without a `shards install` (fixtures skip shards; no network here).
-  # The wrapper itself requires the framework via a file-relative path.
+  # The runner wrapper requires the framework via a file-relative path;
+  # link_framework_lib! makes bare `db`/`sqlite3` requires resolve.
   it "executes -e code in app context (models loaded, DB connected)" do
     with_tmp_app(name: "cli_runner_eval") do |dir|
       Dir.cd(dir) do
@@ -815,7 +807,7 @@ describe "saci db:seed" do
   it "runs the seed file in app context" do
     with_tmp_app(name: "cli_seed_run") do |dir|
       Dir.cd(dir) do
-        File.symlink(File.join(Saci::CLI::New::SACI_ROOT, "lib"), "lib") unless File.exists?("lib")
+        link_framework_lib!
         File.write("db/seed.cr", "File.write(\"seed_marker.txt\", \"seeded\")\n")
         Saci::CLI::Inspect::Seed.run([] of String).should eq(0)
         File.read("seed_marker.txt").should eq("seeded")
@@ -834,7 +826,7 @@ describe "saci console" do
   it "runs -e code like runner" do
     with_tmp_app(name: "cli_console_eval") do |dir|
       Dir.cd(dir) do
-        File.symlink(File.join(Saci::CLI::New::SACI_ROOT, "lib"), "lib") unless File.exists?("lib")
+        link_framework_lib!
         Saci::CLI::Inspect::Console.run(["-e", "File.write(\"console_marker.txt\", \"console-ok\")"]).should eq(0)
         File.read("console_marker.txt").should eq("console-ok")
       end
