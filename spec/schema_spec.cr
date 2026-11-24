@@ -50,6 +50,21 @@ end
 
 SCHEMA_SQLITE_PATH = "/tmp/opencode/saci_schema_test.db"
 
+class SchemaCreateFtsDocs < Saci::Record::Migration
+  def change
+    create_table :schema_docs do |t|
+      t.string :title, null: false
+      t.text :body
+    end
+    create_fts_table :schema_docs, [:title, :body],
+      tokenize: "unicode61 remove_diacritics 2", external_content: true
+    create_table :schema_notes do |t|
+      t.string :title, null: false
+    end
+    create_fts_table :schema_notes, [:title]
+  end
+end
+
 def schema_sqlite_db : DB::Database
   [SCHEMA_SQLITE_PATH, "#{SCHEMA_SQLITE_PATH}-wal", "#{SCHEMA_SQLITE_PATH}-shm"].each do |p|
     File.delete(p) if File.exists?(p)
@@ -183,6 +198,75 @@ describe "Saci::Record::Schema (SQLite)" do
         # sticky error, so closing after the (asserted) UNIQUE violation
         # above re-raises it from the pooled statement cache.
       end
+    end
+  end
+end
+
+describe "Saci::Record::Schema (SQLite FTS5 virtual tables)" do
+  it "dumps virtual tables as CREATE VIRTUAL TABLE + triggers and round-trips" do
+    db = schema_sqlite_db
+    begin
+      Saci::Record::Migrator.migrate(db, [SchemaCreateFtsDocs] of Saci::Record::Migration.class)
+      db.exec(%(INSERT INTO "schema_docs" ("title", "body") VALUES ('Ação rápida', 'café'))) # rows are not dumped
+
+      tables = Saci::Record::Schema.introspect(db)
+      tables.map(&.name).should eq(["schema_docs", "schema_notes"]) # no *_fts, no shadow tables
+      vtables = Saci::Record::Schema.virtual_tables(db)
+      vtables.map(&.name).should eq(["schema_docs_fts", "schema_notes_fts"])
+      vtables.each do |v|
+        v.sql.should match(/\ACREATE VIRTUAL TABLE/)
+        v.triggers.size.should eq(3)
+        v.triggers.each { |t| t.should contain(v.name.rchop("_fts")) }
+      end
+      vtables[0].sql.should contain("remove_diacritics 2")
+      vtables[0].sql.should contain("content='schema_docs'")
+
+      first = Saci::Record::Schema.dump(db)
+      first.should contain("SCHEMA_VIRTUAL_TABLES = [")
+      first.should contain("Saci::Record::Schema.load_virtual_tables(db, SCHEMA_VIRTUAL_TABLES)")
+      first.should_not contain(%("schema_docs_fts_data"))
+      first.should_not contain("Schema::TableInfo.new(\n    \"schema_docs_fts\"")
+      first.index("Saci::Record::Schema.load(db, SCHEMA_TABLES)").not_nil!
+        .should be < first.index("Saci::Record::Schema.load_virtual_tables").not_nil!
+
+      # Wipe everything (virtual tables first: dropping one drops its shadows).
+      vtables.each { |v| db.exec(%(DROP TABLE "#{v.name}")) }
+      tables.each { |t| db.exec(%(DROP TABLE "#{t.name}")) }
+      db.scalar("SELECT count(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' AND name != 'schema_migrations'").should eq(0)
+
+      Saci::Record::Schema.load(db, tables)
+      Saci::Record::Schema.load_virtual_tables(db, vtables)
+      Saci::Record::Schema.dump(db).should eq(first)
+      # Loading again on a populated schema is repeatable.
+      Saci::Record::Schema.load(db, tables)
+      Saci::Record::Schema.load_virtual_tables(db, vtables)
+      Saci::Record::Schema.dump(db).should eq(first)
+
+      db.exec(%(INSERT INTO "schema_docs" ("title", "body") VALUES ('Ação rápida', 'café com pão')))
+      db.exec(%(INSERT INTO "schema_docs" ("title", "body") VALUES ('other', 'text')))
+      db.exec(%(INSERT INTO "schema_notes" ("title") VALUES ('crystal notes')))
+      search = ->(table : String, q : String) {
+        db.query_all(%(SELECT b."title" FROM "#{table}" b JOIN "#{table}_fts" f ON f.rowid = b."id" WHERE f."#{table}_fts" MATCH ? ORDER BY f.rank), q, as: String)
+      }
+      search.call("schema_docs", "acao").should eq(["Ação rápida"])
+      search.call("schema_docs", "pao").should eq(["Ação rápida"])
+      search.call("schema_notes", "crystal").should eq(["crystal notes"])
+      db.exec(%(UPDATE "schema_docs" SET "title" = 'renamed' WHERE "title" = 'other'))
+      search.call("schema_docs", "renamed").should eq(["renamed"])
+      db.exec(%(INSERT INTO "schema_docs_fts"("schema_docs_fts", rank) VALUES ('integrity-check', 1)))
+    ensure
+      db.close
+    end
+  end
+
+  it "keeps loading plain tables when the dump has no virtual tables" do
+    db = schema_sqlite_db
+    begin
+      Saci::Record::Migrator.migrate(db, [SchemaCreateWidgets] of Saci::Record::Migration.class)
+      Saci::Record::Schema.virtual_tables(db).should be_empty
+      Saci::Record::Schema.dump(db).should_not contain("SCHEMA_VIRTUAL_TABLES")
+    ensure
+      db.close
     end
   end
 end

@@ -15,8 +15,10 @@ module Saci
     # Story.where(is_deleted: false).search_fts("crystal").to_a
     # ```
     #
-    # `FTS.setup(Story, [...])` still does both at runtime (DDL plus a full
-    # rebuild on every call). Either way the index is a `<table>_fts`
+    # `FTS.setup(Story, [...])` (deprecated) still does both at runtime; it
+    # skips the DDL and the rebuild when the index already matches and is
+    # in sync (`force: true` always rebuilds). Either way the index is a
+    # `<table>_fts`
     # virtual table plus AFTER INSERT / UPDATE / DELETE triggers, so it
     # stays in sync with normal saves (no model-callback changes needed);
     # existing rows are backfilled. `search_fts` returns a chainable
@@ -60,15 +62,27 @@ module Saci
         @@mutex.synchronize { @@indexed[model.name] = cols }
       end
 
-      # Runtime DDL + backfill (kept for compatibility). Prefer the
-      # `create_fts_table` migration helper plus `fts_search` on the model:
-      # `setup` reindexes the whole table on every call.
-      def self.setup(model, columns : Array, tokenize : String? = nil, external_content : Bool = false) : Nil
-        setup_columns(model, columns.to_a.map(&.to_s), tokenize, external_content)
+      # DEPRECATED: use the `create_fts_table` migration helper plus
+      # `fts_search` on the model instead (DDL belongs in a migration, and
+      # registration is free at boot).
+      #
+      # Runtime DDL + backfill, kept for compatibility. When `<table>_fts`
+      # already exists with the same definition (columns, `tokenize:`,
+      # `external_content:`), its three sync triggers are in place and the
+      # index is in sync with the base table, the call only registers the
+      # columns: no DDL, no rebuild. Otherwise it (re)creates what is
+      # missing or different and rebuilds the index. `force: true` always
+      # recreates the triggers and rebuilds.
+      #
+      # "In sync" means: for an own-content index, the index holds exactly
+      # the base table's primary keys; for an external-content index, the
+      # FTS5 `integrity-check` against the content table passes.
+      def self.setup(model, columns : Array, tokenize : String? = nil, external_content : Bool = false, force : Bool = false) : Nil
+        setup_columns(model, columns.to_a.map(&.to_s), tokenize, external_content, force)
       end
 
-      def self.setup(model, *columns, tokenize : String? = nil, external_content : Bool = false) : Nil
-        setup_columns(model, columns.to_a.map(&.to_s), tokenize, external_content)
+      def self.setup(model, *columns, tokenize : String? = nil, external_content : Bool = false, force : Bool = false) : Nil
+        setup_columns(model, columns.to_a.map(&.to_s), tokenize, external_content, force)
       end
 
       private def self.validate_columns!(model, columns : Array(String)) : Array(String)
@@ -82,15 +96,60 @@ module Saci
         columns
       end
 
-      private def self.setup_columns(model, columns : Array(String), tokenize : String?, external_content : Bool) : Nil
+      private def self.setup_columns(model, columns : Array(String), tokenize : String?, external_content : Bool, force : Bool) : Nil
         validate_columns!(model, columns)
         conn = model.connection
         ad = Record.adapter_of(conn)
         ensure_sqlite!(ad)
-        create_sql(ad, model.table_name, columns, model.__saci_primary_key, tokenize, external_content, if_not_exists: true)
+        table = model.table_name
+        pk = model.__saci_primary_key
+        expected = create_sql(ad, table, columns, pk, tokenize, external_content)
+        table_ok = stored_sql(conn, "table", "#{table}_fts").try { |sql| same_sql?(sql, expected.first) }
+        if table_ok && !force
+          triggers_ok = expected.select(&.starts_with?("CREATE TRIGGER")).all? do |trigger|
+            name = trigger.match(/\ACREATE TRIGGER "((?:[^"]|"")+)"/).try(&.[1].gsub("\"\"", "\""))
+            !!(name && stored_sql(conn, "trigger", name).try { |sql| same_sql?(sql, trigger) })
+          end
+          if triggers_ok && in_sync?(conn, ad, table, pk, external_content)
+            @@mutex.synchronize { @@indexed[model.name] = columns.dup }
+            return
+          end
+        end
+        # Definition changed (columns, tokenizer, content mode): start over.
+        drop_sql(ad, table).each { |sql| Record.exec_compat(conn, sql) } if table_ok == false
+        create_sql(ad, table, columns, pk, tokenize, external_content, if_not_exists: true)
           .each { |sql| Record.exec_compat(conn, sql) }
         @@mutex.synchronize { @@indexed[model.name] = columns.dup }
         rebuild!(model)
+      end
+
+      private def self.stored_sql(conn, type : String, name : String) : String?
+        conn.query_one?("SELECT sql FROM sqlite_master WHERE type = ? AND name = ?", type, name, as: String?)
+      end
+
+      # Compares DDL as SQLite stores it with freshly generated DDL
+      # (whitespace and `IF NOT EXISTS` are not significant).
+      private def self.same_sql?(stored : String, generated : String) : Bool
+        norm = ->(sql : String) { sql.sub(/\bIF\s+NOT\s+EXISTS\s+/i, "").gsub(/\s+/, " ").strip.rstrip(';') }
+        norm.call(stored) == norm.call(generated)
+      end
+
+      # True when the index matches the base table (see `setup`).
+      def self.in_sync?(conn : DB::Database | DB::Connection, ad : Adapter, table : String, pk : String, external_content : Bool) : Bool
+        q = ->(name : String) { Record.quote(name, ad) }
+        fts = q.call("#{table}_fts")
+        if external_content
+          Record.exec_compat(conn, "INSERT INTO #{fts}(#{fts}, rank) VALUES ('integrity-check', 1)")
+          true
+        else
+          base_count = conn.scalar("SELECT count(*) FROM #{q.call(table)}").as(Int64)
+          fts_count = conn.scalar("SELECT count(*) FROM #{fts}").as(Int64)
+          return false unless base_count == fts_count
+          missing = conn.scalar("SELECT count(*) FROM #{q.call(table)} WHERE #{q.call(pk)} NOT IN (SELECT rowid FROM #{fts})").as(Int64)
+          missing == 0
+        end
+      rescue DB::Error | SQLite3::Exception
+        false
       end
 
       # DDL for `<table>_fts` plus the AFTER INSERT / DELETE / UPDATE sync

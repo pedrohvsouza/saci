@@ -147,6 +147,70 @@ describe "Saci::Record::FTS" do
     FtsArticle.search_fts("rebuild").map(&.title).should eq(["rebuild me"])
   end
 
+  describe "setup on an existing index" do
+    it "skips the DDL and rebuild when the index is in sync" do
+      db = Saci::Record::Base.connection.as(DB::Database)
+      a = FtsArticle.create!(title: "crystal", body: "x")
+      # Same rowids, different text: only a rebuild would undo this.
+      db.exec(%(UPDATE "fts_articles_fts" SET title = 'marker' WHERE rowid = ?), a.id)
+      Saci::Record::FTS.setup(FtsArticle, [:title, :body])
+      FtsArticle.search_fts("marker").count.should eq(1)
+      FtsArticle.search_fts("crystal").count.should eq(0)
+
+      Saci::Record::FTS.setup(FtsArticle, [:title, :body], force: true)
+      FtsArticle.search_fts("marker").count.should eq(0)
+      FtsArticle.search_fts("crystal").count.should eq(1)
+    end
+
+    it "rebuilds when the index is out of sync" do
+      db = Saci::Record::Base.connection.as(DB::Database)
+      FtsArticle.create!(title: "lost row", body: "x")
+      db.exec(%(DELETE FROM "fts_articles_fts"))
+      FtsArticle.search_fts("lost").count.should eq(0)
+      Saci::Record::FTS.setup(FtsArticle, [:title, :body])
+      FtsArticle.search_fts("lost").count.should eq(1)
+    end
+
+    it "recreates a missing trigger and rebuilds" do
+      db = Saci::Record::Base.connection.as(DB::Database)
+      db.exec(%(DROP TRIGGER "fts_articles_fts_ai"))
+      FtsArticle.create!(title: "untracked", body: "x")
+      FtsArticle.search_fts("untracked").count.should eq(0)
+      Saci::Record::FTS.setup(FtsArticle, [:title, :body])
+      FtsArticle.search_fts("untracked").count.should eq(1)
+      FtsArticle.create!(title: "tracked", body: "x")
+      FtsArticle.search_fts("tracked").count.should eq(1)
+    end
+
+    it "recreates the index when its definition changes" do
+      db = Saci::Record::Base.connection.as(DB::Database)
+      FtsArticle.create!(title: "alpha", body: "beta")
+      Saci::Record::FTS.setup(FtsArticle, [:title], tokenize: "porter unicode61")
+      sql = db.query_one("SELECT sql FROM sqlite_master WHERE name = 'fts_articles_fts'", as: String)
+      sql.should contain("porter unicode61")
+      sql.should_not contain("body")
+      FtsArticle.search_fts("alpha").count.should eq(1)
+      Saci::Record::FTS.setup(FtsArticle, [:title, :body])
+      FtsArticle.search_fts("beta").count.should eq(1)
+    end
+
+    it "only registers over an in-sync create_fts_table index (external content)" do
+      db = Saci::Record::Base.connection.as(DB::Database)
+      FtsPost.create!(title: "Ação", body: "x")
+      before = db.query_all("SELECT type || ':' || name || ':' || COALESCE(sql, '') FROM sqlite_master WHERE name LIKE 'fts_posts_fts%' ORDER BY name", as: String)
+      Saci::Record::FTS.setup(FtsPost, [:title, :body], tokenize: "unicode61 remove_diacritics 2", external_content: true)
+      db.query_all("SELECT type || ':' || name || ':' || COALESCE(sql, '') FROM sqlite_master WHERE name LIKE 'fts_posts_fts%' ORDER BY name", as: String).should eq(before)
+      FtsPost.search_fts("acao").count.should eq(1)
+
+      # Drop a trigger: the next setup restores it and rebuilds.
+      db.exec(%(DROP TRIGGER "fts_posts_fts_ai"))
+      FtsPost.create!(title: "silent", body: "x")
+      Saci::Record::FTS.setup(FtsPost, [:title, :body], tokenize: "unicode61 remove_diacritics 2", external_content: true)
+      FtsPost.search_fts("silent").count.should eq(1)
+      db.exec(%(INSERT INTO "fts_posts_fts"("fts_posts_fts", rank) VALUES ('integrity-check', 1)))
+    end
+  end
+
   it "raises a clear error on non-SQLite adapters" do
     expect_raises(ArgumentError, /SQLite-only/) do
       Saci::Record::FTS.ensure_sqlite!(:postgres)

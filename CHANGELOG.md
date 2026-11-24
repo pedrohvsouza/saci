@@ -17,6 +17,28 @@
   PostgreSQL/MySQL runners for `db:version`, `db:migrate:status` and
   `db:schema:cache:dump` no longer cover `DATABASE_URL_<NAME>` databases
   without `--all`.
+- **Schema dump/load round-trips FTS5 virtual tables.** `Schema.dump` /
+  `Schema.introspect` no longer treat SQLite virtual tables and their
+  shadow tables (`<fts>_data`, `<fts>_idx`, …) as ordinary tables; loading
+  a dump used to recreate `questions_fts` as a plain table and then abort
+  on `questions_fts_idx` ("more than one primary key"). Shadow tables are
+  skipped and each virtual table is dumped verbatim as its `CREATE
+  VIRTUAL TABLE` statement plus the triggers that write to it (the FTS
+  sync triggers) in a `SCHEMA_VIRTUAL_TABLES` constant, recreated by
+  `Schema.load_virtual_tables` after the base tables (also for `--all`
+  sections). New `Schema.virtual_tables(db)`; detection reuses
+  `Introspection.sqlite_virtual_tables`. SQLite only: loading such a dump
+  into PostgreSQL/MySQL skips the virtual tables with a warning.
+- **`FTS.setup` no longer rebuilds on every call (and is deprecated).**
+  When `<table>_fts` already exists with the same definition (columns,
+  `tokenize:`, `external_content:`), its three sync triggers match and
+  the index is in sync with the base table (same primary keys for an
+  own-content index, a passing FTS5 `integrity-check` for external
+  content), `Record::FTS.setup` only registers the columns: no DDL and no
+  rebuild. Missing or changed triggers are recreated and the index
+  rebuilt; a changed definition drops and recreates the index.
+  `force: true` always rebuilds. `FTS.setup` is deprecated in the docs:
+  use the `create_fts_table` migration helper plus `fts_search` instead.
 - **Array hash conditions build `IN`.** `where(id: [1, 2, 3])` binds one
   `?` per element (`col IN (?, ?, ?)`) instead of raising in `to_db`;
   `nil` elements add `col IS NULL` (`(col IS NULL OR col IN (...))`), an

@@ -528,8 +528,10 @@ Post.transaction(isolation: :serializable) { post.lock!; ... }
   of storing a copy. `fts_search [:title, :body]` in the model only
   registers the columns (no DDL, no rebuild), and
   `Post.search_fts("crystal")` returns a ranked, chainable query (SQLite
-  only). `Record::FTS.setup(Post, [...])` still does it all at runtime,
-  rebuilding the index on every call.
+  only). `Record::FTS.setup(Post, [...])` is deprecated in favor of
+  `create_fts_table` + `fts_search`; it still does it all at runtime, but
+  only creates and rebuilds what is missing, changed or out of sync
+  (`force: true` always rebuilds).
 
 ## Databases
 
@@ -591,7 +593,10 @@ adapter-aware DDL. The snapshot is data, not raw SQL, so one file loads on
 SQLite, PostgreSQL and MySQL. `schema_migrations` is never dumped; the
 durable job tables are. SQLite stores several logical types in the same
 storage class, so booleans reload as `:integer` and dates and JSON as
-`:text`. Saci's own `t.decimal` reloads as `:decimal`. Re-dumping a loaded
+`:text`. Saci's own `t.decimal` reloads as `:decimal`. SQLite virtual
+tables (the FTS5 indexes from `create_fts_table`) are the SQLite-only
+exception: each is kept as its `CREATE VIRTUAL TABLE` statement plus its
+sync triggers, and their shadow tables are skipped. Re-dumping a loaded
 database produces the same bytes.
 
 Every model registers itself, so `Record.check_schema!(db)` can
