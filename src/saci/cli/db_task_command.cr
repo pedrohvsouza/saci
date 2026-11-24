@@ -10,11 +10,19 @@ module Saci
     # so output and behavior stay identical across adapters.
     #
     # `--all` covers primary + every `DATABASE_URL_<NAME>` database, like
-    # `db:migrate --all` / `db:schema:dump --all`.
+    # `db:migrate --all` / `db:schema:dump --all`. `db:version` and
+    # `db:migrate:status` also take `--database=NAME` (one database, read
+    # against its own `db/<name>_migrate/`), like `db:migrate`.
     module Db
       # `db:version` / `db:migrate:status` etc. are dispatched here from
       # CLI.run; `Db.run` (serve_command.cr) stays the migrate/rollback path.
+      # Actions that accept `--database=NAME`.
+      DATABASE_ACTIONS = ["version", "migrate:status"]
+
       def self.run_action(action : String, args : Array(String)) : Int32
+        if !DATABASE_ACTIONS.includes?(action) && args.any? { |a| a == "--database" || a.starts_with?("--database=") }
+          raise Error.new("--database is not supported by db:#{action} (only db:version and db:migrate:status; use --all).")
+        end
         case action
         when "prepare"           then prepare(args)
         when "setup"             then setup(args)
@@ -37,6 +45,7 @@ module Saci
         pretend: Bool,
         seed: Bool?,
         dir: String?,
+        database: String?,
         flags: Array(String),
         positional: Array(String),
       )
@@ -47,6 +56,7 @@ module Saci
         pretend = false
         seed : Bool? = nil
         dir : String? = nil
+        database : String? = nil
         flags = [] of String
         positional = [] of String
         forward = false
@@ -74,6 +84,10 @@ module Saci
             when "--dir"
               dir = args[i + 1]? || raise Error.new("Missing value for --dir")
               i += 1
+            when "--database", .starts_with?("--database=")
+              name = a == "--database" ? (i += 1; args[i]?) : a.lchop("--database=")
+              raise Error.new("--database needs a name (e.g. --database=analytics)") if name.nil? || name.empty?
+              database = Generate.validate_database_name!(name)
             else
               if a.starts_with?("-")
                 raise Error.new("Unknown option '#{a}'. See `saci help db`.")
@@ -83,8 +97,11 @@ module Saci
           end
           i += 1
         end
+        if all && database
+          raise Error.new("Use either --all or --database=NAME, not both.")
+        end
         {all: all, force: force, pretend: pretend, seed: seed, dir: dir,
-         flags: flags, positional: positional}
+         database: database, flags: flags, positional: positional}
       end
 
       def self.app_context! : NamedTuple(name: String, kind: String, env: String)
@@ -107,8 +124,22 @@ module Saci
 
       record Target, name : String, url : String, adapter : Symbol
 
-      def self.targets(all : Bool, name : String, kind : String, env : String, test : Bool = false) : Array(Target)
+      # URL of a named database: `DATABASE_URL_<NAME>`, else the
+      # convention `saci new` suggests in db/migrate.cr
+      # (`<app>_<name>_<env>`).
+      def self.named_url_for(database : String, name : String, kind : String, env : String) : String
+        ENV["DATABASE_URL_#{database.upcase}"]? || New.db_url_default(name, kind, "#{database}_#{env}")
+      end
+
+      # `database` (from `--database=NAME`) narrows the list to that one
+      # database; `"primary"` means the primary alone.
+      def self.targets(all : Bool, name : String, kind : String, env : String, test : Bool = false, database : String? = nil) : Array(Target)
+        if database && database != "primary"
+          url = named_url_for(database, name, kind, env)
+          return [Target.new(database, url, Saci::Record.adapter_for_url(url))]
+        end
         list = [Target.new("primary", url_for(name, kind, env, test), Saci::Record.adapter_for_url(url_for(name, kind, env, test)))]
+        return list if database
         if all
           ENV.each do |key, value|
             next unless key.starts_with?("DATABASE_URL_") && !key.ends_with?("_TEST")
@@ -242,35 +273,38 @@ module Saci
         run_generated("db:prepare", source, ["--all"].select { |_| all }, opts[:flags], test_env(test))
       end
 
-      def self.version(args : Array(String)) : Int32
+      # Each database is read against its own migrations (`db/migrate/`
+      # for primary, `db/<name>_migrate/` for a named one). A single named
+      # target (`--database=NAME`) is labeled too.
+      def self.version(args : Array(String), io : IO = STDOUT) : Int32
         ctx = app_context!
         opts = parse_action_args(args)
-        targets = targets(opts[:all], ctx[:name], ctx[:kind], ctx[:env])
+        targets = targets(opts[:all], ctx[:name], ctx[:kind], ctx[:env], database: opts[:database])
         return external_run("version", ctx, opts) unless sqlite_only?(targets)
-        entries = Saci::DBTasks.migration_entries
-        multi = targets.size > 1
+        multi = targets.size > 1 || targets.any? { |t| t.name != "primary" }
         targets.each do |target|
+          entries = Saci::DBTasks.migration_entries_for(target.name)
           applied = sqlite_applied(target.url)
-          Saci::DBTasks.print_version(STDOUT, target.name, applied || [] of String, entries, multi)
-          puts "(database does not exist)" if applied.nil?
+          Saci::DBTasks.print_version(io, target.name, applied || [] of String, entries, multi)
+          io.puts "(database does not exist)" if applied.nil?
         end
         0
       end
 
-      def self.migrate_status(args : Array(String)) : Int32
+      def self.migrate_status(args : Array(String), io : IO = STDOUT) : Int32
         ctx = app_context!
         opts = parse_action_args(args)
-        targets = targets(opts[:all], ctx[:name], ctx[:kind], ctx[:env])
+        targets = targets(opts[:all], ctx[:name], ctx[:kind], ctx[:env], database: opts[:database])
         return external_run("status", ctx, opts) unless sqlite_only?(targets)
-        entries = Saci::DBTasks.migration_entries
-        multi = targets.size > 1
-        if entries.empty?
-          puts "No migrations found in db/migrate/."
-        end
+        multi = targets.size > 1 || targets.any? { |t| t.name != "primary" }
         targets.each do |target|
+          entries = Saci::DBTasks.migration_entries_for(target.name)
+          if entries.empty?
+            io.puts "No migrations found in #{Saci::DBTasks.migrations_dir(target.name)}/."
+          end
           applied = sqlite_applied(target.url)
-          Saci::DBTasks.print_status(STDOUT, target.name, entries, applied || [] of String, multi)
-          puts "(database does not exist)" if applied.nil?
+          Saci::DBTasks.print_status(io, target.name, entries, applied || [] of String, multi)
+          io.puts "(database does not exist)" if applied.nil?
         end
         0
       end
@@ -450,7 +484,8 @@ module Saci
 
       private def self.external_run(action : String, ctx, opts) : Int32
         source = external_source(action, ctx[:name], ctx[:kind], opts)
-        run_generated("db:#{action}", source, ["--all"].select { |_| opts[:all] } + opts[:positional], opts[:flags])
+        database_args = opts[:database].try { |d| ["--database=#{d}"] } || [] of String
+        run_generated("db:#{action}", source, ["--all"].select { |_| opts[:all] } + database_args + opts[:positional], opts[:flags])
       end
 
       # Generates the tiny PG/MySQL runner for read-only actions. It uses
@@ -469,21 +504,25 @@ module Saci
           io << "Saci::DBTasks.register_named_databases!\n"
           io << "all = ARGV.includes?(\"--all\")\n"
           case action
-          when "version"
-            io << "entries = Saci::DBTasks.migration_entries\n"
-            io << "names = Saci::DBTasks.target_names(all)\n"
-            io << "multi = names.size > 1\n"
-            io << "names.each do |db_name|\n"
-            io << "  applied = Saci::DBTasks.applied_names(Saci::Record.database(db_name))\n"
-            io << "  Saci::DBTasks.print_version(STDOUT, db_name, applied, entries, multi)\n"
+          when "version", "status"
+            # `--database=NAME`: that database alone, registered from
+            # DATABASE_URL_<NAME> or the `saci new` naming convention.
+            named_default = New.db_url_default(name, kind, "\#{database}_\#{env_name}")
+            io << "database = ARGV.find(&.starts_with?(\"--database=\")).try(&.lchop(\"--database=\"))\n"
+            io << "if database && !Saci::Record.configuration_names.includes?(database)\n"
+            io << "  Saci::Record.establish_connection(database, \"#{named_default}\")\n"
             io << "end\n"
-          when "status"
-            io << "entries = Saci::DBTasks.migration_entries\n"
-            io << "names = Saci::DBTasks.target_names(all)\n"
-            io << "multi = names.size > 1\n"
+            io << "names = Saci::DBTasks.target_names(all, database)\n"
+            io << "multi = names.size > 1 || names.any? { |n| n != \"primary\" }\n"
             io << "names.each do |db_name|\n"
+            io << "  entries = Saci::DBTasks.migration_entries_for(db_name)\n"
             io << "  applied = Saci::DBTasks.applied_names(Saci::Record.database(db_name))\n"
-            io << "  Saci::DBTasks.print_status(STDOUT, db_name, entries, applied, multi)\n"
+            if action == "version"
+              io << "  Saci::DBTasks.print_version(STDOUT, db_name, applied, entries, multi)\n"
+            else
+              io << "  puts \"No migrations found in \#{Saci::DBTasks.migrations_dir(db_name)}/.\" if entries.empty?\n"
+              io << "  Saci::DBTasks.print_status(STDOUT, db_name, entries, applied, multi)\n"
+            end
             io << "end\n"
           when "cache:dump"
             io << "names = Saci::DBTasks.target_names(all)\n"
@@ -569,7 +608,7 @@ module Saci
 
       def self.help : String
         <<-HELP
-        Usage: saci db:ACTION [--all] [--force] [-- crystal flags]
+        Usage: saci db:ACTION [--all] [--database=NAME] [--force] [-- crystal flags]
 
           db:prepare            create if missing, migrate (or load schema), seed on create
           db:setup              create + schema/migrate + seed
@@ -585,6 +624,10 @@ module Saci
           db:migrate|rollback|schema:dump|schema:load|schema:check|seed are separate commands.
 
         With --all, primary + every DATABASE_URL_<NAME> database is targeted.
+        db:version and db:migrate:status also take --database=NAME (one
+        database, read against db/<name>_migrate/; URL from
+        DATABASE_URL_<NAME>, else db/<app>_<name>_<env>). Without either,
+        only primary (db/migrate/), like db:migrate.
         HELP
       end
     end

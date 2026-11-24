@@ -182,7 +182,7 @@ saci runner -e CODE | saci runner FILE [args]
 saci console [-e CODE]
 saci db:migrate [--all|--database=NAME] | db:rollback [STEPS] [--all|--database=NAME] | db:seed
 saci db:prepare | db:setup | db:reset | db:create | db:drop | db:version | db:migrate:status
-saci db:schema:dump [--all] | db:schema:load | db:schema:check [--all]
+saci db:schema:dump [--all|--database=NAME] | db:schema:load [--database=NAME] | db:schema:check [--all]
 saci credentials:show | credentials:edit | credentials:keygen
 saci credentials:get KEY | credentials:set KEY VALUE|--stdin | credentials:unset KEY
 saci assets:precompile [--source DIR] [--output DIR] | assets:clobber
@@ -214,6 +214,9 @@ Generators: `model`, `controller`, `migration`, `scaffold`,
   also covers every named database registered through
   `DATABASE_URL_<NAME>`, and `--database=NAME` targets one named
   database. After each run the runner prints schema drift warnings.
+  `db:version` and `db:migrate:status` take the same flags and read each
+  database against its own migrations (`db/<name>_migrate/`); without
+  either flag they report on primary only.
 - `routes` parses the route DSL statically, with no compilation, and
   prints `VERB PATH -> Controller#action`. Routes drawn in loops or
   helper methods are invisible to that parse; `routes --boot` compiles
@@ -549,6 +552,9 @@ Record.connected_to("analytics") { Event.count }
   `SACI_ANALYTICS_MIGRATIONS`) plus `SACI_MIGRATION_SETS`. `db:migrate
   --all` runs each database's own list; a named database without a
   directory gets none. Class names stay unique across databases.
+  `db:migrate:status --database=analytics` and `db:version
+  --database=analytics` report on that database alone, and `db:schema:dump
+  --database=analytics` writes its snapshot to `db/analytics_schema.cr`.
 - Write `?` placeholders and double-quoted identifiers everywhere. Saci
   rewrites placeholders, quoting, auto-increment keys, `RETURNING` inserts
   and DDL for each adapter.
@@ -574,7 +580,8 @@ Record.connected_to("analytics") { Event.count }
 
 ```sh
 saci db:schema:dump [--all]   # write db/schema.cr
-saci db:schema:load           # recreate tables, indexes, checks and views
+saci db:schema:dump --database=NAME  # write db/<name>_schema.cr (one named DB)
+saci db:schema:load [--database=NAME]  # recreate tables, indexes, checks and views
 saci db:schema:check [--all]  # exit 1 when the database and the models disagree
 ```
 

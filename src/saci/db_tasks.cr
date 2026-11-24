@@ -16,7 +16,8 @@ module Saci
   # Nothing here boots the web server or requires `src/<app>.cr`: callers
   # connect explicitly with `Saci::Record.connect`.
   module DBTasks
-    # A migration file on disk (`db/migrate/<version>_<name>.cr`).
+    # A migration file on disk (`db/migrate/<version>_<name>.cr`, or
+    # `db/<name>_migrate/...` for a named database).
     record MigrationEntry, version : String, name : String, class_name : String
 
     # Registers every `DATABASE_URL_<NAME>` env var as a named database
@@ -45,10 +46,26 @@ module Saci
       end
     end
 
-    # Primary first, then named databases (sorted) with `--all`.
-    def self.target_names(all : Bool) : Array(String)
+    # Migration directory per database (Rails' `migrations_paths`):
+    # `db/migrate` for primary, `db/<name>_migrate` for a named one.
+    def self.migrations_dir(database : String? = nil) : String
+      database.nil? || database == "primary" ? "db/migrate" : "db/#{database}_migrate"
+    end
+
+    # Migration files of one database (`db/migrate/` or
+    # `db/<name>_migrate/`).
+    def self.migration_entries_for(database : String) : Array(MigrationEntry)
+      migration_entries(migrations_dir(database))
+    end
+
+    # Target databases, like `db/migrate.cr`: only `database` when given,
+    # primary first then named databases (sorted) with `all`, otherwise
+    # primary alone.
+    def self.target_names(all : Bool, database : String? = nil) : Array(String)
+      return [database] if database
       names = Saci::Record.configuration_names
       primary = names.includes?("primary") ? ["primary"] : [] of String
+      return primary unless all
       primary + (names - ["primary"]).sort
     end
 

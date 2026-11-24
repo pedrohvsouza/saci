@@ -685,7 +685,7 @@ module Saci
       # Migration directory per database (Rails' `migrations_paths`):
       # `db/migrate/` for primary, `db/<name>_migrate/` for named ones.
       def self.migrations_dir(database : String? = nil) : String
-        database.nil? || database == "primary" ? "db/migrate" : "db/#{database}_migrate"
+        Saci::DBTasks.migrations_dir(database)
       end
 
       # Manifest constant per database: `SACI_MIGRATIONS` (primary, kept for

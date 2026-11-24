@@ -618,6 +618,109 @@ describe "saci db:* surface" do
     end
   end
 
+  it "reads each database's own migrations in db:version / db:migrate:status (--database=NAME)" do
+    with_extras_app(name: "db_perdb_status") do |dir|
+      Dir.cd(dir) do
+        Saci::CLI::Generate.run(["migration", "CreatePosts"])
+        Saci::CLI::Generate.run(["migration", "CreateEvents", "--database=analytics"])
+        Saci::CLI::Generate.run(["migration", "CreateMetrics", "--database=analytics"])
+        posts_version = File.basename(Dir.glob("db/migrate/*_create_posts.cr").first).split("_").first
+        events_version = File.basename(Dir.glob("db/analytics_migrate/*_create_events.cr").first).split("_").first
+        mark_applied = ->(path : String, names : Array(String)) do
+          DB.open("sqlite3://#{path}") do |db|
+            db.exec("CREATE TABLE schema_migrations (name TEXT PRIMARY KEY)")
+            names.each { |n| db.exec("INSERT INTO schema_migrations (name) VALUES (?)", n) }
+          end
+        end
+        mark_applied.call("./db/db_perdb_status_development.db", ["CreatePosts"])
+        mark_applied.call("./db/analytics.db", ["CreateEvents"])
+        run = ->(action : String, args : Array(String)) do
+          io = IO::Memory.new
+          code = action == "version" ? Saci::CLI::Db.version(args, io) : Saci::CLI::Db.migrate_status(args, io)
+          code.should eq(0)
+          io.to_s
+        end
+
+        without_database_env do
+          begin
+            ENV["DATABASE_URL_ANALYTICS"] = "sqlite3://./db/analytics.db"
+
+            # Without flags: primary only, read against db/migrate/ (like db:migrate).
+            report = run.call("status", [] of String)
+            report.should match(/up\s+#{posts_version}\s+CreatePosts/)
+            report.should_not contain("CreateEvents")
+            report.should_not contain("database:")
+            run.call("version", [] of String).should eq("Current version: #{posts_version}\n")
+
+            # --database=NAME: that database alone, against db/analytics_migrate/.
+            report = run.call("status", ["--database=analytics"])
+            report.should contain("database: analytics")
+            report.should match(/up\s+#{events_version}\s+CreateEvents/)
+            report.should match(/down\s+\d+\s+CreateMetrics/)
+            report.should_not contain("CreatePosts")
+            run.call("status", ["--database", "analytics"]).should eq(report)
+            run.call("version", ["--database=analytics"]).should eq("[analytics] Current version: #{events_version}\n")
+            run.call("version", ["--database=primary"]).should eq("Current version: #{posts_version}\n")
+
+            # --all: every database, each with its own list.
+            report = run.call("status", ["--all"])
+            primary_part, analytics_part = report.split("database: analytics")
+            primary_part.should contain("database: primary")
+            primary_part.should contain("CreatePosts")
+            primary_part.should_not contain("CreateEvents")
+            analytics_part.should contain("CreateEvents")
+            analytics_part.should_not contain("CreatePosts")
+            version_all = run.call("version", ["--all"])
+            version_all.should contain("[primary] Current version: #{posts_version}")
+            version_all.should contain("[analytics] Current version: #{events_version}")
+          ensure
+            ENV.delete("DATABASE_URL_ANALYTICS")
+          end
+
+          # Without DATABASE_URL_<NAME>: the db/<app>_<name>_<env>.db
+          # convention, reported missing without being created.
+          report = run.call("status", ["--database=reports"])
+          report.should contain("No migrations found in db/reports_migrate/.")
+          report.should contain("(database does not exist)")
+          File.exists?("db/db_perdb_status_reports_development.db").should be_false
+        end
+
+        expect_raises(Saci::CLI::Error, /either --all or --database/) do
+          Saci::CLI::Db.parse_action_args(["--all", "--database=analytics"])
+        end
+        expect_raises(Saci::CLI::Error, /Bad database name/) do
+          Saci::CLI::Db.parse_action_args(["--database=Bad-Name"])
+        end
+        expect_raises(Saci::CLI::Error, /needs a name/) do
+          Saci::CLI::Db.parse_action_args(["--database"])
+        end
+        expect_raises(Saci::CLI::Error, /not supported by db:prepare/) do
+          Saci::CLI::Db.run_action("prepare", ["--database=analytics"])
+        end
+      end
+    end
+  end
+
+  it "passes --database to the PostgreSQL/MySQL status/version runner" do
+    opts = Saci::CLI::Db.parse_action_args(["--database=analytics"])
+    opts[:database].should eq("analytics")
+    src = Saci::CLI::Db.external_source("status", "app", "postgres", opts)
+    src.should contain("ARGV.find(&.starts_with?(\"--database=\"))")
+    src.should contain("Saci::DBTasks.target_names(all, database)")
+    src.should contain("Saci::DBTasks.migration_entries_for(db_name)")
+    src.should contain("postgres://localhost/app_\#{database}_\#{env_name}")
+    Saci::CLI::Db.external_source("version", "app", "postgres", opts).should contain("print_version")
+  end
+
+  it "maps databases to their migration directories and targets" do
+    Saci::DBTasks.migrations_dir("primary").should eq("db/migrate")
+    Saci::DBTasks.migrations_dir(nil).should eq("db/migrate")
+    Saci::DBTasks.migrations_dir("analytics").should eq("db/analytics_migrate")
+    Saci::CLI::Generate.migrations_dir("analytics").should eq("db/analytics_migrate")
+    Saci::DBTasks.target_names(false, "analytics").should eq(["analytics"])
+    Saci::DBTasks.target_names(false).should_not contain("analytics")
+  end
+
   it "resolves test database URLs and refuses production drops" do
     with_extras_app(name: "db_urls") do |dir|
       Dir.cd(dir) do

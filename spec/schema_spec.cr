@@ -228,6 +228,70 @@ describe "Saci::CLI::Schema" do
     src.should contain("url_embed = \"sqlite3://./db/demo_\\" + open + "env_name}.db\"")
   end
 
+  it "parses --database=NAME (one named database) like Db" do
+    parsed = Saci::CLI::Schema.parse(["--database=analytics", "--", "-Dx"])
+    parsed[:database].should eq("analytics")
+    parsed[:all].should be_false
+    parsed[:script_args].should be_empty
+    parsed[:crystal_flags].should eq(["-Dx"])
+    Saci::CLI::Schema.parse(["--database", "analytics"])[:database].should eq("analytics")
+    Saci::CLI::Schema.parse(["--database=primary"])[:database].should be_nil
+    Saci::CLI::Schema.parse([] of String)[:database].should be_nil
+    expect_raises(Saci::CLI::Error, /needs a name/) { Saci::CLI::Schema.parse(["--database"]) }
+    expect_raises(Saci::CLI::Error, /Bad database name/) { Saci::CLI::Schema.parse(["--database=A-B"]) }
+    expect_raises(Saci::CLI::Error, /either --all or --database/) { Saci::CLI::Schema.parse(["--all", "--database=analytics"]) }
+    Saci::CLI::Schema.schema_path(nil).should eq("db/schema.cr")
+    Saci::CLI::Schema.schema_path("analytics").should eq("db/analytics_schema.cr")
+  end
+
+  it "renders a named-database dump runner writing db/<name>_schema.cr" do
+    open = "#" + "{"
+    template = "sqlite3://./db/demo_analytics_" + open + "env_name}.db"
+    src = Saci::CLI::Schema.dump_runner_source(template, "analytics")
+    src.should contain("db_url = ENV.fetch(\"DATABASE_URL_ANALYTICS\", \"#{template}\")")
+    src.should contain("Saci::Record.establish_connection(\"analytics\", db_url)")
+    src.should contain("database: \"analytics\"")
+    src.should contain("File.write(\"db/analytics_schema.cr\", content)")
+    src.should contain("url_embed = \"sqlite3://./db/demo_analytics_\\" + open + "env_name}.db\"")
+    src.should_not contain("Saci::Record.connect(")
+    Saci::CLI::Schema.dump_runner_source(template, "primary").should contain("File.write(\"db/schema.cr\", content)")
+  end
+
+  it "dumps a named database into a file that loads into that database" do
+    db = schema_sqlite_db
+    begin
+      Saci::Record::Migrator.migrate(db, [SchemaCreateGadgets] of Saci::Record::Migration.class)
+      src = Saci::Record::Schema.dump(db, "sqlite3://./db/demo_analytics.db", database: "analytics")
+      src.should contain("# db/analytics_schema.cr")
+      src.should contain("saci db:schema:load --database=analytics")
+      src.should contain("db_url = ENV.fetch(\"DATABASE_URL_ANALYTICS\", \"sqlite3://./db/demo_analytics.db\")")
+      src.should contain("Saci::Record.establish_connection(\"analytics\", db_url)")
+      src.should contain("db = Saci::Record.database(\"analytics\")")
+      src.should contain("Saci::Record::Schema.load(db, SCHEMA_TABLES)")
+      src.should_not contain("ENV.fetch(\"DATABASE_URL\",")
+      src.should_not contain("Saci::Record.connect(")
+      Saci::Record::Schema.dump(db, "sqlite3://./x.db", database: "primary").should eq(Saci::Record::Schema.dump(db, "sqlite3://./x.db"))
+    ensure
+      db.close
+    end
+  end
+
+  it "loads db/<name>_schema.cr only when it exists" do
+    dir = File.join("/tmp/opencode", "saci-schema-load-#{Random.rand(1_000_000)}")
+    begin
+      Dir.mkdir_p(File.join(dir, "db"))
+      File.write(File.join(dir, "shard.yml"), "name: demo\n")
+      Dir.cd(dir) do
+        expect_raises(Saci::CLI::Error, /db\/analytics_schema\.cr not found.*--database=analytics/) do
+          Saci::CLI::Schema.load(["--database=analytics"])
+        end
+        expect_raises(Saci::CLI::Error, /Usage/) { Saci::CLI::Schema.load(["--all"]) }
+      end
+    ensure
+      FileUtils.rm_rf(dir)
+    end
+  end
+
   it "documents db:schema commands in help" do
     Saci::CLI.run(["help", "db:schema:dump"]).should eq(0)
     Saci::CLI.run(["help", "db:schema:load"]).should eq(0)

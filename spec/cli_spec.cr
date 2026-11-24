@@ -1274,4 +1274,45 @@ describe "per-database migrations" do
       end
     end
   end
+
+  it "dumps and loads one named database with db:schema --database=NAME" do
+    with_tmp_app(name: "cli_multidb_schema") do |dir|
+      Dir.cd(dir) do
+        link_framework_lib!
+        DB.open("sqlite3://./db/analytics.db") do |db|
+          db.exec("CREATE TABLE events (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+          db.exec("CREATE TABLE schema_migrations (name TEXT PRIMARY KEY)")
+        end
+        DB.open("sqlite3://./db/primary.db") { |db| db.exec("CREATE TABLE posts (id INTEGER PRIMARY KEY)") }
+        rel = Saci::CLI::Inspect::Runner.relativize(File.join(dir, "tmp"), File.join(Saci::CLI::New::SACI_ROOT, "src", "saci"))
+        template = Saci::CLI::Schema.named_url_default("cli_multidb_schema", "analytics")
+        template.should eq("sqlite3://./db/cli_multidb_schema_analytics_\#{env_name}.db")
+        runner = Saci::CLI::Schema.dump_runner_source(template, "analytics").sub("require \"saci\"", "require \"#{rel}\"")
+        Dir.mkdir_p("tmp")
+        File.write("tmp/named_dump.cr", runner)
+        env = {"DATABASE_URL" => "sqlite3://./db/primary.db", "DATABASE_URL_ANALYTICS" => "sqlite3://./db/analytics.db", "APP_ENV" => "development"}
+        buf = IO::Memory.new
+        status = Saci::CLI::Compile.run_status("tmp/named_dump.cr", env: env, output: buf)
+        status.not_nil!.success?.should be_true
+        buf.to_s.should contain("Wrote db/analytics_schema.cr (analytics)")
+        File.exists?("db/schema.cr").should be_false
+        dumped = File.read("db/analytics_schema.cr")
+        dumped.should contain("\"events\"")
+        dumped.should_not contain("\"posts\"")
+
+        # Loading replays into the named database only (a fresh file here).
+        rel_db = Saci::CLI::Inspect::Runner.relativize(File.join(dir, "db"), File.join(Saci::CLI::New::SACI_ROOT, "src", "saci"))
+        File.write("db/analytics_schema.cr", dumped.sub("require \"saci\"", "require \"#{rel_db}\""))
+        load_env = env.merge({"DATABASE_URL_ANALYTICS" => "sqlite3://./db/analytics_fresh.db"})
+        status = Saci::CLI::Compile.run_status("db/analytics_schema.cr", env: load_env, output: IO::Memory.new)
+        status.not_nil!.success?.should be_true
+        DB.open("sqlite3://./db/analytics_fresh.db") do |db|
+          db.query_all("SELECT name FROM sqlite_master WHERE type = 'table'", as: String).should contain("events")
+        end
+        DB.open("sqlite3://./db/primary.db") do |db|
+          db.query_all("SELECT name FROM sqlite_master WHERE type = 'table'", as: String).should_not contain("events")
+        end
+      end
+    end
+  end
 end

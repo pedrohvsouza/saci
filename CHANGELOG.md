@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **Per-database `db:version`, `db:migrate:status` and `db:schema:dump`.**
+  They take `--database=NAME` (or `--database NAME`) like `db:migrate` /
+  `db:rollback`, and each database is read against its own migrations:
+  `db/migrate/` for primary, `db/<name>_migrate/` for a named database
+  (`--all` reports every database, each with its own list). Without a
+  flag they report on primary only, as before. A named database's URL is
+  `DATABASE_URL_<NAME>`, falling back to the `<app>_<name>_<env>`
+  convention. `db:schema:dump --database=NAME` writes that database alone
+  to `db/<name>_schema.cr` (it connects through `DATABASE_URL_<NAME>`),
+  and `db:schema:load --database=NAME` replays it.
+  `Saci::DBTasks.target_names` now honors its `all` argument (it always
+  returned every registered database), so `db:seed:replant` and the
+  PostgreSQL/MySQL runners for `db:version`, `db:migrate:status` and
+  `db:schema:cache:dump` no longer cover `DATABASE_URL_<NAME>` databases
+  without `--all`.
 - **Array hash conditions build `IN`.** `where(id: [1, 2, 3])` binds one
   `?` per element (`col IN (?, ?, ?)`) instead of raising in `to_db`;
   `nil` elements add `col IS NULL` (`(col IS NULL OR col IN (...))`), an
